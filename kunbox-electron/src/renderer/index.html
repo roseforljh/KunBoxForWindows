@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>KunBox</title>
+    <script>
+      (function() {
+        var theme = localStorage.getItem('kunbox-theme') || 'dark';
+        if (theme === 'system') {
+          theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
+        document.documentElement.classList.add(theme);
+      })();
+    </script>
+    <style>
+      html.dark { background: #050505; }
+      html.light { background: #ede9e0; }
+      html:not(.dark):not(.light) { background: #050505; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>

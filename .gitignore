@@ -1,0 +1,7 @@
+LinJun/
+node_modules/
+dist/
+out/
+*.log
+.env
+.DS_Store

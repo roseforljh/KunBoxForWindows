@@ -1,0 +1,80 @@
+import { app, BrowserWindow, shell, ipcMain } from 'electron'
+import { join } from 'path'
+import { electronApp, optimizer, is } from '@electron-toolkit/utils'
+import log from 'electron-log'
+import { initSingBoxHandlers } from './ipc/singbox'
+import { initProfileHandlers } from './ipc/profiles'
+import { initSettingsHandlers } from './ipc/settings'
+
+let mainWindow: BrowserWindow | null = null
+
+function createWindow(): void {
+  mainWindow = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    minWidth: 900,
+    minHeight: 600,
+    show: false,
+    frame: false,
+    titleBarStyle: 'hidden',
+    backgroundColor: '#050505',
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.mjs'),
+      sandbox: false,
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  })
+
+  mainWindow.on('ready-to-show', () => {
+    mainWindow?.show()
+  })
+
+  mainWindow.webContents.setWindowOpenHandler((details) => {
+    shell.openExternal(details.url)
+    return { action: 'deny' }
+  })
+
+  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
+  } else {
+    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+  }
+
+  ipcMain.on('window:minimize', () => mainWindow?.minimize())
+  ipcMain.on('window:maximize', () => {
+    if (mainWindow?.isMaximized()) {
+      mainWindow.unmaximize()
+    } else {
+      mainWindow?.maximize()
+    }
+  })
+  ipcMain.on('window:close', () => mainWindow?.close())
+}
+
+app.whenReady().then(() => {
+  electronApp.setAppUserModelId('com.kunbox')
+
+  app.on('browser-window-created', (_, window) => {
+    optimizer.watchWindowShortcuts(window)
+  })
+
+  initSingBoxHandlers()
+  initProfileHandlers()
+  initSettingsHandlers()
+
+  createWindow()
+
+  app.on('activate', function () {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+  })
+})
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    app.quit()
+  }
+})
+
+log.initialize()
+log.info('KunBox started')
