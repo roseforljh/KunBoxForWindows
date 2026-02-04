@@ -2,6 +2,7 @@ import { ipcMain, BrowserWindow, app } from 'electron'
 import { join } from 'path'
 import { existsSync, mkdirSync } from 'fs'
 import log from 'electron-log'
+import { is } from '@electron-toolkit/utils'
 import { IPC_CHANNELS } from '../../shared/constants'
 import type { ProxyState, TrafficStats, LogEntry, LogLevel } from '../../shared/types'
 
@@ -9,8 +10,14 @@ import type { ProxyState, TrafficStats, LogEntry, LogLevel } from '../../shared/
 import { VpnService, VpnServiceConfig, ServiceState } from '@kunbox/core'
 
 const CONFIG_DIR = join(app.getPath('userData'), 'KunBox')
-const SINGBOX_DIR = join(process.resourcesPath, 'libs')
-const SINGBOX_PATH = join(SINGBOX_DIR, 'sing-box.exe')
+
+// Development vs production path for sing-box
+function getSingBoxPath(): string {
+  if (is.dev) {
+    return join(__dirname, '../../resources/libs/sing-box.exe')
+  }
+  return join(process.resourcesPath, 'resources/libs/sing-box.exe')
+}
 
 let vpnService: VpnService | null = null
 let startTime = 0
@@ -19,9 +26,12 @@ function getVpnService(): VpnService {
   if (!vpnService) {
     mkdirSync(CONFIG_DIR, { recursive: true })
 
+    const singboxPath = getSingBoxPath()
+    log.info(`sing-box path: ${singboxPath}`)
+
     const config: VpnServiceConfig = {
       core: {
-        execPath: SINGBOX_PATH,
+        execPath: singboxPath,
         configDir: CONFIG_DIR,
         workDir: CONFIG_DIR,
         apiHost: '127.0.0.1',
@@ -96,9 +106,16 @@ export function initSingBoxHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.SINGBOX_START, async () => {
     const configPath = join(CONFIG_DIR, 'config.json')
+    const singboxPath = getSingBoxPath()
 
-    if (!existsSync(SINGBOX_PATH)) {
-      return { success: false, error: 'sing-box.exe not found' }
+    if (!existsSync(singboxPath)) {
+      log.error(`sing-box.exe not found at: ${singboxPath}`)
+      return { success: false, error: `sing-box.exe not found at: ${singboxPath}` }
+    }
+
+    if (!existsSync(configPath)) {
+      log.error(`Config not found at: ${configPath}`)
+      return { success: false, error: 'Config file not found. Please add a profile first.' }
     }
 
     return service.start({ configPath })

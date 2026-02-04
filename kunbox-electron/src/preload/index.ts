@@ -51,6 +51,33 @@ const api = {
     set: (settings: Partial<AppSettings>): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_SET, settings)
   },
 
+  kernel: {
+    getLocalVersion: (isAlpha?: boolean) => ipcRenderer.invoke('kernel:get-local-version', isAlpha),
+    getInstalledVersions: () => ipcRenderer.invoke('kernel:get-installed-versions'),
+    getRemoteReleases: (includePrerelease?: boolean) => ipcRenderer.invoke('kernel:get-remote-releases', includePrerelease),
+    download: (release: any, isAlpha?: boolean) => ipcRenderer.invoke('kernel:download', release, isAlpha),
+    rollback: (isAlpha?: boolean) => ipcRenderer.invoke('kernel:rollback', isAlpha),
+    canRollback: (isAlpha?: boolean) => ipcRenderer.invoke('kernel:can-rollback', isAlpha),
+    clearCache: () => ipcRenderer.invoke('kernel:clear-cache'),
+    openReleasesPage: () => ipcRenderer.invoke('kernel:open-releases-page'),
+    openDirectory: () => ipcRenderer.invoke('kernel:open-directory'),
+    onDownloadProgress: (callback: (progress: { downloaded: number; total: number; percent: number }) => void) => {
+      const handler = (_: unknown, progress: any) => callback(progress)
+      ipcRenderer.on('kernel:download-progress', handler)
+      return () => ipcRenderer.removeListener('kernel:download-progress', handler)
+    },
+    onDownloadComplete: (callback: () => void) => {
+      const handler = () => callback()
+      ipcRenderer.on('kernel:download-complete', handler)
+      return () => ipcRenderer.removeListener('kernel:download-complete', handler)
+    },
+    onDownloadError: (callback: (error: string) => void) => {
+      const handler = (_: unknown, error: string) => callback(error)
+      ipcRenderer.on('kernel:download-error', handler)
+      return () => ipcRenderer.removeListener('kernel:download-error', handler)
+    }
+  },
+
   window: {
     minimize: () => ipcRenderer.send(IPC_CHANNELS.WINDOW_MINIMIZE),
     maximize: () => ipcRenderer.send(IPC_CHANNELS.WINDOW_MAXIMIZE),

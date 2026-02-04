@@ -9,5 +9,6 @@ export { SingBoxManager } from './SingBoxManager'
 export { SystemProxy } from './SystemProxy'
 export { TrafficMonitor } from './TrafficMonitor'
 export { VpnService } from './VpnService'
+export { KernelManager } from './KernelManager'
 
 export * from './types'

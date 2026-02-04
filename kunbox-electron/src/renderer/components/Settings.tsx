@@ -2,15 +2,17 @@ import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import * as Switch from '@radix-ui/react-switch'
 import * as Select from '@radix-ui/react-select'
-import { ChevronDown, Check, Globe, Shield, Wifi, Gauge, Monitor, RefreshCw, Settings2 } from 'lucide-react'
+import { ChevronDown, Check, Globe, Shield, Wifi, Gauge, Monitor, RefreshCw, Settings2, Cpu } from 'lucide-react'
 import type { AppSettings } from '../../shared/types'
+import { KernelSettings } from './KernelSettings'
 
-type SettingsTab = 'proxy' | 'tun' | 'dns' | 'system'
+type SettingsTab = 'proxy' | 'tun' | 'dns' | 'kernel' | 'system'
 
 const TAB_ITEMS = [
   { id: 'proxy' as const, label: '代理', icon: Globe },
   { id: 'tun' as const, label: 'TUN', icon: Shield },
   { id: 'dns' as const, label: 'DNS', icon: Wifi },
+  { id: 'kernel' as const, label: '内核', icon: Cpu },
   { id: 'system' as const, label: '系统', icon: Monitor },
 ]
 
@@ -19,7 +21,7 @@ export default function Settings() {
   const [saving, setSaving] = useState(false)
   const [activeTab, setActiveTab] = useState<SettingsTab>(() => {
     const savedTab = localStorage.getItem('kunbox-settings-tab') as SettingsTab | null
-    if (savedTab && ['proxy', 'tun', 'dns', 'system'].includes(savedTab)) {
+    if (savedTab && ['proxy', 'tun', 'dns', 'kernel', 'system'].includes(savedTab)) {
       localStorage.removeItem('kunbox-settings-tab')
       return savedTab
     }
@@ -216,6 +218,10 @@ export default function Settings() {
                   </SettingRow>
                 </SettingCard>
               </div>
+            )}
+
+            {activeTab === 'kernel' && (
+              <KernelSettings />
             )}
           </motion.div>
         </AnimatePresence>

@@ -5,6 +5,7 @@ import log from 'electron-log'
 import { initSingBoxHandlers, cleanupBeforeQuit } from './ipc/singbox'
 import { initProfileHandlers } from './ipc/profiles'
 import { initSettingsHandlers } from './ipc/settings'
+import { initKernelHandlers } from './ipc/kernel'
 import { createTray, destroyTray, updateTrayStatus } from './tray'
 
 let mainWindow: BrowserWindow | null = null
@@ -84,6 +85,7 @@ app.whenReady().then(() => {
   initSingBoxHandlers()
   initProfileHandlers()
   initSettingsHandlers()
+  initKernelHandlers()
 
   createWindow()
 
