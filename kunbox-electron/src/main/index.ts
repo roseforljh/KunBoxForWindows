@@ -5,6 +5,7 @@ import log from 'electron-log'
 import { initSingBoxHandlers } from './ipc/singbox'
 import { initProfileHandlers } from './ipc/profiles'
 import { initSettingsHandlers } from './ipc/settings'
+import { createTray, destroyTray, updateTrayStatus } from './tray'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -40,6 +41,14 @@ function createWindow(): void {
     mainWindow?.show()
   })
 
+  // Minimize to tray instead of closing
+  mainWindow.on('close', (event) => {
+    if (!app.isQuitting) {
+      event.preventDefault()
+      mainWindow?.hide()
+    }
+  })
+
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
     return { action: 'deny' }
@@ -59,7 +68,10 @@ function createWindow(): void {
       mainWindow?.maximize()
     }
   })
-  ipcMain.on('window:close', () => mainWindow?.close())
+  ipcMain.on('window:close', () => mainWindow?.hide())
+
+  // Create system tray
+  createTray(mainWindow, getIconPath())
 }
 
 app.whenReady().then(() => {
@@ -81,9 +93,12 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit()
-  }
+  // Don't quit on window close, keep running in tray
+})
+
+app.on('before-quit', () => {
+  (app as any).isQuitting = true
+  destroyTray()
 })
 
 log.initialize()

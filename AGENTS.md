@@ -24,7 +24,6 @@ cd C:\path\to\project && npm run build
 ```
 KunBox-Windows/
 ├── kunbox-electron/    # 主项目 - KunBox sing-box 代理客户端
-└── LinJun/             # 参考项目 - 前端设计参考 (克隆自 github.com/wangdabaoqq/LinJun)
 ```
 
 ## 主项目: kunbox-electron

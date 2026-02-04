@@ -1,83 +1,185 @@
-import { Tray, Menu, nativeImage, app, BrowserWindow } from 'electron'
-import { join } from 'path'
+import { Tray, Menu, nativeImage, app, BrowserWindow, shell } from 'electron'
 import log from 'electron-log'
 
 let tray: Tray | null = null
 let isConnected = false
+let currentWindow: BrowserWindow | null = null
+let systemProxyEnabled = true
+let tunModeEnabled = false
 
-export function createTray(mainWindow: BrowserWindow): Tray {
-  const iconPath = join(process.resourcesPath, 'icon.png')
+export function createTray(mainWindow: BrowserWindow, iconPath: string): Tray {
+  currentWindow = mainWindow
   
   let icon: Electron.NativeImage
   try {
     icon = nativeImage.createFromPath(iconPath)
     if (icon.isEmpty()) {
+      log.warn('Tray icon is empty, using default')
       icon = nativeImage.createEmpty()
     }
-  } catch {
+    // Resize for tray (16x16 on Windows)
+    icon = icon.resize({ width: 16, height: 16 })
+  } catch (err) {
+    log.error('Failed to load tray icon:', err)
     icon = nativeImage.createEmpty()
   }
 
   tray = new Tray(icon)
-  tray.setToolTip('KunBox')
+  tray.setToolTip('KunBox - 未连接')
 
-  const contextMenu = buildContextMenu(mainWindow)
-  tray.setContextMenu(contextMenu)
+  updateContextMenu()
 
   tray.on('click', () => {
     if (mainWindow.isVisible()) {
       mainWindow.focus()
     } else {
       mainWindow.show()
+      mainWindow.focus()
     }
   })
 
   tray.on('double-click', () => {
-    log.info('Tray double-click: toggle connection (placeholder)')
+    mainWindow.show()
+    mainWindow.focus()
   })
 
+  log.info('System tray created')
   return tray
 }
 
-function buildContextMenu(mainWindow: BrowserWindow): Electron.Menu {
-  return Menu.buildFromTemplate([
+function updateContextMenu(): void {
+  if (!tray || !currentWindow) return
+
+  const template: Electron.MenuItemConstructorOptions[] = [
     {
-      label: '显示窗口',
+      label: `KunBox ${isConnected ? '(已连接)' : '(未连接)'}`,
+      enabled: false,
+      icon: undefined
+    },
+    { type: 'separator' },
+    {
+      label: isConnected ? '断开连接' : '启动连接',
       click: () => {
-        mainWindow.show()
-        mainWindow.focus()
+        currentWindow?.webContents.send('tray:toggle-connection')
+      }
+    },
+    {
+      label: '重启内核',
+      enabled: isConnected,
+      click: () => {
+        currentWindow?.webContents.send('tray:restart-core')
       }
     },
     { type: 'separator' },
     {
-      label: isConnected ? '断开连接' : '连接',
-      click: () => {
-        log.info(`Tray: ${isConnected ? 'Disconnect' : 'Connect'} clicked (placeholder)`)
+      label: '代理模式',
+      submenu: [
+        {
+          label: '规则模式',
+          type: 'radio',
+          checked: true,
+          click: () => {
+            currentWindow?.webContents.send('tray:set-mode', 'rule')
+          }
+        },
+        {
+          label: '全局代理',
+          type: 'radio',
+          click: () => {
+            currentWindow?.webContents.send('tray:set-mode', 'global')
+          }
+        },
+        {
+          label: '直连模式',
+          type: 'radio',
+          click: () => {
+            currentWindow?.webContents.send('tray:set-mode', 'direct')
+          }
+        }
+      ]
+    },
+    { type: 'separator' },
+    {
+      label: '系统代理',
+      type: 'checkbox',
+      checked: systemProxyEnabled,
+      click: (menuItem) => {
+        systemProxyEnabled = menuItem.checked
+        currentWindow?.webContents.send('tray:toggle-system-proxy', menuItem.checked)
+      }
+    },
+    {
+      label: 'TUN 模式',
+      type: 'checkbox',
+      checked: tunModeEnabled,
+      click: (menuItem) => {
+        tunModeEnabled = menuItem.checked
+        currentWindow?.webContents.send('tray:toggle-tun', menuItem.checked)
       }
     },
     { type: 'separator' },
     {
-      label: '重启核心',
+      label: '复制代理命令',
+      submenu: [
+        {
+          label: 'PowerShell',
+          click: () => {
+            const cmd = `$env:HTTP_PROXY="http://127.0.0.1:7890"; $env:HTTPS_PROXY="http://127.0.0.1:7890"`
+            require('electron').clipboard.writeText(cmd)
+          }
+        },
+        {
+          label: 'CMD',
+          click: () => {
+            const cmd = `set HTTP_PROXY=http://127.0.0.1:7890 && set HTTPS_PROXY=http://127.0.0.1:7890`
+            require('electron').clipboard.writeText(cmd)
+          }
+        },
+        {
+          label: 'Bash',
+          click: () => {
+            const cmd = `export http_proxy=http://127.0.0.1:7890; export https_proxy=http://127.0.0.1:7890`
+            require('electron').clipboard.writeText(cmd)
+          }
+        }
+      ]
+    },
+    { type: 'separator' },
+    {
+      label: '打开主界面',
       click: () => {
-        log.info('Tray: Restart core clicked (placeholder)')
+        currentWindow?.show()
+        currentWindow?.focus()
+      }
+    },
+    {
+      label: '打开日志目录',
+      click: () => {
+        shell.openPath(app.getPath('logs'))
       }
     },
     { type: 'separator' },
     {
-      label: '退出',
+      label: '退出 KunBox',
       click: () => {
+        (app as any).isQuitting = true
         app.quit()
       }
     }
-  ])
+  ]
+
+  const contextMenu = Menu.buildFromTemplate(template)
+  tray.setContextMenu(contextMenu)
 }
 
-export function updateTrayMenu(mainWindow: BrowserWindow, connected: boolean): void {
+export function updateTrayStatus(connected: boolean, sysProxy?: boolean, tun?: boolean): void {
   isConnected = connected
+  if (sysProxy !== undefined) systemProxyEnabled = sysProxy
+  if (tun !== undefined) tunModeEnabled = tun
+  
   if (tray) {
-    const contextMenu = buildContextMenu(mainWindow)
-    tray.setContextMenu(contextMenu)
     tray.setToolTip(`KunBox - ${connected ? '已连接' : '未连接'}`)
+    updateContextMenu()
   }
 }
 
@@ -86,4 +188,5 @@ export function destroyTray(): void {
     tray.destroy()
     tray = null
   }
+  log.info('System tray destroyed')
 }
