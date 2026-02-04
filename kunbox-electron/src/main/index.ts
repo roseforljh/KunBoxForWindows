@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell, ipcMain } from 'electron'
+import { app, BrowserWindow, shell, ipcMain, nativeImage } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import log from 'electron-log'
@@ -8,7 +8,16 @@ import { initSettingsHandlers } from './ipc/settings'
 
 let mainWindow: BrowserWindow | null = null
 
+function getIconPath(): string {
+  if (is.dev) {
+    return join(__dirname, '../../build/icon.png')
+  }
+  return join(process.resourcesPath, 'icon.png')
+}
+
 function createWindow(): void {
+  const iconPath = getIconPath()
+  
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -18,6 +27,7 @@ function createWindow(): void {
     frame: false,
     titleBarStyle: 'hidden',
     backgroundColor: '#050505',
+    icon: iconPath,
     webPreferences: {
       preload: join(__dirname, '../preload/index.mjs'),
       sandbox: false,
