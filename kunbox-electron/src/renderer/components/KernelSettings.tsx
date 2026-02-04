@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { 
   Download, RotateCcw, Trash2, ExternalLink, FolderOpen, RefreshCw, 
-  Check, XCircle, AlertCircle, Loader2, Cpu, CheckCircle2
+  Check, XCircle, AlertCircle, Loader2, CheckCircle2
 } from 'lucide-react'
 
 interface KernelVersion {
@@ -26,15 +26,18 @@ interface ToastMessage {
   type: 'success' | 'error' | 'info'
 }
 
+type KernelBranch = 'stable' | 'alpha'
+
 export function KernelSettings() {
+  const [activeBranch, setActiveBranch] = useState<KernelBranch>(() => {
+    return (localStorage.getItem('kunbox-kernel-branch') as KernelBranch) || 'stable'
+  })
   const [localStable, setLocalStable] = useState<KernelVersion | null>(null)
   const [localAlpha, setLocalAlpha] = useState<KernelVersion | null>(null)
   const [remoteReleases, setRemoteReleases] = useState<RemoteRelease[]>([])
   const [loading, setLoading] = useState(true)
-  const [downloadingStable, setDownloadingStable] = useState(false)
-  const [downloadingAlpha, setDownloadingAlpha] = useState(false)
-  const [canRollbackStable, setCanRollbackStable] = useState(false)
-  const [canRollbackAlpha, setCanRollbackAlpha] = useState(false)
+  const [downloading, setDownloading] = useState(false)
+  const [canRollback, setCanRollback] = useState(false)
   const [toasts, setToasts] = useState<ToastMessage[]>([])
 
   const showToast = useCallback((message: string, type: 'success' | 'error' | 'info' = 'info') => {
@@ -58,27 +61,24 @@ export function KernelSettings() {
       setLocalStable(stable)
       setLocalAlpha(alpha)
       setRemoteReleases(releases)
-      setCanRollbackStable(rollbackStable)
-      setCanRollbackAlpha(rollbackAlpha)
+      setCanRollback(activeBranch === 'stable' ? rollbackStable : rollbackAlpha)
     } catch (err) {
       showToast('加载版本信息失败', 'error')
     } finally {
       setLoading(false)
     }
-  }, [showToast])
+  }, [showToast, activeBranch])
 
   useEffect(() => {
     loadVersions()
 
     const unsubComplete = window.api.kernel.onDownloadComplete(() => {
-      setDownloadingStable(false)
-      setDownloadingAlpha(false)
+      setDownloading(false)
       showToast('内核更新完成', 'success')
       loadVersions()
     })
     const unsubError = window.api.kernel.onDownloadError((err) => {
-      setDownloadingStable(false)
-      setDownloadingAlpha(false)
+      setDownloading(false)
       showToast(`下载失败: ${err}`, 'error')
     })
 
@@ -88,24 +88,41 @@ export function KernelSettings() {
     }
   }, [loadVersions, showToast])
 
-  const handleDownload = async (release: RemoteRelease, isAlpha: boolean) => {
-    if (isAlpha) {
-      setDownloadingAlpha(true)
-    } else {
-      setDownloadingStable(true)
+  useEffect(() => {
+    // Update canRollback when branch changes
+    const updateRollback = async () => {
+      const result = await window.api.kernel.canRollback(activeBranch === 'alpha')
+      setCanRollback(result)
     }
+    updateRollback()
+  }, [activeBranch])
+
+  const handleBranchChange = (branch: KernelBranch) => {
+    setActiveBranch(branch)
+    localStorage.setItem('kunbox-kernel-branch', branch)
+    showToast(`已切换到${branch === 'stable' ? '正式版' : '测试版'}内核`, 'info')
+  }
+
+  const currentLocal = activeBranch === 'stable' ? localStable : localAlpha
+  const currentRemote = remoteReleases.find(r => 
+    activeBranch === 'stable' ? !r.isPrerelease : r.isPrerelease
+  )
+  const isUpdatable = currentRemote && currentLocal?.version !== currentRemote.version
+
+  const handleDownload = async () => {
+    if (!currentRemote) return
+    setDownloading(true)
     try {
-      await window.api.kernel.download(release, isAlpha)
+      await window.api.kernel.download(currentRemote, activeBranch === 'alpha')
     } catch (err) {
       showToast(String(err), 'error')
-      setDownloadingStable(false)
-      setDownloadingAlpha(false)
+      setDownloading(false)
     }
   }
 
-  const handleRollback = async (isAlpha: boolean) => {
+  const handleRollback = async () => {
     try {
-      const result = await window.api.kernel.rollback(isAlpha)
+      const result = await window.api.kernel.rollback(activeBranch === 'alpha')
       if (result.success) {
         showToast('已回退到上一版本', 'success')
         loadVersions()
@@ -129,196 +146,163 @@ export function KernelSettings() {
     }
   }
 
-  const remoteStable = remoteReleases.find(r => !r.isPrerelease)
-  const remoteBeta = remoteReleases.find(r => r.isPrerelease)
-
-  const stableUpdatable = remoteStable && localStable?.version !== remoteStable.version
-  const betaUpdatable = remoteBeta && (!localAlpha || localAlpha.version !== remoteBeta.version)
-
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 rounded-xl bg-gradient-to-br from-[var(--accent-primary)]/20 to-[var(--accent-primary)]/5 border border-[var(--accent-primary)]/20">
-            <Cpu className="w-5 h-5 text-[var(--accent-primary)]" />
-          </div>
-          <div>
-            <h3 className="text-base font-semibold text-[var(--text-primary)]">sing-box 内核</h3>
-            <p className="text-xs text-[var(--text-muted)]">管理代理核心程序版本</p>
-          </div>
-        </div>
-        <div className="flex gap-1.5">
-          <ActionButton 
-            icon={RefreshCw} 
-            onClick={loadVersions} 
-            loading={loading}
-            tooltip="刷新"
+    <div className="space-y-8">
+      {/* Branch Selection */}
+      <div>
+        <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-4">选择内核版本</h3>
+        <div className="grid grid-cols-2 gap-4">
+          <BranchCard
+            title="正式版"
+            subtitle="Stable"
+            description="推荐使用，稳定可靠"
+            selected={activeBranch === 'stable'}
+            onClick={() => handleBranchChange('stable')}
+            color="emerald"
           />
-          <ActionButton 
-            icon={ExternalLink} 
-            onClick={() => window.api.kernel.openReleasesPage()}
-            tooltip="GitHub"
-          />
-          <ActionButton 
-            icon={FolderOpen} 
-            onClick={() => window.api.kernel.openDirectory()}
-            tooltip="打开目录"
-          />
-          <ActionButton 
-            icon={Trash2} 
-            onClick={handleClearCache}
-            tooltip="清理缓存"
+          <BranchCard
+            title="测试版"
+            subtitle="Alpha"
+            description="包含最新功能，可能不稳定"
+            selected={activeBranch === 'alpha'}
+            onClick={() => handleBranchChange('alpha')}
+            color="amber"
           />
         </div>
       </div>
 
-      {/* Stable Version Card */}
-      <motion.div 
+      {/* Current Branch Details */}
+      <motion.div
+        key={activeBranch}
         initial={{ opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.3 }}
-        className="glass-card rounded-2xl p-5 border border-[var(--glass-border)]"
+        transition={{ duration: 0.2 }}
+        className="glass-card rounded-2xl p-6 border border-[var(--glass-border)]"
       >
-        <div className="flex items-start justify-between mb-4">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center">
-              <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+            <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
+              activeBranch === 'stable' 
+                ? 'bg-emerald-500/10' 
+                : 'bg-amber-500/10'
+            }`}>
+              {activeBranch === 'stable' 
+                ? <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                : <AlertCircle className="w-5 h-5 text-amber-400" />
+              }
             </div>
             <div>
-              <div className="flex items-center gap-2">
-                <span className="font-semibold text-[var(--text-primary)]">正式版</span>
-                <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-emerald-500/20 text-emerald-400 font-medium">
-                  Stable
-                </span>
-              </div>
-              <p className="text-xs text-[var(--text-muted)] mt-0.5">推荐使用，稳定可靠</p>
+              <h4 className="font-semibold text-[var(--text-primary)]">
+                {activeBranch === 'stable' ? '正式版' : '测试版'}内核
+              </h4>
+              <p className="text-xs text-[var(--text-muted)]">sing-box</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
-            {canRollbackStable && (
-              <motion.button
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={() => handleRollback(false)}
-                className="p-2 rounded-lg bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] transition-colors"
-                title="回退版本"
-              >
-                <RotateCcw className="w-4 h-4 text-[var(--text-muted)]" />
-              </motion.button>
-            )}
-            {stableUpdatable && remoteStable && (
-              <motion.button
-                whileHover={{ scale: 1.02 }}
-                whileTap={{ scale: 0.98 }}
-                onClick={() => handleDownload(remoteStable, false)}
-                disabled={downloadingStable}
-                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 text-white text-sm font-medium shadow-lg shadow-emerald-500/20 transition-all disabled:opacity-70"
-              >
-                {downloadingStable ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Download className="w-4 h-4" />
-                )}
-                <span>{downloadingStable ? '下载中...' : `更新 ${remoteStable.version}`}</span>
-              </motion.button>
+            <ActionButton icon={RefreshCw} onClick={loadVersions} loading={loading} tooltip="刷新" />
+            <ActionButton icon={ExternalLink} onClick={() => window.api.kernel.openReleasesPage()} tooltip="GitHub" />
+            <ActionButton icon={FolderOpen} onClick={() => window.api.kernel.openDirectory()} tooltip="打开目录" />
+            <ActionButton icon={Trash2} onClick={handleClearCache} tooltip="清理缓存" />
+            {canRollback && (
+              <ActionButton icon={RotateCcw} onClick={handleRollback} tooltip="回退版本" />
             )}
           </div>
         </div>
-        <div className="flex items-center gap-6 text-sm">
-          <div className="flex items-center gap-2">
-            <span className="text-[var(--text-muted)]">本地:</span>
-            <span className={`font-mono ${localStable ? 'text-emerald-400' : 'text-[var(--text-faint)]'}`}>
-              {loading ? '...' : localStable?.version || '未安装'}
-            </span>
+
+        {/* Version Info */}
+        <div className="grid grid-cols-2 gap-4 mb-6">
+          <div className="p-4 rounded-xl bg-[var(--bg-tertiary)]/50">
+            <div className="text-xs text-[var(--text-muted)] mb-1">本地版本</div>
+            <div className={`text-lg font-mono font-semibold ${
+              currentLocal 
+                ? (activeBranch === 'stable' ? 'text-emerald-400' : 'text-amber-400')
+                : 'text-[var(--text-faint)]'
+            }`}>
+              {loading ? '...' : currentLocal?.version || '未安装'}
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="text-[var(--text-muted)]">最新:</span>
-            <span className="font-mono text-[var(--text-secondary)]">
-              {remoteStable?.version || '-'}
-            </span>
+          <div className="p-4 rounded-xl bg-[var(--bg-tertiary)]/50">
+            <div className="text-xs text-[var(--text-muted)] mb-1">最新版本</div>
+            <div className="text-lg font-mono font-semibold text-[var(--text-primary)]">
+              {currentRemote?.version || '-'}
+            </div>
           </div>
         </div>
+
+        {/* Update Button */}
+        {isUpdatable && currentRemote && (
+          <motion.button
+            whileHover={{ scale: 1.01 }}
+            whileTap={{ scale: 0.99 }}
+            onClick={handleDownload}
+            disabled={downloading}
+            className={`w-full flex items-center justify-center gap-2 py-3 rounded-xl text-white font-medium transition-all disabled:opacity-70 ${
+              activeBranch === 'stable'
+                ? 'bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 shadow-lg shadow-emerald-500/20'
+                : 'bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 shadow-lg shadow-amber-500/20'
+            }`}
+          >
+            {downloading ? (
+              <>
+                <Loader2 className="w-5 h-5 animate-spin" />
+                <span>正在下载...</span>
+              </>
+            ) : (
+              <>
+                <Download className="w-5 h-5" />
+                <span>更新到 {currentRemote.version}</span>
+              </>
+            )}
+          </motion.button>
+        )}
+
+        {!isUpdatable && currentLocal && (
+          <div className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-[var(--bg-tertiary)]/50 text-[var(--text-muted)]">
+            <Check className="w-5 h-5" />
+            <span>已是最新版本</span>
+          </div>
+        )}
+
+        {!currentLocal && !loading && (
+          <motion.button
+            whileHover={{ scale: 1.01 }}
+            whileTap={{ scale: 0.99 }}
+            onClick={handleDownload}
+            disabled={downloading || !currentRemote}
+            className={`w-full flex items-center justify-center gap-2 py-3 rounded-xl text-white font-medium transition-all disabled:opacity-70 ${
+              activeBranch === 'stable'
+                ? 'bg-gradient-to-r from-emerald-500 to-emerald-600 shadow-lg shadow-emerald-500/20'
+                : 'bg-gradient-to-r from-amber-500 to-amber-600 shadow-lg shadow-amber-500/20'
+            }`}
+          >
+            {downloading ? (
+              <>
+                <Loader2 className="w-5 h-5 animate-spin" />
+                <span>正在下载...</span>
+              </>
+            ) : (
+              <>
+                <Download className="w-5 h-5" />
+                <span>安装 {currentRemote?.version || '内核'}</span>
+              </>
+            )}
+          </motion.button>
+        )}
+
+        {/* Version Details */}
+        {currentLocal?.versionDetail && (
+          <div className="mt-4 p-3 rounded-lg bg-[var(--bg-tertiary)]/30 text-xs font-mono text-[var(--text-faint)] whitespace-pre-wrap max-h-24 overflow-y-auto">
+            {currentLocal.versionDetail}
+          </div>
+        )}
       </motion.div>
 
-      {/* Beta Version Card */}
-      <motion.div 
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.3, delay: 0.1 }}
-        className="glass-card rounded-2xl p-5 border border-[var(--glass-border)]"
-      >
-        <div className="flex items-start justify-between mb-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-amber-500/10 flex items-center justify-center">
-              <AlertCircle className="w-5 h-5 text-amber-400" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-semibold text-[var(--text-primary)]">测试版</span>
-                <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-amber-500/20 text-amber-400 font-medium">
-                  Beta
-                </span>
-              </div>
-              <p className="text-xs text-[var(--text-muted)] mt-0.5">包含最新功能，可能不稳定</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            {canRollbackAlpha && (
-              <motion.button
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={() => handleRollback(true)}
-                className="p-2 rounded-lg bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] transition-colors"
-                title="回退版本"
-              >
-                <RotateCcw className="w-4 h-4 text-[var(--text-muted)]" />
-              </motion.button>
-            )}
-            {betaUpdatable && remoteBeta && (
-              <motion.button
-                whileHover={{ scale: 1.02 }}
-                whileTap={{ scale: 0.98 }}
-                onClick={() => handleDownload(remoteBeta, true)}
-                disabled={downloadingAlpha}
-                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-white text-sm font-medium shadow-lg shadow-amber-500/20 transition-all disabled:opacity-70"
-              >
-                {downloadingAlpha ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Download className="w-4 h-4" />
-                )}
-                <span>{downloadingAlpha ? '下载中...' : `安装 ${remoteBeta.version}`}</span>
-              </motion.button>
-            )}
-          </div>
-        </div>
-        <div className="flex items-center gap-6 text-sm">
-          <div className="flex items-center gap-2">
-            <span className="text-[var(--text-muted)]">本地:</span>
-            <span className={`font-mono ${localAlpha ? 'text-amber-400' : 'text-[var(--text-faint)]'}`}>
-              {loading ? '...' : localAlpha?.version || '未安装'}
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-[var(--text-muted)]">最新:</span>
-            <span className="font-mono text-[var(--text-secondary)]">
-              {remoteBeta?.version || '-'}
-            </span>
-          </div>
-        </div>
-      </motion.div>
-
-      {/* Info */}
-      <motion.div 
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ duration: 0.3, delay: 0.2 }}
-        className="text-xs text-[var(--text-faint)] space-y-1"
-      >
-        <p>内核将从 GitHub 官方仓库下载并自动安装。</p>
+      {/* Tips */}
+      <div className="text-xs text-[var(--text-faint)] space-y-1">
+        <p>切换版本后，将使用对应分支的内核运行代理服务。</p>
         <p>更新前会自动备份当前版本，支持一键回退。</p>
-      </motion.div>
+      </div>
 
       {/* Toast Notifications */}
       <AnimatePresence>
@@ -357,6 +341,68 @@ export function KernelSettings() {
   )
 }
 
+function BranchCard({
+  title,
+  subtitle,
+  description,
+  selected,
+  onClick,
+  color
+}: {
+  title: string
+  subtitle: string
+  description: string
+  selected: boolean
+  onClick: () => void
+  color: 'emerald' | 'amber'
+}) {
+  const colorClasses = {
+    emerald: {
+      selected: 'border-emerald-500/50 bg-emerald-500/5',
+      icon: 'bg-emerald-500/20',
+      iconText: 'text-emerald-400',
+      badge: 'bg-emerald-500/20 text-emerald-400'
+    },
+    amber: {
+      selected: 'border-amber-500/50 bg-amber-500/5',
+      icon: 'bg-amber-500/20',
+      iconText: 'text-amber-400',
+      badge: 'bg-amber-500/20 text-amber-400'
+    }
+  }
+  const colors = colorClasses[color]
+
+  return (
+    <motion.button
+      whileHover={{ scale: 1.02 }}
+      whileTap={{ scale: 0.98 }}
+      onClick={onClick}
+      className={`relative p-5 rounded-2xl border-2 transition-all text-left ${
+        selected 
+          ? colors.selected
+          : 'border-[var(--border-secondary)] bg-[var(--bg-secondary)] hover:border-[var(--border-primary)]'
+      }`}
+    >
+      {selected && (
+        <motion.div
+          initial={{ scale: 0 }}
+          animate={{ scale: 1 }}
+          className={`absolute top-3 right-3 w-5 h-5 rounded-full ${colors.icon} flex items-center justify-center`}
+        >
+          <Check className={`w-3 h-3 ${colors.iconText}`} />
+        </motion.div>
+      )}
+      <div className="flex items-center gap-2 mb-2">
+        <span className="font-semibold text-[var(--text-primary)]">{title}</span>
+        <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-medium ${colors.badge}`}>
+          {subtitle}
+        </span>
+      </div>
+      <p className="text-xs text-[var(--text-muted)]">{description}</p>
+    </motion.button>
+  )
+}
+
 function ActionButton({ 
   icon: Icon, 
   onClick, 
@@ -370,11 +416,11 @@ function ActionButton({
 }) {
   return (
     <motion.button
-      whileHover={{ scale: 1.05 }}
-      whileTap={{ scale: 0.95 }}
+      whileHover={{ scale: 1.1 }}
+      whileTap={{ scale: 0.9 }}
       onClick={onClick}
       disabled={loading}
-      className="p-2.5 rounded-xl bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] border border-transparent hover:border-[var(--border-secondary)] transition-all disabled:opacity-50"
+      className="p-2 rounded-lg bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-50"
       title={tooltip}
     >
       <Icon className={`w-4 h-4 text-[var(--text-muted)] ${loading ? 'animate-spin' : ''}`} />
