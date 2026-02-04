@@ -1,11 +1,13 @@
 import { Tray, Menu, nativeImage, app, BrowserWindow, shell } from 'electron'
 import log from 'electron-log'
+import { getServiceInstance } from './ipc/singbox'
 
 let tray: Tray | null = null
 let isConnected = false
 let currentWindow: BrowserWindow | null = null
 let systemProxyEnabled = true
 let tunModeEnabled = false
+let currentMode: 'rule' | 'global' | 'direct' = 'rule'
 
 export function createTray(mainWindow: BrowserWindow, iconPath: string): Tray {
   currentWindow = mainWindow
@@ -77,23 +79,37 @@ function updateContextMenu(): void {
         {
           label: '规则模式',
           type: 'radio',
-          checked: true,
+          checked: currentMode === 'rule',
           click: () => {
+            currentMode = 'rule'
+            const service = getServiceInstance()
+            service?.setMode('rule')
             currentWindow?.webContents.send('tray:set-mode', 'rule')
+            updateContextMenu()
           }
         },
         {
           label: '全局代理',
           type: 'radio',
+          checked: currentMode === 'global',
           click: () => {
+            currentMode = 'global'
+            const service = getServiceInstance()
+            service?.setMode('global')
             currentWindow?.webContents.send('tray:set-mode', 'global')
+            updateContextMenu()
           }
         },
         {
           label: '直连模式',
           type: 'radio',
+          checked: currentMode === 'direct',
           click: () => {
+            currentMode = 'direct'
+            const service = getServiceInstance()
+            service?.setMode('direct')
             currentWindow?.webContents.send('tray:set-mode', 'direct')
+            updateContextMenu()
           }
         }
       ]
@@ -103,8 +119,16 @@ function updateContextMenu(): void {
       label: '系统代理',
       type: 'checkbox',
       checked: systemProxyEnabled,
-      click: (menuItem) => {
+      click: async (menuItem) => {
         systemProxyEnabled = menuItem.checked
+        const service = getServiceInstance()
+        if (service) {
+          if (menuItem.checked) {
+            await service.enableSystemProxy()
+          } else {
+            await service.disableSystemProxy()
+          }
+        }
         currentWindow?.webContents.send('tray:toggle-system-proxy', menuItem.checked)
       }
     },
@@ -172,10 +196,11 @@ function updateContextMenu(): void {
   tray.setContextMenu(contextMenu)
 }
 
-export function updateTrayStatus(connected: boolean, sysProxy?: boolean, tun?: boolean): void {
+export function updateTrayStatus(connected: boolean, sysProxy?: boolean, tun?: boolean, mode?: 'rule' | 'global' | 'direct'): void {
   isConnected = connected
   if (sysProxy !== undefined) systemProxyEnabled = sysProxy
   if (tun !== undefined) tunModeEnabled = tun
+  if (mode !== undefined) currentMode = mode
   
   if (tray) {
     tray.setToolTip(`KunBox - ${connected ? '已连接' : '未连接'}`)
