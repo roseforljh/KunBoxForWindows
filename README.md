@@ -1,6 +1,12 @@
 # KunBox for Windows
 
-A modern, cross-platform sing-box proxy client built with Electron, React, and TypeScript.
+<p align="center">
+  <img src="kunbox-electron/build/icon.png" alt="KunBox Logo" width="128" height="128">
+</p>
+
+<p align="center">
+  A modern, cross-platform sing-box proxy client built with Electron, React, and TypeScript.
+</p>
 
 ## Features
 
