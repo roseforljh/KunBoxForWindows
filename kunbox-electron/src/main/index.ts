@@ -2,7 +2,7 @@ import { app, BrowserWindow, shell, ipcMain, nativeImage } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import log from 'electron-log'
-import { initSingBoxHandlers } from './ipc/singbox'
+import { initSingBoxHandlers, cleanupBeforeQuit } from './ipc/singbox'
 import { initProfileHandlers } from './ipc/profiles'
 import { initSettingsHandlers } from './ipc/settings'
 import { createTray, destroyTray, updateTrayStatus } from './tray'
@@ -96,9 +96,24 @@ app.on('window-all-closed', () => {
   // Don't quit on window close, keep running in tray
 })
 
-app.on('before-quit', () => {
-  (app as any).isQuitting = true
-  destroyTray()
+app.on('before-quit', async (event) => {
+  if (!(app as any).cleanupDone) {
+    event.preventDefault()
+    ;(app as any).isQuitting = true
+    
+    log.info('App quitting, performing cleanup...')
+    
+    // Perform safe cleanup
+    await cleanupBeforeQuit()
+    
+    // Destroy tray
+    destroyTray()
+    
+    ;(app as any).cleanupDone = true
+    
+    // Now actually quit
+    app.quit()
+  }
 })
 
 log.initialize()

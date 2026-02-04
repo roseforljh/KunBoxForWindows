@@ -1,5 +1,5 @@
 import { ipcMain, BrowserWindow } from 'electron'
-import { spawn, ChildProcess } from 'child_process'
+import { spawn, ChildProcess, exec } from 'child_process'
 import { join } from 'path'
 import { existsSync, mkdirSync, writeFileSync } from 'fs'
 import axios from 'axios'
@@ -183,4 +183,57 @@ export function initSingBoxHandlers() {
     await new Promise(resolve => setTimeout(resolve, 500))
     return ipcMain.emit(IPC_CHANNELS.SINGBOX_START)
   })
+}
+
+// Clear Windows system proxy settings
+function clearSystemProxy(): Promise<void> {
+  return new Promise((resolve) => {
+    log.info('Clearing system proxy settings...')
+    
+    // Disable system proxy via registry
+    const commands = [
+      'reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" /v ProxyEnable /t REG_DWORD /d 0 /f',
+      'reg delete "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings" /v ProxyServer /f'
+    ]
+    
+    let completed = 0
+    commands.forEach(cmd => {
+      exec(cmd, { windowsHide: true }, (error) => {
+        if (error) {
+          log.warn(`Failed to clear proxy setting: ${error.message}`)
+        }
+        completed++
+        if (completed >= commands.length) {
+          log.info('System proxy settings cleared')
+          resolve()
+        }
+      })
+    })
+    
+    // Timeout fallback
+    setTimeout(resolve, 2000)
+  })
+}
+
+// Safe cleanup before app quit
+export async function cleanupBeforeQuit(): Promise<void> {
+  log.info('Performing safe cleanup before quit...')
+  
+  // Stop traffic monitor
+  stopTrafficMonitor()
+  
+  // Stop sing-box process
+  if (singboxProcess && !singboxProcess.killed) {
+    log.info('Stopping sing-box process...')
+    singboxProcess.kill()
+    await new Promise(resolve => setTimeout(resolve, 500))
+  }
+  
+  // Kill any remaining sing-box processes
+  await killExistingProcesses()
+  
+  // Clear system proxy
+  await clearSystemProxy()
+  
+  log.info('Cleanup completed')
 }
