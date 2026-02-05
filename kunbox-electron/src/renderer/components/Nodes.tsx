@@ -173,7 +173,7 @@ export default function Nodes() {
       await window.api.node.delete(deleteTarget.tag)
       await loadNodes()
       setDeleteModalOpen(false)
-      toast.success('节点已删除')
+      toast.showRestartToast('节点已删除')
       setDeleteTarget(null)
     } catch (err) {
       toast.error(`删除失败: ${err}`)
@@ -206,7 +206,7 @@ export default function Nodes() {
       await window.api.node.add(link, target)
       await loadNodes()
       await loadProfiles()
-      toast.success('节点添加成功')
+      toast.showRestartToast('节点添加成功')
     } catch (err) {
       toast.error(`添加失败: ${err}`)
     }

@@ -34,6 +34,10 @@ interface ToastMessage {
   id: number
   message: string
   type: 'success' | 'error' | 'info'
+  action?: {
+    label: string
+    onClick: () => void
+  }
 }
 
 interface RuleSetItem {
@@ -70,17 +74,6 @@ const defaultRuleSets: RuleSetItem[] = [
     format: 'binary',
     outboundMode: 'direct',
     enabled: true,
-    isBuiltIn: true
-  },
-  {
-    id: '3',
-    tag: 'geosite-geolocation-!cn',
-    name: '国外网站',
-    url: 'https://ghp.ci/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-geolocation-!cn.srs',
-    type: 'remote',
-    format: 'binary',
-    outboundMode: 'proxy',
-    enabled: false,
     isBuiltIn: true
   },
   {
@@ -327,19 +320,9 @@ export default function RuleSets() {
 
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [isLoadingData, setIsLoadingData] = useState(false)
+  const [isRestarting, setIsRestarting] = useState(false)
   const { nodes, loadNodes } = useNodesStore()
   const { state: vpnState, setNeedsRestart } = useConnectionStore()
-
-  // Mark needs restart when rulesets change while VPN is running
-  const updateRuleSets = useCallback((updater: (prev: RuleSetItem[]) => RuleSetItem[]) => {
-    setRuleSets(prev => {
-      const newRuleSets = updater(prev)
-      if (vpnState === 'connected') {
-        setNeedsRestart(true)
-      }
-      return newRuleSets
-    })
-  }, [vpnState, setNeedsRestart])
 
   const [dialogData, setDialogData] = useState({
     tag: '',
@@ -352,15 +335,57 @@ export default function RuleSets() {
   })
 
   const showToast = useCallback(
-    (message: string, type: 'success' | 'error' | 'info' = 'info') => {
+    (message: string, type: 'success' | 'error' | 'info' = 'info', action?: { label: string; onClick: () => void }) => {
       const id = Date.now()
-      setToasts((prev) => [...prev, { id, message, type }])
+      setToasts((prev) => [...prev, { id, message, type, action }])
       setTimeout(() => {
         setToasts((prev) => prev.filter((t) => t.id !== id))
-      }, 3000)
+      }, action ? 8000 : 3000)
     },
     []
   )
+
+  // Restart VPN function
+  const restartVpn = useCallback(async () => {
+    if (isRestarting) return
+    setIsRestarting(true)
+    try {
+      const result = await window.api.singbox.restart()
+      if (result.success) {
+        setNeedsRestart(false)
+        showToast('VPN 已重启', 'success')
+      } else {
+        showToast(`重启失败: ${result.error}`, 'error')
+      }
+    } catch {
+      showToast('重启失败', 'error')
+    } finally {
+      setIsRestarting(false)
+    }
+  }, [isRestarting, setNeedsRestart, showToast])
+
+  // Show toast with restart button when VPN needs restart
+  const showRestartToast = useCallback((message: string) => {
+    if (vpnState === 'connected') {
+      showToast(message, 'info', {
+        label: '重启',
+        onClick: restartVpn
+      })
+    } else {
+      showToast(message, 'success')
+    }
+  }, [vpnState, showToast, restartVpn])
+
+  // Mark needs restart when rulesets change while VPN is running
+  const updateRuleSets = useCallback((updater: (prev: RuleSetItem[]) => RuleSetItem[]) => {
+    setRuleSets(prev => {
+      const newRuleSets = updater(prev)
+      if (vpnState === 'connected') {
+        setNeedsRestart(true)
+      }
+      return newRuleSets
+    })
+  }, [vpnState, setNeedsRestart])
 
   // Load rulesets from main process on mount
   useEffect(() => {
@@ -407,16 +432,28 @@ export default function RuleSets() {
     setHubLoading(true)
     setHubError(null)
     try {
-      const response = await fetch(
-        'https://api.github.com/repos/SagerNet/sing-geosite/git/trees/rule-set?recursive=1',
-        {
-          headers: {
-            'User-Agent': 'KunBox-Windows-App'
+      // Detect Tauri environment
+      const isTauri = '__TAURI_INTERNALS__' in window
+      
+      let data: { tree: Array<{ type: string; path: string }> }
+      
+      if (isTauri && window.api.ruleset.fetchHub) {
+        // Use Tauri backend API (proxy support)
+        data = await window.api.ruleset.fetchHub()
+      } else {
+        // Electron: use direct fetch
+        const response = await fetch(
+          'https://api.github.com/repos/SagerNet/sing-geosite/git/trees/rule-set?recursive=1',
+          {
+            headers: {
+              'User-Agent': 'KunBox-Windows-App'
+            }
           }
-        }
-      )
-      if (!response.ok) throw new Error('Failed to fetch')
-      const data = await response.json()
+        )
+        if (!response.ok) throw new Error('Failed to fetch')
+        data = await response.json()
+      }
+      
       const srsFiles = data.tree.filter(
         (item: { type: string; path: string }) =>
           item.type === 'blob' && item.path.endsWith('.srs')
@@ -431,13 +468,14 @@ export default function RuleSets() {
           return {
             name,
             tags: ['Official', isGeoip ? 'geoip' : 'geosite'],
-            sourceUrl: `https://ghp.ci/${baseUrl}/${name}.json`,
-            binaryUrl: `https://ghp.ci/${baseUrl}/${name}.srs`
+            sourceUrl: `${baseUrl}/${name}.json`,
+            binaryUrl: `${baseUrl}/${name}.srs`
           }
         }
       )
       setHubRuleSets(newRuleSets.length > 0 ? newRuleSets : builtInHubRules)
-    } catch {
+    } catch (e) {
+      console.error('Failed to fetch hub:', e)
       setHubError('获取规则集列表失败，使用内置列表')
       setHubRuleSets(builtInHubRules)
     } finally {
@@ -472,7 +510,7 @@ export default function RuleSets() {
         try {
           const result = await window.api.ruleset.download(ruleSet)
           if (result.success) {
-            showToast(`规则集「${ruleSet.name}」下载成功`, 'success')
+            showRestartToast(`规则集「${ruleSet.name}」下载成功`)
             // Now enable it
             setRuleSets(prev => prev.map(rs => rs.id === id ? { ...rs, enabled: true } : rs))
           } else {
@@ -491,10 +529,10 @@ export default function RuleSets() {
         return
       } else {
         // Already cached, show toast
-        showToast(`规则集「${ruleSet.name}」已启用（本地缓存）`, 'success')
+        showRestartToast(`规则集「${ruleSet.name}」已启用（本地缓存）`)
       }
     } else if (!newEnabled) {
-      showToast(`规则集「${ruleSet.name}」已禁用`, 'info')
+      showRestartToast(`规则集「${ruleSet.name}」已禁用`)
     }
     
     // Toggle enabled state
@@ -516,7 +554,7 @@ export default function RuleSets() {
     if (deleteTargetId) {
       const target = ruleSets.find((rs) => rs.id === deleteTargetId)
       setRuleSets((prev) => prev.filter((rs) => rs.id !== deleteTargetId))
-      showToast(`已删除规则集「${target?.name || target?.tag}」`, 'success')
+      showRestartToast(`已删除规则集「${target?.name || target?.tag}」`)
       setDeleteTargetId(null)
     }
     setShowDeleteConfirm(false)
@@ -582,7 +620,7 @@ export default function RuleSets() {
             : rs
         )
       )
-      showToast(`规则集「${dialogData.name || dialogData.tag}」已更新`, 'success')
+      showRestartToast(`规则集「${dialogData.name || dialogData.tag}」已更新`)
     } else {
       const newRuleSet: RuleSetItem = {
         id: Date.now().toString(),
@@ -597,7 +635,7 @@ export default function RuleSets() {
         isBuiltIn: false
       }
       setRuleSets((prev) => [...prev, newRuleSet])
-      showToast(`规则集「${dialogData.name || dialogData.tag}」已添加`, 'success')
+      showRestartToast(`规则集「${dialogData.name || dialogData.tag}」已添加`)
     }
     setShowAddDialog(false)
   }
@@ -640,9 +678,9 @@ export default function RuleSets() {
           rs.tag === hub.name ? { ...rs, enabled: true } : rs
         ))
         if (result.cached) {
-          showToast(`规则集「${hub.name}」已缓存`, 'success')
+          showRestartToast(`规则集「${hub.name}」已缓存`)
         } else {
-          showToast(`规则集「${hub.name}」下载成功`, 'success')
+          showRestartToast(`规则集「${hub.name}」下载成功`)
         }
       } else {
         showToast(`规则集「${hub.name}」下载失败: ${result.error}`, 'error')
@@ -660,7 +698,7 @@ export default function RuleSets() {
 
   const resetToDefaults = () => {
     setRuleSets(defaultRuleSets)
-    showToast('已重置为默认规则集', 'info')
+    showRestartToast('已重置为默认规则集')
   }
 
   const getModeIcon = (mode: RuleSetItem['outboundMode']) => {
@@ -706,6 +744,17 @@ export default function RuleSets() {
       case 'profile':
         return '配置'
     }
+  }
+
+  // Get display name for outboundValue (resolve profile ID to name)
+  const getOutboundValueDisplay = (ruleSet: RuleSetItem): string | null => {
+    if (!ruleSet.outboundValue) return null
+    if (ruleSet.outboundMode === 'profile') {
+      // Find profile name by ID
+      const profile = profiles.find(p => p.id === ruleSet.outboundValue)
+      return profile?.name || ruleSet.outboundValue
+    }
+    return ruleSet.outboundValue
   }
 
   return (
@@ -836,8 +885,8 @@ export default function RuleSets() {
                   {getModeIcon(ruleSet.outboundMode)}
                   <span>
                     {getModeLabel(ruleSet.outboundMode)}
-                    {ruleSet.outboundValue && (
-                      <span className="ml-1 opacity-80">: {ruleSet.outboundValue}</span>
+                    {getOutboundValueDisplay(ruleSet) && (
+                      <span className="ml-1 opacity-80">: {getOutboundValueDisplay(ruleSet)}</span>
                     )}
                   </span>
                 </div>
@@ -1071,7 +1120,7 @@ export default function RuleSets() {
                           </option>
                         ))
                     : profiles.map((profile) => (
-                        <option key={profile.id} value={profile.name}>
+                        <option key={profile.id} value={profile.id}>
                           {profile.name}
                         </option>
                       ))}
@@ -1317,6 +1366,18 @@ export default function RuleSets() {
             <p className="text-sm font-medium text-[var(--text-primary)]">
               {toast.message}
             </p>
+            {toast.action && (
+              <button
+                onClick={() => {
+                  toast.action?.onClick()
+                  setToasts((prev) => prev.filter((t) => t.id !== toast.id))
+                }}
+                className="ml-2 px-3 py-1.5 text-xs font-medium rounded-lg bg-[var(--accent-primary)] text-white hover:bg-[var(--accent-primary)]/90 transition-colors flex items-center gap-1"
+              >
+                <RefreshCw className="w-3 h-3" />
+                {toast.action.label}
+              </button>
+            )}
           </motion.div>
         ))}
       </AnimatePresence>
