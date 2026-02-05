@@ -58,7 +58,7 @@ export default function Profiles() {
     try {
       await window.api.profile.add(url, name || undefined, settings)
       await loadProfiles()
-      toast.success('订阅添加成功')
+      toast.showRestartToast('订阅添加成功')
     } catch (err) {
       toast.error(`添加失败: ${err}`)
     }
@@ -68,7 +68,7 @@ export default function Profiles() {
     try {
       await window.api.profile.importContent(name, content, settings)
       await loadProfiles()
-      toast.success('订阅导入成功')
+      toast.showRestartToast('订阅导入成功')
     } catch (err) {
       toast.error(`导入失败: ${err}`)
     }
@@ -80,7 +80,7 @@ export default function Profiles() {
     try {
       const profile = await window.api.profile.update(id)
       await loadProfiles()
-      toast.success(`更新成功，共 ${profile.nodeCount} 个节点`)
+      toast.showRestartToast(`更新成功，共 ${profile.nodeCount} 个节点`)
     } catch (err) {
       toast.error(`更新失败: ${err}`)
     } finally {
@@ -105,7 +105,7 @@ export default function Profiles() {
       await window.api.profile.delete(deleteTarget.id)
       await loadProfiles()
       setDeleteModalOpen(false)
-      toast.success('订阅已删除')
+      toast.showRestartToast('订阅已删除')
       setDeleteTarget(null)
     } catch (err) {
       toast.error(`删除失败: ${err}`)
@@ -127,7 +127,7 @@ export default function Profiles() {
       await window.api.profile.edit(editTarget.id, { name, url, ...settings })
       await loadProfiles()
       setEditModalOpen(false)
-      toast.success('订阅已更新')
+      toast.showRestartToast('订阅已更新')
       setEditTarget(null)
     } catch (err) {
       toast.error(`保存失败: ${err}`)
@@ -141,7 +141,7 @@ export default function Profiles() {
     try {
       await window.api.profile.setEnabled(profile.id, !profile.enabled)
       await loadProfiles()
-      toast.info(profile.enabled ? '订阅已禁用' : '订阅已启用')
+      toast.showRestartToast(profile.enabled ? '订阅已禁用' : '订阅已启用')
     } catch (err) {
       toast.error(`操作失败: ${err}`)
     }
