@@ -1,48 +1,190 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Download, Upload, Wifi, Server, Activity, Play, Square, RotateCw, BarChart3, ArrowUpRight, ArrowDownRight } from 'lucide-react'
+import { Download, Upload, Wifi, Server, Play, Square, RotateCw, Zap, Loader2, AlertTriangle } from 'lucide-react'
 import { useConnectionStore } from '../stores/connectionStore'
+import { useNodesStore } from '../stores/nodesStore'
 import { formatBytes, formatDuration, cn } from '../lib/utils'
+import { useToast } from './ui/Toast'
+import type { Profile } from '@shared/types'
 
 export default function Dashboard() {
-  const { traffic, currentNodeName, currentProfileName } = useConnectionStore()
-  const [isOn, setIsOn] = useState(false)
+  const { state, traffic, connect, disconnect, needsRestart, setNeedsRestart } = useConnectionStore()
+  const { nodes, activeNodeTag, loadNodes, testNodeLatency } = useNodesStore()
   const [isAnimating, setIsAnimating] = useState(false)
+  const [profiles, setProfiles] = useState<Profile[]>([])
+  const [isTesting, setIsTesting] = useState(false)
+  const [trafficHistory, setTrafficHistory] = useState<{ download: number; upload: number }[]>([])
+  const toast = useToast()
 
+  const isOn = state === 'connected'
+  const isConnecting = state === 'connecting'
+  const isDisconnecting = state === 'disconnecting'
   const isConnected = isOn
 
+  // Load profiles and nodes on mount
+  useEffect(() => {
+    loadProfiles()
+    loadNodes()
+  }, [loadNodes])
+
+  // Update traffic history for chart
+  useEffect(() => {
+    if (isConnected && traffic) {
+      setTrafficHistory(prev => {
+        const newHistory = [...prev, { download: traffic.downloadSpeed, upload: traffic.uploadSpeed }]
+        // Keep last 20 data points
+        return newHistory.slice(-20)
+      })
+    } else {
+      setTrafficHistory([])
+    }
+  }, [isConnected, traffic?.downloadSpeed, traffic?.uploadSpeed])
+
+  const loadProfiles = async () => {
+    try {
+      const list = await window.api.profile.list()
+      setProfiles(list)
+    } catch (error) {
+      console.error('Failed to load profiles:', error)
+    }
+  }
+
+  // Get active node info
+  const activeNode = nodes.find(n => n.tag === activeNodeTag)
+  const activeProfile = profiles.find(p => p.enabled)
+  const currentLatency = activeNode?.latencyMs ?? null
+
+  // Calculate total nodes count from all enabled profiles
+  const totalNodes = nodes.length
+  const enabledProfilesCount = profiles.filter(p => p.enabled).length
+
   const handleToggle = async () => {
-    if (isAnimating) return
+    if (isAnimating || isConnecting || isDisconnecting) return
     
     setIsAnimating(true)
-    await new Promise(resolve => setTimeout(resolve, 800))
-    setIsOn(!isOn)
-    setIsAnimating(false)
+    try {
+      if (isOn) {
+        const result = await disconnect()
+        if (result.success) {
+          toast.info('已断开连接')
+        } else {
+          toast.error(result.error || '断开失败')
+        }
+      } else {
+        const result = await connect()
+        if (result.success) {
+          toast.success('已连接')
+          // Auto test latency after connect
+          setTimeout(() => testLatency(), 1000)
+        } else {
+          toast.error(result.error || '连接失败')
+        }
+      }
+    } catch (err) {
+      toast.error(`操作失败: ${err}`)
+    } finally {
+      setIsAnimating(false)
+    }
   }
 
   const handleRestart = async () => {
     if (isAnimating || !isOn) return
     
     setIsAnimating(true)
-    await new Promise(resolve => setTimeout(resolve, 600))
-    setIsAnimating(false)
+    try {
+      const stopResult = await disconnect()
+      if (!stopResult.success) {
+        toast.error(stopResult.error || '停止失败')
+        return
+      }
+      await new Promise(resolve => setTimeout(resolve, 500))
+      const startResult = await connect()
+      if (startResult.success) {
+        toast.success('已重新连接')
+        testLatency()
+      } else {
+        toast.error(startResult.error || '重启失败')
+      }
+    } catch (err) {
+      toast.error(`重启失败: ${err}`)
+    } finally {
+      setIsAnimating(false)
+    }
   }
 
-  const healthScore = isConnected ? 95 : 0
+  const testLatency = async () => {
+    if (isTesting || !activeNodeTag) return
+    
+    setIsTesting(true)
+    try {
+      await testNodeLatency(activeNodeTag)
+    } catch {
+      // Error handled in store
+    } finally {
+      setIsTesting(false)
+    }
+  }
 
-  const nodeTrafficData = [
-    { name: 'Hong Kong 01', download: 2.4 * 1024 * 1024 * 1024, upload: 512 * 1024 * 1024, lastUsed: '刚刚', color: 'var(--accent-primary)' },
-    { name: 'Singapore 02', download: 1.8 * 1024 * 1024 * 1024, upload: 320 * 1024 * 1024, lastUsed: '2小时前', color: '#8b5cf6' },
-    { name: 'Japan 03', download: 956 * 1024 * 1024, upload: 128 * 1024 * 1024, lastUsed: '昨天', color: '#f59e0b' },
-    { name: 'US West 01', download: 512 * 1024 * 1024, upload: 64 * 1024 * 1024, lastUsed: '3天前', color: '#ec4899' },
-    { name: 'Taiwan 01', download: 256 * 1024 * 1024, upload: 32 * 1024 * 1024, lastUsed: '上周', color: '#06b6d4' },
-  ]
+  // Auto test latency when connected and node has no latency
+  useEffect(() => {
+    if (isConnected && activeNodeTag && currentLatency === null && !isTesting) {
+      const timer = setTimeout(() => testLatency(), 1000)
+      return () => clearTimeout(timer)
+    }
+  }, [isConnected, activeNodeTag, currentLatency])
 
-  const totalNodeTraffic = nodeTrafficData.reduce((acc, node) => acc + node.download + node.upload, 0)
-  const maxNodeTraffic = Math.max(...nodeTrafficData.map(n => n.download + n.upload))
+  // Show error toast when state changes to error
+  useEffect(() => {
+    if (state === 'error') {
+      toast.error('连接出错，请检查配置')
+    }
+  }, [state, toast])
+
+  // Calculate health score based on latency
+  const getHealthScore = () => {
+    if (!isConnected) return 0
+    if (currentLatency === null) return 80
+    if (currentLatency < 100) return 95
+    if (currentLatency < 200) return 85
+    if (currentLatency < 500) return 70
+    return 50
+  }
+
+  const healthScore = getHealthScore()
+
+  // Get latency color
+  const getLatencyColor = (latency: number | null) => {
+    if (latency === null) return 'text-[var(--text-muted)]'
+    if (latency < 100) return 'text-emerald-500'
+    if (latency < 300) return 'text-amber-500'
+    return 'text-red-500'
+  }
 
   return (
     <div className="space-y-6 px-6 pb-6">
+      {/* Restart Required Banner */}
+      <AnimatePresence>
+        {needsRestart && isConnected && (
+          <motion.div
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="flex items-center justify-between p-3 rounded-xl bg-amber-500/15 border border-amber-500/30"
+          >
+            <div className="flex items-center gap-3">
+              <AlertTriangle className="w-5 h-5 text-amber-500" />
+              <span className="text-sm text-amber-500">配置已修改，需要重启 VPN 才能生效</span>
+            </div>
+            <button
+              onClick={handleRestart}
+              className="px-3 py-1.5 text-xs font-medium rounded-lg bg-amber-500/20 text-amber-500 hover:bg-amber-500/30 transition-colors"
+            >
+              立即重启
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-[var(--text-primary)]">
@@ -68,7 +210,7 @@ export default function Dashboard() {
             <HealthGauge score={healthScore} label="连接质量" />
             <div className="hidden sm:flex flex-col gap-2">
               <ProgressBar 
-                value={isConnected ? 98 : 0} 
+                value={isConnected ? (currentLatency && currentLatency < 200 ? 98 : 80) : 0} 
                 label="可用性" 
                 color="var(--accent-primary)" 
               />
@@ -78,7 +220,7 @@ export default function Dashboard() {
                 color="var(--accent-secondary)" 
               />
               <ProgressBar 
-                value={isConnected ? 92 : 0} 
+                value={isConnected ? (currentLatency ? Math.max(0, 100 - currentLatency / 5) : 80) : 0} 
                 label="速度" 
                 color="var(--accent-tertiary)" 
               />
@@ -88,22 +230,33 @@ export default function Dashboard() {
           <div className="hidden lg:block w-px h-24 bg-[var(--border-primary)]" />
 
           <div className="flex-1 grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <StatValue 
-              value={isConnected ? '45' : '-'} 
-              unit="ms" 
-              label="延迟" 
-              accent={isConnected} 
-            />
+            <div className="text-center cursor-pointer" onClick={() => isConnected && testLatency()}>
+              <div className={`text-3xl font-bold ${isConnected ? getLatencyColor(currentLatency) : 'text-[var(--text-primary)]'}`}>
+                {isTesting ? (
+                  <Loader2 className="w-8 h-8 animate-spin mx-auto" />
+                ) : isConnected ? (
+                  currentLatency !== null ? (
+                    <>{currentLatency}<span className="text-base font-normal">ms</span></>
+                  ) : (
+                    <span className="text-lg">测试中...</span>
+                  )
+                ) : '-'}
+              </div>
+              <div className="text-xs text-[var(--text-muted)] mt-1 flex items-center justify-center gap-1">
+                <Zap className="w-3 h-3" />
+                延迟
+              </div>
+            </div>
             <StatValue 
               value={isConnected ? formatDuration(traffic?.duration || 0) : '-'} 
               label="运行时间" 
             />
             <StatValue 
-              value="12" 
+              value={String(totalNodes)} 
               label="可用节点" 
             />
             <StatValue 
-              value="3" 
+              value={String(profiles.length)} 
               label="订阅配置" 
             />
           </div>
@@ -114,22 +267,22 @@ export default function Dashboard() {
         <MetricCard
           icon={<Server className="w-5 h-5 text-[var(--accent-primary)]" />}
           title="当前节点"
-          value={currentNodeName || 'Hong Kong 01'}
-          subtitle="延迟 45ms"
+          value={activeNode?.tag || '未选择'}
+          subtitle={currentLatency !== null ? `延迟 ${currentLatency}ms` : (activeNode?.server || '请选择节点')}
           iconBg="bg-[rgba(20,184,166,0.15)]"
         />
         <MetricCard
           icon={<Wifi className="w-5 h-5 text-rose-500" />}
           title="配置文件"
-          value={currentProfileName || 'Default'}
-          subtitle="12 个节点"
+          value={activeProfile?.name || '未选择'}
+          subtitle={activeProfile ? `${activeProfile.nodeCount || 0} 个节点` : '请添加订阅'}
           iconBg="bg-rose-500/15"
         />
         <MetricCard
           icon={<Download className="w-5 h-5 text-emerald-500" />}
           title="下载速度"
           value={isConnected && traffic ? formatBytes(traffic.downloadSpeed) + '/s' : '0 B/s'}
-          subtitle={isConnected && traffic ? `总计 ${formatBytes(traffic.totalDownload)}` : '等待连接'}
+          subtitle={isConnected && traffic ? `总计 ${formatBytes(traffic.downloadTotal)}` : '等待连接'}
           iconBg="bg-emerald-500/15"
           valueColor={isConnected ? 'text-emerald-500' : undefined}
         />
@@ -137,82 +290,54 @@ export default function Dashboard() {
           icon={<Upload className="w-5 h-5 text-[var(--accent-tertiary)]" />}
           title="上传速度"
           value={isConnected && traffic ? formatBytes(traffic.uploadSpeed) + '/s' : '0 B/s'}
-          subtitle={isConnected && traffic ? `总计 ${formatBytes(traffic.totalUpload)}` : '等待连接'}
+          subtitle={isConnected && traffic ? `总计 ${formatBytes(traffic.uploadTotal)}` : '等待连接'}
           iconBg="bg-[rgba(212,184,150,0.15)]"
           valueColor={isConnected ? 'text-[var(--accent-tertiary)]' : undefined}
         />
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-3">
-        <div className="lg:col-span-2 glass-card p-5">
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <div className="text-xs tracking-wider text-[var(--text-dim)] uppercase">
-                流量趋势
-              </div>
-              <h3 className="text-lg font-semibold text-[var(--text-primary)] mt-1">
-                实时监控
-              </h3>
+      <div className="glass-card p-5">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <div className="text-xs tracking-wider text-[var(--text-dim)] uppercase">
+              流量趋势
             </div>
-            <div className="flex items-center gap-4">
-              <div className="flex items-center gap-2">
-                <div className="w-2 h-2 rounded-full bg-emerald-500" />
-                <span className="text-xs text-[var(--text-muted)]">下载</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="w-2 h-2 rounded-full bg-amber-500" />
-                <span className="text-xs text-[var(--text-muted)]">上传</span>
-              </div>
-            </div>
+            <h3 className="text-lg font-semibold text-[var(--text-primary)] mt-1">
+              实时监控
+            </h3>
           </div>
-          <TrafficChart />
-          <div className="flex items-center justify-between mt-4 pt-4 border-t border-[var(--border-secondary)]">
-            <TrafficItem
-              icon={Download}
-              label="下载"
-              value={isConnected && traffic ? formatBytes(traffic.downloadSpeed) + '/s' : '0 B/s'}
-              color="text-emerald-500"
-            />
-            <TrafficItem
-              icon={Upload}
-              label="上传"
-              value={isConnected && traffic ? formatBytes(traffic.uploadSpeed) + '/s' : '0 B/s'}
-              color="text-amber-500"
-            />
-            <div className="text-right">
-              <p className="text-xs text-[var(--text-muted)]">总流量</p>
-              <p className="text-xl font-bold text-[var(--text-primary)]">
-                {formatBytes(totalNodeTraffic)}
-              </p>
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-emerald-500" />
+              <span className="text-xs text-[var(--text-muted)]">下载</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-amber-500" />
+              <span className="text-xs text-[var(--text-muted)]">上传</span>
             </div>
           </div>
         </div>
-
-        <div className="glass-card p-5">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <BarChart3 className="w-4 h-4 text-[var(--text-muted)]" />
-              <span className="text-sm font-medium text-[var(--text-primary)]">
-                节点流量
-              </span>
-            </div>
-            <span className="text-xs text-[var(--text-dim)]">
-              {nodeTrafficData.length} 个节点
-            </span>
-          </div>
-          <div className="space-y-3">
-            {nodeTrafficData.map((node, index) => (
-              <NodeTrafficRow
-                key={node.name}
-                rank={index + 1}
-                name={node.name}
-                download={node.download}
-                upload={node.upload}
-                lastUsed={node.lastUsed}
-                color={node.color}
-                percentage={(node.download + node.upload) / maxNodeTraffic * 100}
-              />
-            ))}
+        <TrafficChart data={trafficHistory} />
+        <div className="flex items-center justify-between mt-4 pt-4 border-t border-[var(--border-secondary)]">
+          <TrafficItem
+            icon={Download}
+            label="下载"
+            value={isConnected && traffic ? formatBytes(traffic.downloadSpeed) + '/s' : '0 B/s'}
+            color="text-emerald-500"
+          />
+          <TrafficItem
+            icon={Upload}
+            label="上传"
+            value={isConnected && traffic ? formatBytes(traffic.uploadSpeed) + '/s' : '0 B/s'}
+            color="text-amber-500"
+          />
+          <div className="text-right">
+            <p className="text-xs text-[var(--text-muted)]">总流量</p>
+            <p className="text-xl font-bold text-[var(--text-primary)]">
+              {isConnected && traffic 
+                ? formatBytes(traffic.downloadTotal + traffic.uploadTotal)
+                : '0 B'}
+            </p>
           </div>
         </div>
       </div>
@@ -493,81 +618,22 @@ function TrafficItem({
   )
 }
 
-function NodeTrafficRow({
-  rank,
-  name,
-  download,
-  upload,
-  lastUsed,
-  color,
-  percentage
-}: {
-  rank: number
-  name: string
-  download: number
-  upload: number
-  lastUsed: string
-  color: string
-  percentage: number
-}) {
-  return (
-    <div className="group">
-      <div className="flex items-center gap-3 mb-2">
-        <span 
-          className="w-5 h-5 rounded-md flex items-center justify-center text-xs font-bold"
-          style={{ 
-            background: `color-mix(in srgb, ${color} 15%, transparent)`,
-            color: color
-          }}
-        >
-          {rank}
-        </span>
-        <span className="text-sm font-medium text-[var(--text-primary)] flex-1 truncate">
-          {name}
-        </span>
-        <div className="flex items-center gap-4 text-xs">
-          <span className="flex items-center gap-1 text-emerald-500">
-            <ArrowDownRight className="w-3 h-3" />
-            {formatBytes(download)}
-          </span>
-          <span className="flex items-center gap-1 text-amber-500">
-            <ArrowUpRight className="w-3 h-3" />
-            {formatBytes(upload)}
-          </span>
-          <span className="text-[var(--text-dim)] w-16 text-right">
-            {lastUsed}
-          </span>
-        </div>
-      </div>
-      <div className="ml-8 h-1.5 bg-[var(--bg-tertiary)] rounded-full overflow-hidden">
-        <motion.div
-          className="h-full rounded-full"
-          style={{ backgroundColor: color }}
-          initial={{ width: 0 }}
-          animate={{ width: `${percentage}%` }}
-          transition={{ duration: 0.5, ease: 'easeOut' }}
-        />
-      </div>
-    </div>
-  )
-}
-
-function TrafficChart() {
-  const downloadData = [120, 180, 150, 220, 280, 240, 320, 380, 350, 420, 480, 450]
-  const uploadData = [40, 60, 50, 80, 100, 90, 120, 140, 130, 160, 180, 170]
-  const labels = ['00:00', '02:00', '04:00', '06:00', '08:00', '10:00', '12:00', '14:00', '16:00', '18:00', '20:00', '22:00']
+function TrafficChart({ data }: { data: { download: number; upload: number }[] }) {
+  // Use real data or show empty state
+  const downloadData = data.length > 0 ? data.map(d => d.download) : Array(20).fill(0)
+  const uploadData = data.length > 0 ? data.map(d => d.upload) : Array(20).fill(0)
   
-  const maxValue = Math.max(...downloadData, ...uploadData) * 1.1
+  const maxValue = Math.max(...downloadData, ...uploadData, 1) * 1.1
   const height = 120
   const width = 100
   
-  const createPath = (data: number[]) => {
-    const points = data.map((value, index) => ({
-      x: (index / (data.length - 1)) * width,
+  const createPath = (values: number[]) => {
+    if (values.length < 2) return ''
+    
+    const points = values.map((value, index) => ({
+      x: (index / (values.length - 1)) * width,
       y: height - (value / maxValue) * height
     }))
-    
-    if (points.length < 2) return ''
     
     let path = `M ${points[0].x} ${points[0].y}`
     for (let i = 0; i < points.length - 1; i++) {
@@ -579,10 +645,12 @@ function TrafficChart() {
     return path
   }
   
-  const createAreaPath = (data: number[]) => {
-    const linePath = createPath(data)
-    const points = data.map((value, index) => ({
-      x: (index / (data.length - 1)) * width,
+  const createAreaPath = (values: number[]) => {
+    const linePath = createPath(values)
+    if (!linePath) return ''
+    
+    const points = values.map((value, index) => ({
+      x: (index / (values.length - 1)) * width,
       y: height - (value / maxValue) * height
     }))
     return linePath + ` L ${points[points.length - 1].x} ${height} L ${points[0].x} ${height} Z`
@@ -638,11 +706,11 @@ function TrafficChart() {
         />
       </svg>
       
-      <div className="absolute bottom-0 left-0 right-0 flex justify-between text-[10px] text-[var(--text-dim)]">
-        {labels.filter((_, i) => i % 3 === 0).map((label) => (
-          <span key={label}>{label}</span>
-        ))}
-      </div>
+      {data.length === 0 && (
+        <div className="absolute inset-0 flex items-center justify-center">
+          <span className="text-xs text-[var(--text-dim)]">等待连接...</span>
+        </div>
+      )}
     </div>
   )
 }

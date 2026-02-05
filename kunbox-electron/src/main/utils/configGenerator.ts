@@ -1,21 +1,28 @@
 import type { AppSettings, SingBoxOutbound } from '../../shared/types'
+import { DEFAULT_SETTINGS } from '../../shared/types'
+import { loadRuleSets, type RuleSetItem } from '../ipc/rulesets'
+import { isRuleSetLocal, getRuleSetLocalPath } from './ruleSetManager'
 
 interface GeneratorInput {
-  settings: AppSettings
+  settings?: AppSettings
   outbounds: SingBoxOutbound[]
   activeNodeTag?: string
 }
 
 export function generateConfig(input: GeneratorInput): object {
-  const { settings, outbounds, activeNodeTag } = input
+  const { outbounds, activeNodeTag } = input
+  // Use default settings if not provided
+  const settings = input.settings || DEFAULT_SETTINGS
+  // Load user configured rule sets
+  const ruleSets = loadRuleSets()
 
   return {
     log: buildLogConfig(),
     experimental: buildExperimentalConfig(),
-    dns: buildDnsConfig(settings),
+    dns: buildDnsConfig(settings, ruleSets),
     inbounds: buildInbounds(settings),
     outbounds: buildOutbounds(outbounds, activeNodeTag, settings),
-    route: buildRouteConfig(settings)
+    route: buildRouteConfig(settings, ruleSets)
   }
 }
 
@@ -40,76 +47,69 @@ function buildExperimentalConfig(): object {
   }
 }
 
-function buildDnsConfig(settings: AppSettings): object {
+function buildDnsConfig(settings: AppSettings, ruleSets: RuleSetItem[]): object {
   const servers: object[] = []
   const rules: object[] = []
 
+  // Bootstrap DNS - UDP format for sing-box 1.12.0+
   servers.push({
     tag: 'dns-bootstrap',
-    address: '223.5.5.5',
-    detour: 'direct'
+    type: 'udp',
+    server: '223.5.5.5',
+    server_port: 53
   })
 
+  // Local DNS for China domains
   const localDns = settings.localDns || 'https://dns.alidns.com/dns-query'
-  const localDnsServer: Record<string, unknown> = {
-    tag: 'local-dns',
-    address: localDns,
-    detour: 'direct'
-  }
-  if (needsResolver(localDns)) {
-    localDnsServer.address_resolver = 'dns-bootstrap'
-  }
-  servers.push(localDnsServer)
+  servers.push(buildDnsServer('local-dns', localDns))
 
+  // Remote DNS for foreign domains
   const remoteDns = settings.remoteDns || 'https://dns.google/dns-query'
-  const remoteDnsServer: Record<string, unknown> = {
-    tag: 'remote-dns',
-    address: remoteDns,
-    detour: 'PROXY'
-  }
-  if (needsResolver(remoteDns)) {
-    remoteDnsServer.address_resolver = 'dns-bootstrap'
-  }
-  servers.push(remoteDnsServer)
-
-  servers.push({
-    tag: 'block-dns',
-    address: 'rcode://success'
-  })
+  servers.push(buildDnsServer('remote-dns', remoteDns))
 
   if (settings.fakeDns) {
     servers.push({
       tag: 'fakeip-dns',
-      address: 'fakeip'
+      type: 'fakeip'
     })
   }
 
+  // DNS rules for sing-box 1.12.0+
   rules.push({
-    outbound: ['any'],
-    server: 'dns-bootstrap'
-  })
-
-  rules.push({
-    outbound: ['direct'],
+    clash_mode: 'direct',
+    action: 'route',
     server: 'local-dns'
   })
 
-  rules.push({
-    rule_set: ['geosite-cn'],
-    server: 'local-dns'
-  })
-
-  if (settings.blockAds) {
+  // Use CN rulesets for local DNS (only if they have local cache)
+  const cnRuleSets = ruleSets.filter(r => 
+    r.enabled && r.outboundMode === 'direct' && r.tag.includes('cn') &&
+    (r.type !== 'remote' || isRuleSetLocal(r.tag))
+  )
+  if (cnRuleSets.length > 0) {
     rules.push({
-      rule_set: ['geosite-ads'],
-      server: 'block-dns',
-      disable_cache: true
+      rule_set: cnRuleSets.map(r => r.tag),
+      action: 'route',
+      server: 'local-dns'
+    })
+  }
+
+  // Block ads using reject action (only if they have local cache)
+  const blockRuleSets = ruleSets.filter(r => 
+    r.enabled && r.outboundMode === 'block' &&
+    (r.type !== 'remote' || isRuleSetLocal(r.tag))
+  )
+  if (blockRuleSets.length > 0) {
+    rules.push({
+      rule_set: blockRuleSets.map(r => r.tag),
+      action: 'reject'
     })
   }
 
   if (settings.fakeDns) {
     rules.push({
       query_type: ['A', 'AAAA'],
+      action: 'route',
       server: 'fakeip-dns'
     })
   }
@@ -132,13 +132,48 @@ function buildDnsConfig(settings: AppSettings): object {
   return dnsConfig
 }
 
-function needsResolver(address: string): boolean {
-  return (
-    address.startsWith('https://') ||
-    address.startsWith('tls://') ||
-    address.startsWith('quic://') ||
-    address.startsWith('h3://')
-  )
+function buildDnsServer(tag: string, address: string): object {
+  // Parse URL to extract server info
+  if (address.startsWith('https://')) {
+    const url = new URL(address)
+    return {
+      tag,
+      type: 'https',
+      server: url.hostname,
+      server_port: url.port ? parseInt(url.port) : 443,
+      path: url.pathname || '/dns-query',
+      domain_resolver: 'dns-bootstrap'
+    }
+  } else if (address.startsWith('tls://')) {
+    const server = address.replace('tls://', '').split(':')[0]
+    const port = address.includes(':') ? parseInt(address.split(':')[1]) : 853
+    return {
+      tag,
+      type: 'tls',
+      server,
+      server_port: port,
+      domain_resolver: 'dns-bootstrap'
+    }
+  } else if (address.startsWith('quic://')) {
+    const server = address.replace('quic://', '').split(':')[0]
+    const port = address.includes(':') ? parseInt(address.split(':')[1]) : 853
+    return {
+      tag,
+      type: 'quic',
+      server,
+      server_port: port,
+      domain_resolver: 'dns-bootstrap'
+    }
+  } else {
+    // UDP DNS
+    const parts = address.split(':')
+    return {
+      tag,
+      type: 'udp',
+      server: parts[0],
+      server_port: parts[1] ? parseInt(parts[1]) : 53
+    }
+  }
 }
 
 function buildInbounds(settings: AppSettings): object[] {
@@ -213,8 +248,6 @@ function buildOutbounds(
   }
 
   outbounds.push({ type: 'direct', tag: 'direct' })
-  outbounds.push({ type: 'block', tag: 'block' })
-  outbounds.push({ type: 'dns', tag: 'dns-out' })
 
   return outbounds
 }
@@ -238,12 +271,13 @@ export function isProxyType(type?: string): boolean {
   ].includes(type)
 }
 
-function buildRouteConfig(settings: AppSettings): object {
+function buildRouteConfig(settings: AppSettings, ruleSets: RuleSetItem[]): object {
   const rules: object[] = []
 
+  // DNS hijacking - use action instead of dns-out outbound
   rules.push({
     protocol: ['dns'],
-    outbound: 'dns-out'
+    action: 'hijack-dns'
   })
 
   if (settings.bypassLan) {
@@ -253,39 +287,64 @@ function buildRouteConfig(settings: AppSettings): object {
     })
   }
 
-  rules.push({
-    rule_set: ['geosite-cn'],
-    outbound: 'direct'
+  // Filter to only rulesets that have local cache
+  const availableRuleSets = ruleSets.filter(r => {
+    if (!r.enabled) return false
+    if (r.type === 'remote') {
+      return isRuleSetLocal(r.tag)
+    }
+    return true // Local rulesets are always available
   })
-
-  rules.push({
-    rule_set: ['geoip-cn'],
-    outbound: 'direct'
-  })
+  
+  // Add rules from available rule sets only
+  for (const ruleSet of availableRuleSets) {
+    let outbound: string
+    switch (ruleSet.outboundMode) {
+      case 'direct':
+        outbound = 'direct'
+        break
+      case 'proxy':
+        outbound = 'PROXY'
+        break
+      case 'block':
+        rules.push({
+          rule_set: [ruleSet.tag],
+          action: 'reject'
+        })
+        continue
+      case 'node':
+        outbound = ruleSet.outboundValue || 'PROXY'
+        break
+      case 'profile':
+        outbound = 'PROXY'
+        break
+      default:
+        outbound = 'PROXY'
+    }
+    
+    if (ruleSet.outboundMode !== 'block') {
+      rules.push({
+        rule_set: [ruleSet.tag],
+        outbound
+      })
+    }
+  }
 
   return {
     rules,
     final: 'PROXY',
     auto_detect_interface: true,
-    rule_set: buildRuleSets()
+    default_domain_resolver: 'dns-bootstrap',
+    rule_set: buildRuleSets(availableRuleSets)
   }
 }
 
-function buildRuleSets(): object[] {
-  return [
-    {
-      type: 'remote',
-      tag: 'geosite-cn',
-      format: 'binary',
-      url: 'https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs',
-      download_detour: 'direct'
-    },
-    {
-      type: 'remote',
-      tag: 'geoip-cn',
-      format: 'binary',
-      url: 'https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs',
-      download_detour: 'direct'
-    }
-  ]
+function buildRuleSets(ruleSets: RuleSetItem[]): object[] {
+  // All rulesets passed here should already be validated as available
+  return ruleSets.map(r => ({
+    type: 'local',
+    tag: r.tag,
+    format: r.format,
+    path: r.type === 'remote' ? getRuleSetLocalPath(r.tag) : r.url
+  }))
 }

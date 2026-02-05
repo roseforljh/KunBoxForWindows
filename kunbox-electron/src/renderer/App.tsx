@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, forwardRef, useImperativeHandle, useR
 import { motion, AnimatePresence, useAnimation } from 'framer-motion'
 import { Minus, Square, X, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { useConnectionStore } from './stores/connectionStore'
+import { ToastProvider } from './components/ui/Toast'
 import Dashboard from './components/Dashboard'
 import Nodes from './components/Nodes'
 import Profiles from './components/Profiles'
@@ -418,12 +419,15 @@ function useTheme() {
 export default function App() {
   const [currentPage, setCurrentPage] = useState<Page>('dashboard')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const { setState, setTraffic } = useConnectionStore()
+  const { state, setState, setTraffic, connect, disconnect } = useConnectionStore()
   const { setTheme } = useTheme()
 
+  // Listen for singbox state and traffic updates
   useEffect(() => {
-    const unsubState = window.api.singbox.onStateChange((state) => {
-      setState(state)
+    const unsubState = window.api.singbox.onStateChange((newState) => {
+      setState(newState)
+      // Sync tray status
+      window.api.tray.updateStatus(newState === 'connected')
     })
 
     const unsubTraffic = window.api.singbox.onTraffic((stats) => {
@@ -435,6 +439,30 @@ export default function App() {
       unsubTraffic()
     }
   }, [setState, setTraffic])
+
+  // Listen for tray menu events
+  useEffect(() => {
+    const unsubToggle = window.api.tray.onToggleConnection(async () => {
+      if (state === 'connected') {
+        await disconnect()
+      } else if (state === 'idle' || state === 'error') {
+        await connect()
+      }
+    })
+
+    const unsubRestart = window.api.tray.onRestartCore(async () => {
+      if (state === 'connected') {
+        await disconnect()
+        await new Promise(resolve => setTimeout(resolve, 500))
+        await connect()
+      }
+    })
+
+    return () => {
+      unsubToggle()
+      unsubRestart()
+    }
+  }, [state, connect, disconnect])
 
   const handleNavigate = useCallback((page: string, tab?: string) => {
     if (tab) {
@@ -457,9 +485,10 @@ export default function App() {
   }
 
   return (
-    <div className="flex flex-col h-screen relative" style={{ backgroundColor: 'var(--bg-primary)' }}>
-      <BokehBackground />
-      <TopBar />
+    <ToastProvider>
+      <div className="flex flex-col h-screen relative" style={{ backgroundColor: 'var(--bg-primary)' }}>
+        <BokehBackground />
+        <TopBar />
 
       <div className="flex flex-1 overflow-hidden">
         <aside className={`glass-sidebar flex-shrink-0 flex flex-col overflow-hidden transition-[width] duration-300 ease-in-out ${sidebarCollapsed ? 'w-[72px]' : 'w-64'}`}>
@@ -534,6 +563,7 @@ export default function App() {
         </main>
       </div>
     </div>
+    </ToastProvider>
   )
 }
 

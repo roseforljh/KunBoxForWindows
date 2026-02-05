@@ -7,6 +7,7 @@ const api = {
     start: () => ipcRenderer.invoke(IPC_CHANNELS.SINGBOX_START),
     stop: () => ipcRenderer.invoke(IPC_CHANNELS.SINGBOX_STOP),
     restart: () => ipcRenderer.invoke(IPC_CHANNELS.SINGBOX_RESTART),
+    switchNode: (nodeTag: string) => ipcRenderer.invoke(IPC_CHANNELS.SINGBOX_SWITCH_NODE, nodeTag),
     onStateChange: (callback: (state: ProxyState) => void) => {
       const handler = (_: unknown, state: ProxyState) => callback(state)
       ipcRenderer.on(IPC_CHANNELS.SINGBOX_STATE, handler)
@@ -22,6 +23,25 @@ const api = {
       ipcRenderer.on(IPC_CHANNELS.SINGBOX_LOG, handler)
       return () => ipcRenderer.removeListener(IPC_CHANNELS.SINGBOX_LOG, handler)
     }
+  },
+
+  tray: {
+    onToggleConnection: (callback: () => void) => {
+      const handler = () => callback()
+      ipcRenderer.on('tray:toggle-connection', handler)
+      return () => ipcRenderer.removeListener('tray:toggle-connection', handler)
+    },
+    onRestartCore: (callback: () => void) => {
+      const handler = () => callback()
+      ipcRenderer.on('tray:restart-core', handler)
+      return () => ipcRenderer.removeListener('tray:restart-core', handler)
+    },
+    onSetMode: (callback: (mode: 'rule' | 'global' | 'direct') => void) => {
+      const handler = (_: unknown, mode: 'rule' | 'global' | 'direct') => callback(mode)
+      ipcRenderer.on('tray:set-mode', handler)
+      return () => ipcRenderer.removeListener('tray:set-mode', handler)
+    },
+    updateStatus: (connected: boolean) => ipcRenderer.send('tray:update-status', connected)
   },
 
   profile: {
@@ -76,6 +96,13 @@ const api = {
       ipcRenderer.on('kernel:download-error', handler)
       return () => ipcRenderer.removeListener('kernel:download-error', handler)
     }
+  },
+
+  ruleset: {
+    list: () => ipcRenderer.invoke(IPC_CHANNELS.RULESET_LIST),
+    save: (ruleSets: any[]) => ipcRenderer.invoke(IPC_CHANNELS.RULESET_SAVE, ruleSets),
+    download: (ruleSet: any) => ipcRenderer.invoke(IPC_CHANNELS.RULESET_DOWNLOAD, ruleSet),
+    isCached: (tag: string) => ipcRenderer.invoke(IPC_CHANNELS.RULESET_IS_CACHED, tag)
   },
 
   window: {

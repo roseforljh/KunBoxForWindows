@@ -8,6 +8,7 @@ export const IPC_CHANNELS = {
   SINGBOX_STATE: 'singbox:state',
   SINGBOX_TRAFFIC: 'singbox:traffic',
   SINGBOX_LOG: 'singbox:log',
+  SINGBOX_SWITCH_NODE: 'singbox:switch-node',
 
   PROFILE_LIST: 'profile:list',
   PROFILE_ADD: 'profile:add',
@@ -29,6 +30,11 @@ export const IPC_CHANNELS = {
 
   SETTINGS_GET: 'settings:get',
   SETTINGS_SET: 'settings:set',
+
+  RULESET_LIST: 'ruleset:list',
+  RULESET_SAVE: 'ruleset:save',
+  RULESET_DOWNLOAD: 'ruleset:download',
+  RULESET_IS_CACHED: 'ruleset:is-cached',
 
   WINDOW_MINIMIZE: 'window:minimize',
   WINDOW_MAXIMIZE: 'window:maximize',

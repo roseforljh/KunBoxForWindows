@@ -177,125 +177,151 @@ export function KernelSettings() {
         initial={{ opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.2 }}
-        className="glass-card rounded-2xl p-6 border border-[var(--glass-border)]"
+        className="glass-card rounded-2xl p-6 border border-[var(--glass-border)] min-h-[280px]"
       >
-        {/* Header */}
-        <div className="flex items-center justify-between mb-6">
-          <div className="flex items-center gap-3">
-            <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
-              activeBranch === 'stable' 
-                ? 'bg-emerald-500/10' 
-                : 'bg-amber-500/10'
-            }`}>
-              {activeBranch === 'stable' 
-                ? <CheckCircle2 className="w-5 h-5 text-emerald-400" />
-                : <AlertCircle className="w-5 h-5 text-amber-400" />
-              }
-            </div>
-            <div>
-              <h4 className="font-semibold text-[var(--text-primary)]">
-                {activeBranch === 'stable' ? '正式版' : '测试版'}内核
-              </h4>
-              <p className="text-xs text-[var(--text-muted)]">sing-box</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <ActionButton icon={RefreshCw} onClick={loadVersions} loading={loading} tooltip="刷新" />
-            <ActionButton icon={ExternalLink} onClick={() => window.api.kernel.openReleasesPage()} tooltip="GitHub" />
-            <ActionButton icon={FolderOpen} onClick={() => window.api.kernel.openDirectory()} tooltip="打开目录" />
-            <ActionButton icon={Trash2} onClick={handleClearCache} tooltip="清理缓存" />
-            {canRollback && (
-              <ActionButton icon={RotateCcw} onClick={handleRollback} tooltip="回退版本" />
-            )}
-          </div>
-        </div>
+        <AnimatePresence mode="wait">
+          {loading ? (
+            <motion.div
+              key="loading"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              className="h-full flex flex-col items-center justify-center py-16"
+            >
+              <Loader2 className={`w-10 h-10 animate-spin ${
+                activeBranch === 'stable' ? 'text-emerald-400' : 'text-amber-400'
+              }`} />
+              <p className="mt-4 text-sm text-[var(--text-muted)]">加载中...</p>
+            </motion.div>
+          ) : (
+            <motion.div
+              key="content"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.3 }}
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between mb-6">
+                <div className="flex items-center gap-3">
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
+                    activeBranch === 'stable' 
+                      ? 'bg-emerald-500/10' 
+                      : 'bg-amber-500/10'
+                  }`}>
+                    {activeBranch === 'stable' 
+                      ? <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                      : <AlertCircle className="w-5 h-5 text-amber-400" />
+                    }
+                  </div>
+                  <div>
+                    <h4 className="font-semibold text-[var(--text-primary)]">
+                      {activeBranch === 'stable' ? '正式版' : '测试版'}内核
+                    </h4>
+                    <p className="text-xs text-[var(--text-muted)]">sing-box</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <ActionButton icon={RefreshCw} onClick={loadVersions} tooltip="刷新" />
+                  <ActionButton icon={ExternalLink} onClick={() => window.api.kernel.openReleasesPage()} tooltip="GitHub" />
+                  <ActionButton icon={FolderOpen} onClick={() => window.api.kernel.openDirectory()} tooltip="打开目录" />
+                  <ActionButton icon={Trash2} onClick={handleClearCache} tooltip="清理缓存" />
+                  {canRollback && (
+                    <ActionButton icon={RotateCcw} onClick={handleRollback} tooltip="回退版本" />
+                  )}
+                </div>
+              </div>
 
-        {/* Version Info */}
-        <div className="grid grid-cols-2 gap-4 mb-6">
-          <div className="p-4 rounded-xl bg-[var(--bg-tertiary)]/50">
-            <div className="text-xs text-[var(--text-muted)] mb-1">本地版本</div>
-            <div className={`text-lg font-mono font-semibold ${
-              currentLocal 
-                ? (activeBranch === 'stable' ? 'text-emerald-400' : 'text-amber-400')
-                : 'text-[var(--text-faint)]'
-            }`}>
-              {loading ? '...' : currentLocal?.version || '未安装'}
-            </div>
-          </div>
-          <div className="p-4 rounded-xl bg-[var(--bg-tertiary)]/50">
-            <div className="text-xs text-[var(--text-muted)] mb-1">最新版本</div>
-            <div className="text-lg font-mono font-semibold text-[var(--text-primary)]">
-              {currentRemote?.version || '-'}
-            </div>
-          </div>
-        </div>
+              {/* Version Info */}
+              <div className="grid grid-cols-2 gap-4 mb-6">
+                <div className="p-4 rounded-xl bg-[var(--bg-tertiary)]/50">
+                  <div className="text-xs text-[var(--text-muted)] mb-1">本地版本</div>
+                  <div className={`text-lg font-mono font-semibold ${
+                    currentLocal 
+                      ? (activeBranch === 'stable' ? 'text-emerald-400' : 'text-amber-400')
+                      : 'text-[var(--text-faint)]'
+                  }`}>
+                    {currentLocal?.version || '未安装'}
+                  </div>
+                </div>
+                <div className="p-4 rounded-xl bg-[var(--bg-tertiary)]/50">
+                  <div className="text-xs text-[var(--text-muted)] mb-1">最新版本</div>
+                  <div className="text-lg font-mono font-semibold text-[var(--text-primary)]">
+                    {currentRemote?.version || '-'}
+                  </div>
+                </div>
+              </div>
 
-        {/* Update Button */}
-        {isUpdatable && currentRemote && (
-          <motion.button
-            whileHover={{ scale: 1.01 }}
-            whileTap={{ scale: 0.99 }}
-            onClick={handleDownload}
-            disabled={downloading}
-            className={`w-full flex items-center justify-center gap-2 py-3 rounded-xl text-white font-medium transition-all disabled:opacity-70 ${
-              activeBranch === 'stable'
-                ? 'bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 shadow-lg shadow-emerald-500/20'
-                : 'bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 shadow-lg shadow-amber-500/20'
-            }`}
-          >
-            {downloading ? (
-              <>
-                <Loader2 className="w-5 h-5 animate-spin" />
-                <span>正在下载...</span>
-              </>
-            ) : (
-              <>
-                <Download className="w-5 h-5" />
-                <span>更新到 {currentRemote.version}</span>
-              </>
-            )}
-          </motion.button>
-        )}
+              {/* Update Button */}
+              {isUpdatable && currentRemote && (
+                <motion.button
+                  whileHover={{ scale: 1.01 }}
+                  whileTap={{ scale: 0.99 }}
+                  onClick={handleDownload}
+                  disabled={downloading}
+                  className={`w-full flex items-center justify-center gap-2 py-3 rounded-xl text-white font-medium transition-all disabled:opacity-70 ${
+                    activeBranch === 'stable'
+                      ? 'bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 shadow-lg shadow-emerald-500/20'
+                      : 'bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 shadow-lg shadow-amber-500/20'
+                  }`}
+                >
+                  {downloading ? (
+                    <>
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      <span>正在下载...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Download className="w-5 h-5" />
+                      <span>更新到 {currentRemote.version}</span>
+                    </>
+                  )}
+                </motion.button>
+              )}
 
-        {!isUpdatable && currentLocal && (
-          <div className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-[var(--bg-tertiary)]/50 text-[var(--text-muted)]">
-            <Check className="w-5 h-5" />
-            <span>已是最新版本</span>
-          </div>
-        )}
+              {!isUpdatable && currentLocal && !downloading && (
+                <div className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-[var(--bg-tertiary)]/50 text-[var(--text-muted)]">
+                  <Check className="w-5 h-5" />
+                  <span>已是最新版本</span>
+                </div>
+              )}
 
-        {!currentLocal && !loading && (
-          <motion.button
-            whileHover={{ scale: 1.01 }}
-            whileTap={{ scale: 0.99 }}
-            onClick={handleDownload}
-            disabled={downloading || !currentRemote}
-            className={`w-full flex items-center justify-center gap-2 py-3 rounded-xl text-white font-medium transition-all disabled:opacity-70 ${
-              activeBranch === 'stable'
-                ? 'bg-gradient-to-r from-emerald-500 to-emerald-600 shadow-lg shadow-emerald-500/20'
-                : 'bg-gradient-to-r from-amber-500 to-amber-600 shadow-lg shadow-amber-500/20'
-            }`}
-          >
-            {downloading ? (
-              <>
-                <Loader2 className="w-5 h-5 animate-spin" />
-                <span>正在下载...</span>
-              </>
-            ) : (
-              <>
-                <Download className="w-5 h-5" />
-                <span>安装 {currentRemote?.version || '内核'}</span>
-              </>
-            )}
-          </motion.button>
-        )}
+              {!currentLocal && (
+                <motion.button
+                  whileHover={{ scale: 1.01 }}
+                  whileTap={{ scale: 0.99 }}
+                  onClick={handleDownload}
+                  disabled={downloading || !currentRemote}
+                  className={`w-full flex items-center justify-center gap-2 py-3 rounded-xl text-white font-medium transition-all disabled:opacity-70 ${
+                    activeBranch === 'stable'
+                      ? 'bg-gradient-to-r from-emerald-500 to-emerald-600 shadow-lg shadow-emerald-500/20'
+                      : 'bg-gradient-to-r from-amber-500 to-amber-600 shadow-lg shadow-amber-500/20'
+                  }`}
+                >
+                  {downloading ? (
+                    <>
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      <span>正在下载...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Download className="w-5 h-5" />
+                      <span>安装 {currentRemote?.version || '内核'}</span>
+                    </>
+                  )}
+                </motion.button>
+              )}
 
-        {/* Version Details */}
-        {currentLocal?.versionDetail && (
-          <div className="mt-4 p-3 rounded-lg bg-[var(--bg-tertiary)]/30 text-xs font-mono text-[var(--text-faint)] whitespace-pre-wrap max-h-24 overflow-y-auto">
-            {currentLocal.versionDetail}
-          </div>
-        )}
+              {/* Version Details */}
+              {currentLocal?.versionDetail && (
+                <div className="mt-4 p-3 rounded-lg bg-[var(--bg-tertiary)]/30 text-xs font-mono text-[var(--text-faint)] whitespace-pre-wrap max-h-24 overflow-y-auto">
+                  {currentLocal.versionDetail}
+                </div>
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
       </motion.div>
 
       {/* Tips */}
@@ -373,11 +399,9 @@ function BranchCard({
   const colors = colorClasses[color]
 
   return (
-    <motion.button
-      whileHover={{ scale: 1.02 }}
-      whileTap={{ scale: 0.98 }}
+    <button
       onClick={onClick}
-      className={`relative p-5 rounded-2xl border-2 transition-all text-left ${
+      className={`group relative p-5 rounded-2xl border-2 transition-all text-left ${
         selected 
           ? colors.selected
           : 'border-[var(--border-secondary)] bg-[var(--bg-secondary)] hover:border-[var(--border-primary)]'
@@ -393,13 +417,13 @@ function BranchCard({
         </motion.div>
       )}
       <div className="flex items-center gap-2 mb-2">
-        <span className="font-semibold text-[var(--text-primary)]">{title}</span>
-        <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-medium ${colors.badge}`}>
+        <span className="font-semibold text-[var(--text-primary)] transition-transform duration-200 group-hover:scale-105 origin-left">{title}</span>
+        <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-medium transition-transform duration-200 group-hover:scale-105 ${colors.badge}`}>
           {subtitle}
         </span>
       </div>
-      <p className="text-xs text-[var(--text-muted)]">{description}</p>
-    </motion.button>
+      <p className="text-xs text-[var(--text-muted)] transition-transform duration-200 group-hover:scale-[1.02] origin-left">{description}</p>
+    </button>
   )
 }
 

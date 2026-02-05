@@ -30,6 +30,9 @@ export class TrafficMonitor extends EventEmitter {
     this.uploadTotal = 0
     this.downloadTotal = 0
 
+    // Poll immediately on start
+    this.poll()
+    
     this.interval = setInterval(() => this.poll(), this.pollInterval)
     this.log('Traffic monitor started')
   }
@@ -74,43 +77,53 @@ export class TrafficMonitor extends EventEmitter {
     try {
       const http = await import('http')
       
-      // Get traffic data
-      const trafficData = await this.httpGet(http, '/traffic')
-      if (trafficData) {
-        const { up, down } = JSON.parse(trafficData)
-        
-        const uploadSpeed = this.lastUpload > 0 ? Math.max(0, up - this.lastUpload) : 0
-        const downloadSpeed = this.lastDownload > 0 ? Math.max(0, down - this.lastDownload) : 0
-        
-        this.lastUpload = up
-        this.lastDownload = down
-        this.uploadTotal = up
-        this.downloadTotal = down
-
-        // Get connection count
-        let connections = 0
-        try {
-          const connData = await this.httpGet(http, '/connections')
-          if (connData) {
-            const parsed = JSON.parse(connData)
-            connections = parsed.connections?.length || 0
+      // Get connection count and calculate traffic from connections
+      let connections = 0
+      let totalUp = 0
+      let totalDown = 0
+      let gotTraffic = false
+      
+      try {
+        const connData = await this.httpGet(http, '/connections')
+        if (connData) {
+          const parsed = JSON.parse(connData)
+          connections = parsed.connections?.length || 0
+          
+          // Get total traffic directly from the response
+          if (typeof parsed.uploadTotal === 'number') {
+            totalUp = parsed.uploadTotal
           }
-        } catch {
-          // ignore
+          if (typeof parsed.downloadTotal === 'number') {
+            totalDown = parsed.downloadTotal
+          }
+          
+          gotTraffic = true
         }
+      } catch {
+        // Ignore parse errors
+      }
+      
+      if (gotTraffic) {
+        const uploadSpeed = this.lastUpload > 0 ? Math.max(0, totalUp - this.lastUpload) : 0
+        const downloadSpeed = this.lastDownload > 0 ? Math.max(0, totalDown - this.lastDownload) : 0
+        
+        this.lastUpload = totalUp
+        this.lastDownload = totalDown
+        this.uploadTotal = totalUp
+        this.downloadTotal = totalDown
 
         const snapshot: TrafficSnapshot = {
           uploadSpeed,
           downloadSpeed,
-          uploadTotal: up,
-          downloadTotal: down,
+          uploadTotal: totalUp,
+          downloadTotal: totalDown,
           connections
         }
 
         this.emit('traffic', snapshot)
       }
     } catch {
-      // API not available, ignore
+      // Ignore poll exceptions
     }
   }
 
@@ -126,10 +139,18 @@ export class TrafficMonitor extends EventEmitter {
       }, (res) => {
         let data = ''
         res.on('data', chunk => data += chunk)
-        res.on('end', () => resolve(data))
+        res.on('end', () => {
+          resolve(data)
+        })
       })
-      req.on('error', () => resolve(null))
-      req.on('timeout', () => { req.destroy(); resolve(null) })
+      req.on('error', () => {
+        resolve(null)
+      })
+      req.on('timeout', () => {
+        this.log('Request timeout')
+        req.destroy()
+        resolve(null)
+      })
       req.end()
     })
   }

@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Search, RefreshCw, Check, Loader2, Zap, MoreVertical, Edit3, Share2, Trash2, Filter, Plus } from 'lucide-react'
+import { Search, RefreshCw, Check, Loader2, Zap, MoreVertical, Edit3, Share2, Trash2, Filter, Plus, X } from 'lucide-react'
 import { useNodesStore } from '../stores/nodesStore'
 import { cn } from '../lib/utils'
 import { ConfirmModal } from './ui/ConfirmModal'
 import { NodeDetailModal } from './ui/NodeDetailModal'
 import { NodeFilterModal } from './ui/NodeFilterModal'
 import { AddNodeModal } from './ui/AddNodeModal'
+import { useToast } from './ui/Toast'
 import type { SingBoxOutbound, Profile } from '@shared/types'
 
 interface NodeItem extends SingBoxOutbound {
@@ -37,6 +38,7 @@ export default function Nodes() {
     setNodeFilter,
     selectNode,
     testAllLatency,
+    cancelTestAllLatency,
     testNodeLatency,
     loadNodes
   } = useNodesStore()
@@ -50,14 +52,13 @@ export default function Nodes() {
   const [detailModalOpen, setDetailModalOpen] = useState(false)
   const [detailTarget, setDetailTarget] = useState<NodeItem | null>(null)
 
-  const [exportToast, setExportToast] = useState<string | null>(null)
-
   const [filterModalOpen, setFilterModalOpen] = useState(false)
 
   const [addNodeModalOpen, setAddNodeModalOpen] = useState(false)
 
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null)
+  const toast = useToast()
 
   useEffect(() => {
     loadNodes()
@@ -140,11 +141,18 @@ export default function Nodes() {
     return map[type?.toLowerCase() || ''] || type?.toUpperCase() || 'Unknown'
   }
 
-  const getLatencyColor = (latency?: number | null) => {
-    if (!latency) return 'text-text-muted'
-    if (latency < 100) return 'text-status-success'
-    if (latency < 300) return 'text-status-warning'
-    return 'text-status-error'
+  const getLatencyColor = (latency?: number | null, isTimeout?: boolean) => {
+    if (isTimeout) return 'text-red-400'
+    if (!latency || latency < 0) return 'text-text-muted'
+    if (latency < 500) return 'text-green-400'
+    if (latency < 1500) return 'text-yellow-400'
+    return 'text-red-400'
+  }
+
+  const getLatencyDisplay = (node: NodeItem) => {
+    if (node.isTimeout) return '超时'
+    if (node.latencyMs && node.latencyMs > 0) return `${node.latencyMs}ms`
+    return '延迟'
   }
 
   const handleTestSingleNode = async (tag: string) => {
@@ -165,7 +173,10 @@ export default function Nodes() {
       await window.api.node.delete(deleteTarget.tag)
       await loadNodes()
       setDeleteModalOpen(false)
+      toast.success('节点已删除')
       setDeleteTarget(null)
+    } catch (err) {
+      toast.error(`删除失败: ${err}`)
     } finally {
       setIsDeleting(false)
     }
@@ -184,19 +195,21 @@ export default function Nodes() {
     try {
       const link = await window.api.node.export(node.tag)
       await navigator.clipboard.writeText(link)
-      setExportToast(`已复制「${node.tag}」的分享链接`)
-      setTimeout(() => setExportToast(null), 2000)
+      toast.success(`已复制「${node.tag}」的分享链接`)
     } catch (error) {
-      console.error('Export failed:', error)
-      setExportToast('导出失败')
-      setTimeout(() => setExportToast(null), 2000)
+      toast.error('导出失败')
     }
   }
 
   const handleAddNode = async (link: string, target: { type: 'existing'; profileId: string } | { type: 'new'; profileName: string }) => {
-    await window.api.node.add(link, target)
-    await loadNodes()
-    await loadProfiles()
+    try {
+      await window.api.node.add(link, target)
+      await loadNodes()
+      await loadProfiles()
+      toast.success('节点添加成功')
+    } catch (err) {
+      toast.error(`添加失败: ${err}`)
+    }
   }
 
   return (
@@ -242,12 +255,14 @@ export default function Nodes() {
           </button>
 
           <button
-            onClick={testAllLatency}
-            disabled={isTesting}
-            className="glass-btn h-11 w-11 !p-0 flex items-center justify-center rounded-xl disabled:opacity-50"
+            onClick={isTesting ? cancelTestAllLatency : testAllLatency}
+            className={cn(
+              "glass-btn h-11 w-11 !p-0 flex items-center justify-center rounded-xl",
+              isTesting && "!bg-red-500/20 !border-red-500/30 hover:!bg-red-500/30"
+            )}
           >
             {isTesting ? (
-              <Loader2 className="w-4 h-4 text-[var(--text-primary)] animate-spin" />
+              <X className="w-4 h-4 text-red-400" />
             ) : (
               <RefreshCw className="w-4 h-4 text-[var(--text-primary)]" />
             )}
@@ -356,11 +371,11 @@ export default function Nodes() {
                       className={cn(
                         'text-xs font-bold font-mono flex items-center gap-1 px-2 py-1 rounded-lg transition-all duration-200',
                         'hover:bg-[var(--bg-elevated)] active:scale-95',
-                        node.latencyMs ? getLatencyColor(node.latencyMs) : 'text-[var(--text-muted)]'
+                        getLatencyColor(node.latencyMs, node.isTimeout)
                       )}
                     >
                       <Zap className="w-3 h-3" />
-                      {node.latencyMs ? `${node.latencyMs}ms` : '测速'}
+                      {getLatencyDisplay(node)}
                     </button>
                   )}
                 </div>
@@ -417,7 +432,7 @@ export default function Nodes() {
                         className="w-full px-3 py-2 text-xs text-[var(--text-primary)] hover:bg-[var(--bg-elevated)] flex items-center gap-2 transition-colors"
                       >
                         <Zap className="w-3.5 h-3.5 shrink-0" />
-                        <span>测速</span>
+                        <span>延迟</span>
                       </button>
                       <div className="my-1 mx-2 border-t border-[var(--border-secondary)]" />
                       <button
@@ -461,8 +476,7 @@ export default function Nodes() {
         onExport={async (tag) => {
           const link = await window.api.node.export(tag)
           await navigator.clipboard.writeText(link)
-          setExportToast(`已复制分享链接`)
-          setTimeout(() => setExportToast(null), 2000)
+          toast.success('已复制分享链接')
         }}
       />
 
@@ -481,19 +495,7 @@ export default function Nodes() {
         currentProfileId={activeProfileId}
       />
 
-      <AnimatePresence>
-        {exportToast && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.15 }}
-            className="absolute bottom-8 left-1/2 -translate-x-1/2 z-[200] px-4 py-2.5 glass-card rounded-xl border border-[var(--glass-border)] shadow-xl"
-          >
-            <p className="text-sm font-medium text-[var(--text-primary)]">{exportToast}</p>
-          </motion.div>
-        )}
-      </AnimatePresence>
+
     </div>
   )
 }

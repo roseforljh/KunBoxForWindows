@@ -4,6 +4,7 @@ import { IPC_CHANNELS } from '../../shared/constants'
 import { DEFAULT_SETTINGS, type AppSettings } from '../../shared/types'
 
 const store = new Store<{ settings: AppSettings }>({
+  name: 'settings',
   defaults: {
     settings: DEFAULT_SETTINGS
   }

@@ -5,6 +5,7 @@ import type { Profile } from '@shared/types'
 import { ConfirmModal } from './ui/ConfirmModal'
 import { EditProfileModal } from './ui/EditProfileModal'
 import { AddProfileModal } from './ui/AddProfileModal'
+import { useToast } from './ui/Toast'
 
 export default function Profiles() {
   const [profiles, setProfiles] = useState<Profile[]>([])
@@ -12,6 +13,7 @@ export default function Profiles() {
   const [addModalOpen, setAddModalOpen] = useState(false)
   const [openMenuId, setOpenMenuId] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  const toast = useToast()
 
   const [deleteModalOpen, setDeleteModalOpen] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<Profile | null>(null)
@@ -40,24 +42,47 @@ export default function Profiles() {
   const loadProfiles = async () => {
     const list = await window.api.profile.list()
     setProfiles(list)
+    
+    // Auto-select first enabled profile if none is active
+    if (list.length > 0) {
+      const enabledProfiles = list.filter(p => p.enabled)
+      if (enabledProfiles.length > 0 && !activeId) {
+        const first = enabledProfiles[0]
+        setActiveId(first.id)
+        await window.api.profile.setActive(first.id)
+      }
+    }
   }
 
   const handleImportUrl = async (name: string, url: string, settings: { autoUpdateInterval: number; dnsPreResolve: boolean; dnsServer: string | null }) => {
-    await window.api.profile.add(url, name || undefined, settings)
-    await loadProfiles()
+    try {
+      await window.api.profile.add(url, name || undefined, settings)
+      await loadProfiles()
+      toast.success('订阅添加成功')
+    } catch (err) {
+      toast.error(`添加失败: ${err}`)
+    }
   }
 
   const handleImportContent = async (name: string, content: string, settings: { autoUpdateInterval: number; dnsPreResolve: boolean; dnsServer: string | null }) => {
-    await window.api.profile.importContent(name, content, settings)
-    await loadProfiles()
+    try {
+      await window.api.profile.importContent(name, content, settings)
+      await loadProfiles()
+      toast.success('订阅导入成功')
+    } catch (err) {
+      toast.error(`导入失败: ${err}`)
+    }
   }
 
   const handleRefresh = async (id: string) => {
     setOpenMenuId(null)
     setUpdatingIds((prev) => new Set(prev).add(id))
     try {
-      await window.api.profile.update(id)
+      const profile = await window.api.profile.update(id)
       await loadProfiles()
+      toast.success(`更新成功，共 ${profile.nodeCount} 个节点`)
+    } catch (err) {
+      toast.error(`更新失败: ${err}`)
     } finally {
       setUpdatingIds((prev) => {
         const next = new Set(prev)
@@ -80,7 +105,10 @@ export default function Profiles() {
       await window.api.profile.delete(deleteTarget.id)
       await loadProfiles()
       setDeleteModalOpen(false)
+      toast.success('订阅已删除')
       setDeleteTarget(null)
+    } catch (err) {
+      toast.error(`删除失败: ${err}`)
     } finally {
       setIsDeleting(false)
     }
@@ -99,7 +127,10 @@ export default function Profiles() {
       await window.api.profile.edit(editTarget.id, { name, url, ...settings })
       await loadProfiles()
       setEditModalOpen(false)
+      toast.success('订阅已更新')
       setEditTarget(null)
+    } catch (err) {
+      toast.error(`保存失败: ${err}`)
     } finally {
       setIsEditing(false)
     }
@@ -107,8 +138,13 @@ export default function Profiles() {
 
   const handleToggleEnabled = async (profile: Profile) => {
     setOpenMenuId(null)
-    await window.api.profile.setEnabled(profile.id, !profile.enabled)
-    await loadProfiles()
+    try {
+      await window.api.profile.setEnabled(profile.id, !profile.enabled)
+      await loadProfiles()
+      toast.info(profile.enabled ? '订阅已禁用' : '订阅已启用')
+    } catch (err) {
+      toast.error(`操作失败: ${err}`)
+    }
   }
 
   const handleSelect = async (id: string) => {

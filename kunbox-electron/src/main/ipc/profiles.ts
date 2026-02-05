@@ -2,7 +2,7 @@ import { ipcMain } from 'electron'
 import { join } from 'path'
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs'
 import { randomUUID } from 'crypto'
-import { Socket } from 'net'
+import { spawn, ChildProcess } from 'child_process'
 import axios from 'axios'
 import yaml from 'js-yaml'
 import log from 'electron-log'
@@ -12,6 +12,11 @@ import type { Profile, SingBoxOutbound } from '../../shared/types'
 const DATA_DIR = join(process.env.APPDATA || '', 'KunBox')
 const PROFILES_FILE = join(DATA_DIR, 'profiles.json')
 const CONFIGS_DIR = join(DATA_DIR, 'configs')
+const TEMP_TEST_DIR = join(DATA_DIR, 'temp_test')
+
+// Temporary sing-box process for latency testing
+let tempSingboxProcess: ChildProcess | null = null
+let tempSingboxPort = 19090 // Use different port than main VPN
 
 interface ProfilesData {
   profiles: Profile[]
@@ -216,19 +221,147 @@ function parseClashConfig(config: { proxies?: unknown[] }): SingBoxOutbound[] {
 
   return config.proxies.map((proxy: unknown) => {
     const p = proxy as Record<string, unknown>
+    const type = mapClashType(p.type as string)
+    
     const base: SingBoxOutbound = {
       tag: p.name as string,
-      type: mapClashType(p.type as string),
+      type,
       server: p.server as string,
       server_port: p.port as number
     }
 
+    // Common fields
     if (p.password) base.password = p.password as string
     if (p.uuid) base.uuid = p.uuid as string
     if (p.method) base.method = p.method as string
+    if (p.flow) base.flow = p.flow as string
+
+    // TLS configuration
+    if (p.tls === true || p.network === 'ws' || p.network === 'grpc' || p.network === 'h2') {
+      // For WebSocket nodes using CDN (like Cloudflare Argo), set insecure to true by default
+      // as they often use self-signed or CDN certificates
+      const isWsWithCdn = p.network === 'ws' && 
+        (p.server as string)?.includes('.') && 
+        !isDirectIp(p.server as string)
+      
+      base.tls = {
+        enabled: true,
+        server_name: (p.servername || p.sni || p.server) as string,
+        insecure: p['skip-cert-verify'] === true || isWsWithCdn
+      }
+
+      // ALPN
+      if (p.alpn && Array.isArray(p.alpn)) {
+        base.tls.alpn = p.alpn as string[]
+      }
+
+      // Client fingerprint (uTLS)
+      if (p['client-fingerprint']) {
+        base.tls.utls = {
+          enabled: true,
+          fingerprint: p['client-fingerprint'] as string
+        }
+      }
+
+      // Reality
+      const realityOpts = p['reality-opts'] as Record<string, unknown> | undefined
+      if (realityOpts) {
+        base.tls.reality = {
+          enabled: true,
+          public_key: realityOpts['public-key'] as string,
+          short_id: realityOpts['short-id'] as string
+        }
+      }
+    }
+
+    // Transport configuration
+    if (p.network === 'ws') {
+      const wsOpts = p['ws-opts'] as Record<string, unknown> | undefined
+      let path = (wsOpts?.path as string) || '/'
+      
+      base.transport = {
+        type: 'ws',
+        headers: wsOpts?.headers as Record<string, string> | undefined
+      }
+      
+      // Parse early data from path (e.g., /path?ed=2560) and REMOVE it from path
+      // This is how SubStore handles it
+      const edMatch = path.match(/^(.*?)(?:\?ed=(\d+))?$/)
+      if (edMatch) {
+        path = edMatch[1] || '/'
+        if (edMatch[2]) {
+          base.transport.max_early_data = parseInt(edMatch[2])
+          base.transport.early_data_header_name = 'Sec-WebSocket-Protocol'
+        }
+      }
+      
+      // Also check ws-opts for max-early-data
+      if (!base.transport.max_early_data && wsOpts?.['max-early-data']) {
+        base.transport.max_early_data = wsOpts['max-early-data'] as number
+        base.transport.early_data_header_name = wsOpts?.['early-data-header-name'] as string || 'Sec-WebSocket-Protocol'
+      }
+      
+      base.transport.path = path
+      
+      // Ensure Host header is set if not present
+      if (!base.transport.headers?.Host && p.servername) {
+        base.transport.headers = {
+          ...base.transport.headers,
+          Host: p.servername as string
+        }
+      }
+    } else if (p.network === 'grpc') {
+      const grpcOpts = p['grpc-opts'] as Record<string, unknown> | undefined
+      base.transport = {
+        type: 'grpc',
+        service_name: grpcOpts?.['grpc-service-name'] as string || ''
+      }
+    } else if (p.network === 'h2') {
+      const h2Opts = p['h2-opts'] as Record<string, unknown> | undefined
+      base.transport = {
+        type: 'http',
+        path: (h2Opts?.path as string[])?.join(',') || '/',
+        host: h2Opts?.host as string[] | undefined
+      }
+    }
+
+    // VMess specific
+    if (type === 'vmess') {
+      base.uuid = p.uuid as string
+      base.security = (p.cipher as string) || 'auto'
+      if (p.alterId) base.alter_id = p.alterId as number
+    }
+
+    // Hysteria2 specific  
+    if (type === 'hysteria2') {
+      if (!base.tls) {
+        base.tls = {
+          enabled: true,
+          server_name: (p.sni || p.server) as string,
+          insecure: p['skip-cert-verify'] === true
+        }
+      }
+      if (p.alpn && Array.isArray(p.alpn)) {
+        base.tls.alpn = p.alpn as string[]
+      }
+    }
+
+    // VLESS specific - packet encoding
+    if (type === 'vless') {
+      base.packet_encoding = 'xudp'
+    }
 
     return base
   }).filter(n => n.tag && n.server)
+}
+
+// Check if the server is a direct IP address (not a domain)
+function isDirectIp(server: string): boolean {
+  // IPv4 pattern
+  const ipv4Regex = /^(\d{1,3}\.){3}\d{1,3}$/
+  // IPv6 pattern (simplified)
+  const ipv6Regex = /^[\da-fA-F:]+$/
+  return ipv4Regex.test(server) || ipv6Regex.test(server)
 }
 
 function mapClashType(type: string): string {
@@ -424,12 +557,8 @@ export function initProfileHandlers() {
   })
 
   ipcMain.handle(IPC_CHANNELS.NODE_TEST_LATENCY, async (_, tag: string) => {
-    if (!data.activeProfileId) return -1
-    const nodes = loadProfileNodes(data.activeProfileId)
-    const node = nodes.find(n => n.tag === tag)
-    if (!node || !node.server || !node.server_port) return -1
-    
-    return testTcpLatency(node.server, node.server_port)
+    // Test latency through the local proxy (like Android version)
+    return testProxyLatency(tag)
   })
 
   ipcMain.handle(IPC_CHANNELS.NODE_TEST_ALL, async () => {
@@ -437,7 +566,7 @@ export function initProfileHandlers() {
     const results: Record<string, number> = {}
     
     // Test all nodes in parallel with concurrency limit
-    const CONCURRENCY = 8
+    const CONCURRENCY = 5
     const chunks: SingBoxOutbound[][] = []
     for (let i = 0; i < nodes.length; i += CONCURRENCY) {
       chunks.push(nodes.slice(i, i + CONCURRENCY))
@@ -445,11 +574,10 @@ export function initProfileHandlers() {
     
     for (const chunk of chunks) {
       const promises = chunk.map(async (node) => {
-        if (!node.tag || !node.server || !node.server_port) {
-          if (node.tag) results[node.tag] = -1
+        if (!node.tag) {
           return
         }
-        const latency = await testTcpLatency(node.server, node.server_port)
+        const latency = await testProxyLatency(node.tag)
         results[node.tag] = latency
       })
       await Promise.all(promises)
@@ -540,44 +668,125 @@ export function initProfileHandlers() {
 }
 
 /**
- * Test TCP connection latency to a server
- * Returns latency in ms, or -1 if connection failed/timed out
+ * Test latency for a node using sing-box Clash API
+ * Works both when VPN is running (uses main sing-box) and when not (uses temp sing-box)
+ * Reference: GUI.for.SingBox, Android KunBox
  */
-async function testTcpLatency(host: string, port: number, timeout: number = 5000): Promise<number> {
+async function testProxyLatency(tag: string, timeout: number = 10000): Promise<number> {
+  // Check if main VPN is running by trying to connect to its API
+  const isMainVpnRunning = await checkMainVpnRunning()
+  
+  if (isMainVpnRunning) {
+    // VPN is running, use main sing-box Clash API
+    return testWithClashApi(tag, timeout, 9090)
+  } else {
+    // VPN not running, need to use temporary sing-box
+    const nodes = data.activeProfileId ? loadProfileNodes(data.activeProfileId) : []
+    const node = nodes.find(n => n.tag === tag)
+    if (!node) {
+      log.debug(`Node not found: ${tag}`)
+      return -1
+    }
+    
+    // Start temp sing-box if not running
+    const started = await startTempSingbox(nodes)
+    if (!started) {
+      log.debug('Failed to start temp sing-box for latency test')
+      return -1
+    }
+    
+    // Wait a bit for sing-box to be ready
+    await new Promise(resolve => setTimeout(resolve, 500))
+    
+    // Test using temp sing-box
+    return testWithClashApi(tag, timeout, tempSingboxPort)
+  }
+}
+
+/**
+ * Check if main VPN sing-box is running by trying to connect to its API
+ */
+async function checkMainVpnRunning(): Promise<boolean> {
+  const http = await import('http')
+  
   return new Promise((resolve) => {
-    const startTime = Date.now()
-    const socket = new Socket()
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port: 9090,
+      path: '/version',
+      method: 'GET',
+      timeout: 1000
+    }, (res) => {
+      resolve(res.statusCode === 200)
+    })
     
-    const cleanup = () => {
-      socket.removeAllListeners()
-      socket.destroy()
+    req.on('error', () => resolve(false))
+    req.on('timeout', () => {
+      req.destroy()
+      resolve(false)
+    })
+    
+    req.end()
+  })
+}
+
+/**
+ * Test latency using sing-box's Clash API
+ * Uses /proxies/{name}/delay endpoint
+ * Reference: GUI.for.SingBox
+ */
+async function testWithClashApi(proxyName: string, timeout: number = 10000, port: number = 9090): Promise<number> {
+  const http = await import('http')
+  
+  const API_HOST = '127.0.0.1'
+  const TEST_URL = 'https://www.gstatic.com/generate_204'
+  
+  return new Promise((resolve) => {
+    const encodedName = encodeURIComponent(proxyName)
+    // Build path with query params
+    const path = `/proxies/${encodedName}/delay?url=${encodeURIComponent(TEST_URL)}&timeout=${timeout}`
+    
+    const options = {
+      hostname: API_HOST,
+      port: port,
+      path: path,
+      method: 'GET',
+      timeout: timeout + 5000
     }
     
-    socket.setTimeout(timeout)
-    
-    socket.on('connect', () => {
-      const latency = Date.now() - startTime
-      cleanup()
-      resolve(latency)
+    const req = http.request(options, (res) => {
+      let body = ''
+      res.on('data', chunk => body += chunk)
+      res.on('end', () => {
+        try {
+          const result = JSON.parse(body)
+          if (typeof result.delay === 'number' && result.delay > 0) {
+            resolve(result.delay)
+          } else if (result.message) {
+            log.debug(`Delay test error for ${proxyName}: ${result.message}`)
+            resolve(-1)
+          } else {
+            resolve(-1)
+          }
+        } catch (e) {
+          log.debug(`Clash API parse error for ${proxyName}: ${body}`)
+          resolve(-1)
+        }
+      })
     })
     
-    socket.on('timeout', () => {
-      cleanup()
+    req.on('error', (e) => {
+      log.debug(`Clash API request error for ${proxyName}: ${e.message}`)
       resolve(-1)
     })
     
-    socket.on('error', (err) => {
-      log.debug(`TCP latency test failed for ${host}:${port}:`, err.message)
-      cleanup()
+    req.on('timeout', () => {
+      req.destroy()
+      log.debug(`Clash API timeout for ${proxyName}`)
       resolve(-1)
     })
     
-    try {
-      socket.connect(port, host)
-    } catch (err) {
-      cleanup()
-      resolve(-1)
-    }
+    req.end()
   })
 }
 
@@ -621,3 +830,201 @@ function exportNodeToLink(node: SingBoxOutbound): string {
       return JSON.stringify(node, null, 2)
   }
 }
+
+/**
+ * Start a temporary sing-box instance for latency testing when VPN is not running
+ */
+async function startTempSingbox(nodes: SingBoxOutbound[]): Promise<boolean> {
+  if (tempSingboxProcess) {
+    // Check if still running
+    try {
+      const isRunning = await checkTempSingboxRunning()
+      if (isRunning) return true
+    } catch {
+      // Not running, need to restart
+    }
+    stopTempSingbox()
+  }
+
+  mkdirSync(TEMP_TEST_DIR, { recursive: true })
+
+  // Generate minimal config for testing - need log enabled to detect startup
+  const config = {
+    log: { 
+      disabled: false,
+      level: 'info',
+      timestamp: true
+    },
+    experimental: {
+      clash_api: {
+        external_controller: `127.0.0.1:${tempSingboxPort}`,
+        default_mode: 'rule'
+      }
+    },
+    inbounds: [],
+    outbounds: [
+      ...nodes,
+      { type: 'direct', tag: 'direct' }
+    ],
+    route: {
+      final: 'direct',
+      auto_detect_interface: true
+    }
+  }
+
+  const configPath = join(TEMP_TEST_DIR, 'test_config.json')
+  writeFileSync(configPath, JSON.stringify(config, null, 2))
+  log.info(`[TempSingbox] Config written to ${configPath}`)
+
+  // Find sing-box executable - use same logic as singbox.ts
+  const devPath = join(__dirname, '../../resources/libs/sing-box.exe')
+  const prodPath = join(process.resourcesPath || '', 'resources/libs/sing-box.exe')
+  const exePath = existsSync(devPath) ? devPath : prodPath
+
+  if (!existsSync(exePath)) {
+    log.error(`[TempSingbox] sing-box executable not found at ${devPath} or ${prodPath}`)
+    return false
+  }
+
+  log.info(`[TempSingbox] Starting with executable: ${exePath}`)
+
+  return new Promise((resolve) => {
+    tempSingboxProcess = spawn(exePath, ['run', '-c', configPath], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      cwd: TEMP_TEST_DIR
+    })
+
+    let started = false
+    const timeout = setTimeout(() => {
+      if (!started) {
+        // Even if we don't see the log, try to check if API is responding
+        checkTempSingboxRunning().then(running => {
+          if (running) {
+            started = true
+            log.info('[TempSingbox] Started (detected via API)')
+            resolve(true)
+          } else {
+            log.error('[TempSingbox] Startup timeout')
+            stopTempSingbox()
+            resolve(false)
+          }
+        })
+      }
+    }, 3000)
+
+    tempSingboxProcess.stdout?.on('data', (data) => {
+      const msg = data.toString()
+      log.debug(`[TempSingbox stdout] ${msg}`)
+      if (msg.includes('started') || msg.includes('clash-api')) {
+        started = true
+        clearTimeout(timeout)
+        log.info('[TempSingbox] Started successfully')
+        resolve(true)
+      }
+    })
+
+    tempSingboxProcess.stderr?.on('data', (data) => {
+      const msg = data.toString()
+      log.debug(`[TempSingbox stderr] ${msg}`)
+      // sing-box outputs to stderr
+      if (msg.includes('started') || msg.includes('clash-api')) {
+        started = true
+        clearTimeout(timeout)
+        log.info('[TempSingbox] Started successfully')
+        resolve(true)
+      }
+    })
+
+    tempSingboxProcess.on('error', (err) => {
+      log.error('[TempSingbox] Error:', err)
+      clearTimeout(timeout)
+      resolve(false)
+    })
+
+    tempSingboxProcess.on('exit', (code) => {
+      log.info(`[TempSingbox] Exited with code ${code}`)
+      tempSingboxProcess = null
+    })
+  })
+}
+
+async function checkTempSingboxRunning(): Promise<boolean> {
+  const http = await import('http')
+  
+  return new Promise((resolve) => {
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port: tempSingboxPort,
+      path: '/version',
+      method: 'GET',
+      timeout: 1000
+    }, (res) => {
+      resolve(res.statusCode === 200)
+    })
+    
+    req.on('error', () => resolve(false))
+    req.on('timeout', () => {
+      req.destroy()
+      resolve(false)
+    })
+    
+    req.end()
+  })
+}
+
+function stopTempSingbox(): void {
+  if (tempSingboxProcess) {
+    tempSingboxProcess.kill()
+    tempSingboxProcess = null
+  }
+}
+
+/**
+ * Test latency using temporary sing-box instance (for when VPN is not running)
+ */
+async function testWithTempSingbox(node: SingBoxOutbound, timeout: number = 10000): Promise<number> {
+  const http = await import('http')
+  const TEST_URL = 'https://www.gstatic.com/generate_204'
+  
+  return new Promise((resolve) => {
+    const encodedName = encodeURIComponent(node.tag || '')
+    const path = `/proxies/${encodedName}/delay?url=${encodeURIComponent(TEST_URL)}&timeout=${timeout}`
+    
+    const options = {
+      hostname: '127.0.0.1',
+      port: tempSingboxPort,
+      path: path,
+      method: 'GET',
+      timeout: timeout + 5000
+    }
+    
+    const req = http.request(options, (res) => {
+      let body = ''
+      res.on('data', chunk => body += chunk)
+      res.on('end', () => {
+        try {
+          const result = JSON.parse(body)
+          if (typeof result.delay === 'number' && result.delay > 0) {
+            resolve(result.delay)
+          } else {
+            resolve(-1)
+          }
+        } catch {
+          resolve(-1)
+        }
+      })
+    })
+    
+    req.on('error', () => resolve(-1))
+    req.on('timeout', () => {
+      req.destroy()
+      resolve(-1)
+    })
+    
+    req.end()
+  })
+}
+
+// Export functions for use in singbox.ts
+export { startTempSingbox, stopTempSingbox, testWithTempSingbox, loadProfileNodes }

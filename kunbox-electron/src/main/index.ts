@@ -3,9 +3,10 @@ import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import log from 'electron-log'
 import { initSingBoxHandlers, cleanupBeforeQuit } from './ipc/singbox'
-import { initProfileHandlers } from './ipc/profiles'
+import { initProfileHandlers, stopTempSingbox } from './ipc/profiles'
 import { initSettingsHandlers } from './ipc/settings'
 import { initKernelHandlers } from './ipc/kernel'
+import { initRuleSetsHandlers } from './ipc/rulesets'
 import { createTray, destroyTray, updateTrayStatus } from './tray'
 
 let mainWindow: BrowserWindow | null = null
@@ -71,6 +72,11 @@ function createWindow(): void {
   })
   ipcMain.on('window:close', () => mainWindow?.hide())
 
+  // Tray status update from renderer
+  ipcMain.on('tray:update-status', (_, connected: boolean) => {
+    updateTrayStatus(connected)
+  })
+
   // Create system tray
   createTray(mainWindow, getIconPath())
 }
@@ -86,6 +92,7 @@ app.whenReady().then(() => {
   initProfileHandlers()
   initSettingsHandlers()
   initKernelHandlers()
+  initRuleSetsHandlers()
 
   createWindow()
 
@@ -104,6 +111,9 @@ app.on('before-quit', async (event) => {
     ;(app as any).isQuitting = true
     
     log.info('App quitting, performing cleanup...')
+    
+    // Stop temp sing-box if running
+    stopTempSingbox()
     
     // Perform safe cleanup
     await cleanupBeforeQuit()

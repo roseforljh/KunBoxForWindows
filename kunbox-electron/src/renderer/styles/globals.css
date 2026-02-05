@@ -762,6 +762,28 @@
   background: rgba(217, 139, 133, 0.32);
 }
 
+/* ===== Select/Option Dark Mode Fix ===== */
+select {
+  background-color: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+select option {
+  background-color: #1a1a1a;
+  color: #ffffff;
+  padding: 8px;
+}
+
+.light select option {
+  background-color: #ffffff;
+  color: #3d4043;
+}
+
+select:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+}
+
 
 /* ===== Theme Transition Animation ===== */
 /* Smooth transitions for main containers only */

@@ -25,6 +25,7 @@ import {
 } from 'lucide-react'
 import { Modal, ModalButton } from './ui/Modal'
 import { useNodesStore } from '../stores/nodesStore'
+import { useConnectionStore } from '../stores/connectionStore'
 import type { Profile } from '@shared/types'
 
 const fastTransition = { duration: 0.15, ease: [0.4, 0, 0.2, 1] }
@@ -301,10 +302,8 @@ const builtInHubRules: HubRuleSet[] = [
 ]
 
 export default function RuleSets() {
-  const [ruleSets, setRuleSets] = useState<RuleSetItem[]>(() => {
-    const saved = localStorage.getItem('kunbox-rulesets')
-    return saved ? JSON.parse(saved) : defaultRuleSets
-  })
+  const [ruleSets, setRuleSets] = useState<RuleSetItem[]>([])
+  const [isRuleSetsLoaded, setIsRuleSetsLoaded] = useState(false)
   const [showAddDialog, setShowAddDialog] = useState(false)
   const [showHubDialog, setShowHubDialog] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
@@ -322,10 +321,25 @@ export default function RuleSets() {
   } | null>(null)
 
   const [toasts, setToasts] = useState<ToastMessage[]>([])
+  
+  // Track which rulesets are currently downloading
+  const [downloadingTags, setDownloadingTags] = useState<Set<string>>(new Set())
 
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [isLoadingData, setIsLoadingData] = useState(false)
   const { nodes, loadNodes } = useNodesStore()
+  const { state: vpnState, setNeedsRestart } = useConnectionStore()
+
+  // Mark needs restart when rulesets change while VPN is running
+  const updateRuleSets = useCallback((updater: (prev: RuleSetItem[]) => RuleSetItem[]) => {
+    setRuleSets(prev => {
+      const newRuleSets = updater(prev)
+      if (vpnState === 'connected') {
+        setNeedsRestart(true)
+      }
+      return newRuleSets
+    })
+  }, [vpnState, setNeedsRestart])
 
   const [dialogData, setDialogData] = useState({
     tag: '',
@@ -348,9 +362,24 @@ export default function RuleSets() {
     []
   )
 
+  // Load rulesets from main process on mount
   useEffect(() => {
-    localStorage.setItem('kunbox-rulesets', JSON.stringify(ruleSets))
-  }, [ruleSets])
+    window.api.ruleset.list().then((data: RuleSetItem[]) => {
+      if (data && data.length > 0) {
+        setRuleSets(data)
+      } else {
+        setRuleSets(defaultRuleSets)
+      }
+      setIsRuleSetsLoaded(true)
+    })
+  }, [])
+
+  // Save rulesets to main process when changed (only after initial load)
+  useEffect(() => {
+    if (isRuleSetsLoaded && ruleSets.length > 0) {
+      window.api.ruleset.save(ruleSets)
+    }
+  }, [ruleSets, isRuleSetsLoaded])
 
   const loadProfiles = async () => {
     try {
@@ -425,10 +454,51 @@ export default function RuleSets() {
     )
   }, [hubSearch, ruleSets, hubRuleSets])
 
-  const toggleRuleSet = (id: string) => {
-    setRuleSets((prev) =>
-      prev.map((rs) => (rs.id === id ? { ...rs, enabled: !rs.enabled } : rs))
-    )
+  const toggleRuleSet = async (id: string) => {
+    const ruleSet = ruleSets.find(rs => rs.id === id)
+    if (!ruleSet) return
+    
+    const newEnabled = !ruleSet.enabled
+    
+    // If enabling a remote ruleset, check if it needs download
+    if (newEnabled && ruleSet.type === 'remote') {
+      const isCached = await window.api.ruleset.isCached(ruleSet.tag)
+      
+      if (!isCached) {
+        // Start download
+        setDownloadingTags(prev => new Set(prev).add(ruleSet.tag))
+        showToast(`正在下载规则集「${ruleSet.name}」...`, 'info')
+        
+        try {
+          const result = await window.api.ruleset.download(ruleSet)
+          if (result.success) {
+            showToast(`规则集「${ruleSet.name}」下载成功`, 'success')
+            // Now enable it
+            setRuleSets(prev => prev.map(rs => rs.id === id ? { ...rs, enabled: true } : rs))
+          } else {
+            showToast(`规则集「${ruleSet.name}」下载失败`, 'error')
+            // Don't enable if download failed
+          }
+        } catch {
+          showToast(`规则集「${ruleSet.name}」下载失败`, 'error')
+        } finally {
+          setDownloadingTags(prev => {
+            const next = new Set(prev)
+            next.delete(ruleSet.tag)
+            return next
+          })
+        }
+        return
+      } else {
+        // Already cached, show toast
+        showToast(`规则集「${ruleSet.name}」已启用（本地缓存）`, 'success')
+      }
+    } else if (!newEnabled) {
+      showToast(`规则集「${ruleSet.name}」已禁用`, 'info')
+    }
+    
+    // Toggle enabled state
+    setRuleSets(prev => prev.map(rs => rs.id === id ? { ...rs, enabled: newEnabled } : rs))
   }
 
   const changeOutboundMode = (id: string, mode: RuleSetItem['outboundMode']) => {
@@ -537,28 +607,55 @@ export default function RuleSets() {
     setShowHubAddConfirm(true)
   }
 
-  const confirmAddFromHub = () => {
+  const confirmAddFromHub = async () => {
     if (!hubAddTarget) return
     const { hub, format } = hubAddTarget
-    try {
-      const newRuleSet: RuleSetItem = {
-        id: Date.now().toString(),
-        tag: hub.name,
-        name: hub.name,
-        url: format === 'binary' ? hub.binaryUrl : hub.sourceUrl,
-        type: 'remote',
-        format,
-        outboundMode: 'proxy',
-        enabled: true,
-        isBuiltIn: false
-      }
-      setRuleSets((prev) => [...prev, newRuleSet])
-      showToast(`规则集「${hub.name}」添加成功`, 'success')
-    } catch {
-      showToast(`规则集「${hub.name}」添加失败`, 'error')
+    
+    const newRuleSet: RuleSetItem = {
+      id: Date.now().toString(),
+      tag: hub.name,
+      name: hub.name,
+      url: format === 'binary' ? hub.binaryUrl : hub.sourceUrl,
+      type: 'remote',
+      format,
+      outboundMode: 'proxy',
+      enabled: false, // Start disabled, enable after download
+      isBuiltIn: false
     }
+    
+    // Add to list first (disabled)
+    setRuleSets((prev) => [...prev, newRuleSet])
     setShowHubAddConfirm(false)
     setHubAddTarget(null)
+    
+    // Start download with loading indicator
+    setDownloadingTags(prev => new Set(prev).add(hub.name))
+    showToast(`正在下载规则集「${hub.name}」...`, 'info')
+    
+    try {
+      const result = await window.api.ruleset.download(newRuleSet)
+      if (result.success) {
+        // Enable the ruleset after successful download
+        setRuleSets(prev => prev.map(rs => 
+          rs.tag === hub.name ? { ...rs, enabled: true } : rs
+        ))
+        if (result.cached) {
+          showToast(`规则集「${hub.name}」已缓存`, 'success')
+        } else {
+          showToast(`规则集「${hub.name}」下载成功`, 'success')
+        }
+      } else {
+        showToast(`规则集「${hub.name}」下载失败: ${result.error}`, 'error')
+      }
+    } catch {
+      showToast(`规则集「${hub.name}」下载失败`, 'error')
+    } finally {
+      setDownloadingTags(prev => {
+        const next = new Set(prev)
+        next.delete(hub.name)
+        return next
+      })
+    }
   }
 
   const resetToDefaults = () => {
@@ -694,13 +791,19 @@ export default function RuleSets() {
                 <GripVertical className="w-4 h-4" />
               </div>
 
-                <Switch.Root
-                  checked={ruleSet.enabled}
-                  onCheckedChange={() => toggleRuleSet(ruleSet.id)}
-                  className="w-10 h-6 rounded-full bg-[var(--bg-tertiary)] data-[state=checked]:bg-[var(--accent-primary)] transition-colors flex-shrink-0"
-                >
-                  <Switch.Thumb className="block w-4 h-4 bg-white rounded-full transition-transform translate-x-1 data-[state=checked]:translate-x-5 shadow-sm" />
-                </Switch.Root>
+                {downloadingTags.has(ruleSet.tag) ? (
+                  <div className="w-10 h-6 flex items-center justify-center flex-shrink-0">
+                    <Loader2 className="w-5 h-5 text-[var(--accent-primary)] animate-spin" />
+                  </div>
+                ) : (
+                  <Switch.Root
+                    checked={ruleSet.enabled}
+                    onCheckedChange={() => toggleRuleSet(ruleSet.id)}
+                    className="w-10 h-6 rounded-full bg-[var(--bg-tertiary)] data-[state=checked]:bg-[var(--accent-primary)] transition-colors flex-shrink-0"
+                  >
+                    <Switch.Thumb className="block w-4 h-4 bg-white rounded-full transition-transform translate-x-1 data-[state=checked]:translate-x-5 shadow-sm" />
+                  </Switch.Root>
+                )}
 
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-0.5 flex-wrap">

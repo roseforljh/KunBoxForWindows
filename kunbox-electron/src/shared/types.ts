@@ -38,8 +38,33 @@ export interface SingBoxOutbound {
   password?: string
   uuid?: string
   flow?: string
-  tls?: object
-  transport?: object
+  security?: string
+  alter_id?: number
+  packet_encoding?: string
+  tls?: {
+    enabled?: boolean
+    server_name?: string
+    insecure?: boolean
+    alpn?: string[]
+    utls?: {
+      enabled?: boolean
+      fingerprint?: string
+    }
+    reality?: {
+      enabled?: boolean
+      public_key?: string
+      short_id?: string
+    }
+  }
+  transport?: {
+    type?: string
+    path?: string
+    headers?: Record<string, string>
+    host?: string[]
+    service_name?: string
+    max_early_data?: number
+    early_data_header_name?: string
+  }
   multiplex?: object
 }
 
