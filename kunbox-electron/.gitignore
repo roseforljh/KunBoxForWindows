@@ -26,3 +26,7 @@ tsconfig.tsbuildinfo
 .env
 .env.local
 .env.*.local
+
+# Kernel binaries (downloaded at runtime)
+resources/libs/*.exe
+resources/libs/*.exe.bak
