@@ -76,6 +76,9 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
