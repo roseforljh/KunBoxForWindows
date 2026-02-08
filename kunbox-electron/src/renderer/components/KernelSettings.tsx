@@ -254,8 +254,8 @@ export function KernelSettings() {
                 </div>
               </div>
 
-              {/* Update Button */}
-              {isUpdatable && currentRemote && (
+              {/* Update Button - Only show when kernel is installed and update available */}
+              {currentLocal && isUpdatable && currentRemote && (
                 <motion.button
                   whileHover={{ scale: 1.01 }}
                   whileTap={{ scale: 0.99 }}
@@ -281,37 +281,52 @@ export function KernelSettings() {
                 </motion.button>
               )}
 
-              {!isUpdatable && currentLocal && !downloading && (
+              {/* Already up to date - Only show when kernel is installed */}
+              {currentLocal && !isUpdatable && !downloading && (
                 <div className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-[var(--bg-tertiary)]/50 text-[var(--text-muted)]">
                   <Check className="w-5 h-5" />
                   <span>已是最新版本</span>
                 </div>
               )}
 
+              {/* Not installed - Show prompt and download button */}
               {!currentLocal && (
-                <motion.button
-                  whileHover={{ scale: 1.01 }}
-                  whileTap={{ scale: 0.99 }}
-                  onClick={handleDownload}
-                  disabled={downloading || !currentRemote}
-                  className={`w-full flex items-center justify-center gap-2 py-3 rounded-xl text-white font-medium transition-all disabled:opacity-70 ${
-                    activeBranch === 'stable'
-                      ? 'bg-gradient-to-r from-emerald-500 to-emerald-600 shadow-lg shadow-emerald-500/20'
-                      : 'bg-gradient-to-r from-amber-500 to-amber-600 shadow-lg shadow-amber-500/20'
-                  }`}
-                >
-                  {downloading ? (
-                    <>
-                      <Loader2 className="w-5 h-5 animate-spin" />
-                      <span>正在下载...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Download className="w-5 h-5" />
-                      <span>安装 {currentRemote?.version || '内核'}</span>
-                    </>
-                  )}
-                </motion.button>
+                <div className="space-y-4">
+                  <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/20">
+                    <div className="flex items-start gap-3">
+                      <AlertCircle className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
+                      <div className="space-y-1">
+                        <p className="text-sm font-medium text-amber-400">未检测到内核</p>
+                        <p className="text-xs text-[var(--text-muted)]">
+                          请先下载 sing-box 内核才能使用代理功能。点击下方按钮自动下载，或前往 GitHub 手动下载。
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                  <motion.button
+                    whileHover={{ scale: 1.01 }}
+                    whileTap={{ scale: 0.99 }}
+                    onClick={handleDownload}
+                    disabled={downloading || !currentRemote}
+                    className={`w-full flex items-center justify-center gap-2 py-3 rounded-xl text-white font-medium transition-all disabled:opacity-70 ${
+                      activeBranch === 'stable'
+                        ? 'bg-gradient-to-r from-emerald-500 to-emerald-600 shadow-lg shadow-emerald-500/20'
+                        : 'bg-gradient-to-r from-amber-500 to-amber-600 shadow-lg shadow-amber-500/20'
+                    }`}
+                  >
+                    {downloading ? (
+                      <>
+                        <Loader2 className="w-5 h-5 animate-spin" />
+                        <span>正在下载...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Download className="w-5 h-5" />
+                        <span>下载内核 {currentRemote?.version || ''}</span>
+                      </>
+                    )}
+                  </motion.button>
+                </div>
               )}
 
               {/* Version Details */}
