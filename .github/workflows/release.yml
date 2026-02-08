@@ -32,50 +32,39 @@ jobs:
 
       - name: Get latest version
         id: get_version
-        shell: pwsh
+        shell: bash
         run: |
           # 获取最新的 tag 版本号
-          try {
-            $latestTag = git describe --tags --abbrev=0 2>$null
-          } catch {
-            $latestTag = $null
-          }
-          if (-not $latestTag) {
-            $latestTag = "v0.0.0"
-          }
-          $version = $latestTag -replace '^v', ''
-          Write-Host "Latest version: $version"
-          Add-Content -Path $env:GITHUB_OUTPUT -Value "current_version=$version"
+          latestTag=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          version=${latestTag#v}
+          echo "Latest version: $version"
+          echo "current_version=$version" >> $GITHUB_OUTPUT
 
       - name: Calculate new version
         id: new_version
-        shell: pwsh
+        shell: bash
         run: |
-          $current = "${{ steps.get_version.outputs.current_version }}"
-          $parts = $current.Split('.')
+          current="${{ steps.get_version.outputs.current_version }}"
+          IFS='.' read -r major minor patch <<< "$current"
 
-          $major = [int]$parts[0]
-          $minor = [int]$parts[1]
-          $patch = [int]$parts[2]
+          case "${{ github.event.inputs.version_type }}" in
+            major)
+              major=$((major + 1))
+              minor=0
+              patch=0
+              ;;
+            minor)
+              minor=$((minor + 1))
+              patch=0
+              ;;
+            patch)
+              patch=$((patch + 1))
+              ;;
+          esac
 
-          switch ("${{ github.event.inputs.version_type }}") {
-            "major" {
-              $major++
-              $minor = 0
-              $patch = 0
-            }
-            "minor" {
-              $minor++
-              $patch = 0
-            }
-            "patch" {
-              $patch++
-            }
-          }
-
-          $newVersion = "$major.$minor.$patch"
-          Write-Host "New version: $newVersion"
-          Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$newVersion"
+          newVersion="$major.$minor.$patch"
+          echo "New version: $newVersion"
+          echo "version=$newVersion" >> $GITHUB_OUTPUT
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
