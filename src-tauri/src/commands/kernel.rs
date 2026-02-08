@@ -10,9 +10,21 @@ use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-const GITHUB_API_STABLE: &str = "https://api.github.com/repos/SagerNet/sing-box/releases/latest";
-const GITHUB_API_RELEASES: &str = "https://api.github.com/repos/SagerNet/sing-box/releases?per_page=10";
 const KERNEL_FILENAME: &str = "sing-box.exe";
+
+// GitHub 镜像源列表
+const GITHUB_MIRRORS: &[&str] = &[
+    "",                                    // 原始 GitHub（无镜像）
+    "https://mirror.ghproxy.com/",         // ghproxy 镜像
+    "https://ghproxy.net/",                // ghproxy.net
+    "https://gh-proxy.com/",               // gh-proxy
+];
+
+// GitHub API 镜像源列表
+const GITHUB_API_MIRRORS: &[&str] = &[
+    "https://api.github.com",              // 原始 API
+    "https://gh-api.p3terx.com",           // P3TERX 镜像
+];
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -111,93 +123,133 @@ pub async fn kernel_get_local_version(app: AppHandle) -> Result<Option<KernelVer
 pub async fn kernel_get_remote_releases(include_prerelease: Option<bool>) -> Result<Vec<RemoteRelease>, String> {
     let client = reqwest::Client::builder()
         .user_agent("KunBox/1.0")
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|e| e.to_string())?;
-    
+
     let mut releases = Vec::new();
-    
-    // Get stable release
-    let stable_response = client.get(GITHUB_API_STABLE)
-        .header("Accept", "application/vnd.github.v3+json")
-        .send()
-        .await;
-    
-    if let Ok(resp) = stable_response {
-        if resp.status().is_success() {
-            if let Ok(stable) = resp.json::<GithubRelease>().await {
-                if let Some(asset) = find_windows_asset(&stable.assets, &stable.tag_name) {
-                    releases.push(RemoteRelease {
-                        version: stable.tag_name.trim_start_matches('v').to_string(),
-                        tag_name: stable.tag_name.clone(),
-                        published_at: stable.published_at,
-                        is_prerelease: false,
-                        download_url: asset.browser_download_url.clone(),
-                        asset_name: asset.name.clone(),
-                    });
+
+    // 尝试不同的 API 镜像源
+    let mut stable_result: Option<GithubRelease> = None;
+    for api_base in GITHUB_API_MIRRORS {
+        let api_url = format!("{}/repos/SagerNet/sing-box/releases/latest", api_base);
+        let resp = client.get(&api_url)
+            .header("Accept", "application/vnd.github.v3+json")
+            .send()
+            .await;
+
+        if let Ok(resp) = resp {
+            if resp.status().is_success() {
+                if let Ok(stable) = resp.json::<GithubRelease>().await {
+                    stable_result = Some(stable);
+                    break;
                 }
             }
         }
     }
-    
+
+    // 处理 stable release
+    if let Some(stable) = stable_result {
+        if let Some(asset) = find_windows_asset(&stable.assets, &stable.tag_name) {
+            releases.push(RemoteRelease {
+                version: stable.tag_name.trim_start_matches('v').to_string(),
+                tag_name: stable.tag_name.clone(),
+                published_at: stable.published_at,
+                is_prerelease: false,
+                download_url: asset.browser_download_url.clone(),
+                asset_name: asset.name.clone(),
+            });
+        }
+    }
+
     // Get prerelease if requested
     let include_pre = include_prerelease.unwrap_or(true);
     if include_pre {
-        let releases_response = client.get(GITHUB_API_RELEASES)
-            .header("Accept", "application/vnd.github.v3+json")
-            .send()
-            .await;
-        
-        if let Ok(resp) = releases_response {
-            if resp.status().is_success() {
-                if let Ok(all_releases) = resp.json::<Vec<GithubRelease>>().await {
-                    for release in all_releases {
-                        if release.prerelease {
-                            if let Some(asset) = find_windows_asset(&release.assets, &release.tag_name) {
-                                releases.push(RemoteRelease {
-                                    version: release.tag_name.trim_start_matches('v').to_string(),
-                                    tag_name: release.tag_name.clone(),
-                                    published_at: release.published_at,
-                                    is_prerelease: true,
-                                    download_url: asset.browser_download_url.clone(),
-                                    asset_name: asset.name.clone(),
-                                });
-                                break; // Only get latest prerelease
-                            }
-                        }
+        let mut all_releases_result: Option<Vec<GithubRelease>> = None;
+        for api_base in GITHUB_API_MIRRORS {
+            let api_url = format!("{}/repos/SagerNet/sing-box/releases?per_page=10", api_base);
+            let resp = client.get(&api_url)
+                .header("Accept", "application/vnd.github.v3+json")
+                .send()
+                .await;
+
+            if let Ok(resp) = resp {
+                if resp.status().is_success() {
+                    if let Ok(all_releases) = resp.json::<Vec<GithubRelease>>().await {
+                        all_releases_result = Some(all_releases);
+                        break;
+                    }
+                }
+            }
+        }
+
+        if let Some(all_releases) = all_releases_result {
+            for release in all_releases {
+                if release.prerelease {
+                    if let Some(asset) = find_windows_asset(&release.assets, &release.tag_name) {
+                        releases.push(RemoteRelease {
+                            version: release.tag_name.trim_start_matches('v').to_string(),
+                            tag_name: release.tag_name.clone(),
+                            published_at: release.published_at,
+                            is_prerelease: true,
+                            download_url: asset.browser_download_url.clone(),
+                            asset_name: asset.name.clone(),
+                        });
+                        break; // Only get latest prerelease
                     }
                 }
             }
         }
     }
-    
+
     Ok(releases)
 }
 
 #[tauri::command]
 pub async fn kernel_download(app: AppHandle, release: RemoteRelease) -> Result<serde_json::Value, String> {
     let _ = app.emit("kernel:download-start", ());
-    
+
     let client = reqwest::Client::builder()
         .user_agent("KunBox/1.0")
         .timeout(std::time::Duration::from_secs(600))
         .build()
         .map_err(|e| e.to_string())?;
-    
-    // Download the zip file
-    let response = client.get(&release.download_url)
-        .send()
-        .await
-        .map_err(|e| {
-            let _ = app.emit("kernel:download-error", e.to_string());
-            e.to_string()
-        })?;
-    
-    if !response.status().is_success() {
-        let err = format!("Download failed: {}", response.status());
-        let _ = app.emit("kernel:download-error", &err);
-        return Err(err);
+
+    // 尝试不同的镜像源下载
+    let mut download_response = None;
+    let mut last_error = String::new();
+
+    for mirror in GITHUB_MIRRORS {
+        let download_url = if mirror.is_empty() {
+            release.download_url.clone()
+        } else {
+            format!("{}{}", mirror, release.download_url)
+        };
+
+        log::info!("Trying to download from: {}", download_url);
+        let _ = app.emit("kernel:download-mirror", &download_url);
+
+        match client.get(&download_url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                download_response = Some(resp);
+                break;
+            }
+            Ok(resp) => {
+                last_error = format!("HTTP {}", resp.status());
+                log::warn!("Mirror {} failed: {}", mirror, last_error);
+            }
+            Err(e) => {
+                last_error = e.to_string();
+                log::warn!("Mirror {} failed: {}", mirror, last_error);
+            }
+        }
     }
+
+    let response = download_response.ok_or_else(|| {
+        let err = format!("All mirrors failed. Last error: {}", last_error);
+        let _ = app.emit("kernel:download-error", &err);
+        err
+    })?;
     
     let total_size = response.content_length().unwrap_or(0);
     let mut downloaded: u64 = 0;
