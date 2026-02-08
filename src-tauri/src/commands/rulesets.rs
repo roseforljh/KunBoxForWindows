@@ -120,11 +120,15 @@ pub async fn ruleset_download(state: State<'_, AppState>, ruleset: RuleSet) -> R
     let github_path = extract_github_path(&original_url);
     
     // 创建代理客户端（使用本地 VPN 代理）
-    let proxy_client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .proxy(reqwest::Proxy::all("http://127.0.0.1:7890").ok().unwrap())
-        .build()
-        .ok();
+    let proxy_client = reqwest::Proxy::all("http://127.0.0.1:7890")
+        .ok()
+        .and_then(|proxy| {
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .proxy(proxy)
+                .build()
+                .ok()
+        });
     
     // 创建直连客户端
     let direct_client = reqwest::Client::builder()
@@ -253,11 +257,15 @@ pub async fn ruleset_fetch_hub() -> Result<serde_json::Value, String> {
     let url = "https://api.github.com/repos/SagerNet/sing-geosite/git/trees/rule-set?recursive=1";
     
     // 创建代理客户端
-    let proxy_client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .proxy(reqwest::Proxy::all("http://127.0.0.1:7890").ok().unwrap())
-        .build()
-        .ok();
+    let proxy_client = reqwest::Proxy::all("http://127.0.0.1:7890")
+        .ok()
+        .and_then(|proxy| {
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .proxy(proxy)
+                .build()
+                .ok()
+        });
     
     // 创建直连客户端
     let direct_client = reqwest::Client::builder()

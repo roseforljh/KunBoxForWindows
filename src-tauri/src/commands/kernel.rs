@@ -337,3 +337,79 @@ pub async fn kernel_open_directory(app: AppHandle) -> Result<(), String> {
     fs::create_dir_all(&kernel_dir).ok();
     open::that(&kernel_dir).map_err(|e| e.to_string())
 }
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledKernel {
+    pub version: String,
+    pub version_detail: String,
+    pub is_backup: bool,
+    pub path: String,
+}
+
+#[tauri::command]
+pub async fn kernel_get_installed_versions(app: AppHandle) -> Result<Vec<InstalledKernel>, String> {
+    let kernel_dir = get_kernel_dir(&app)?;
+    let mut installed = Vec::new();
+
+    // Check main kernel
+    let kernel_path = kernel_dir.join(KERNEL_FILENAME);
+    if kernel_path.exists() {
+        if let Some(version_info) = get_kernel_version_info(&kernel_path).await {
+            installed.push(InstalledKernel {
+                version: version_info.0,
+                version_detail: version_info.1,
+                is_backup: false,
+                path: kernel_path.to_string_lossy().to_string(),
+            });
+        }
+    }
+
+    // Check backup kernel
+    let backup_path = kernel_dir.join("sing-box.exe.bak");
+    if backup_path.exists() {
+        if let Some(version_info) = get_kernel_version_info(&backup_path).await {
+            installed.push(InstalledKernel {
+                version: version_info.0,
+                version_detail: version_info.1,
+                is_backup: true,
+                path: backup_path.to_string_lossy().to_string(),
+            });
+        }
+    }
+
+    Ok(installed)
+}
+
+async fn get_kernel_version_info(kernel_path: &std::path::Path) -> Option<(String, String)> {
+    #[cfg(windows)]
+    let output = tokio::process::Command::new(kernel_path)
+        .arg("version")
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .await
+        .ok()?;
+
+    #[cfg(not(windows))]
+    let output = tokio::process::Command::new(kernel_path)
+        .arg("version")
+        .output()
+        .await
+        .ok()?;
+
+    if output.status.success() {
+        let version_str = String::from_utf8_lossy(&output.stdout);
+        let version_detail = version_str.trim().to_string();
+
+        let version = version_str
+            .lines()
+            .find(|line| line.contains("version"))
+            .and_then(|line| line.split_whitespace().last())
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        return Some((version, version_detail));
+    }
+
+    None
+}

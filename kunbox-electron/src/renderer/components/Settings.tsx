@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import * as Switch from '@radix-ui/react-switch'
 import * as Select from '@radix-ui/react-select'
-import { ChevronDown, Check, Globe, Shield, Wifi, Gauge, Monitor, RefreshCw, Settings2, Cpu, RotateCcw } from 'lucide-react'
+import { ChevronDown, Check, Globe, Shield, Wifi, Monitor, RefreshCw, Settings2, Cpu, RotateCcw } from 'lucide-react'
 import type { AppSettings } from '../../shared/types'
 import { KernelSettings } from './KernelSettings'
 
@@ -32,9 +32,12 @@ export default function Settings() {
   useEffect(() => {
     window.api.settings.get().then((s: AppSettings) => {
       setSettings(s)
-      // Sync requireAdmin state from settings
+    }).catch((e) => {
+      console.error('Failed to load settings:', e)
     })
-    window.api.window.isAdmin().then(setIsAdmin)
+    window.api.window.isAdmin().then(setIsAdmin).catch((e) => {
+      console.error('Failed to check admin status:', e)
+    })
   }, [])
 
   const updateSetting = async <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
@@ -181,7 +184,7 @@ export default function Settings() {
                   </SettingRow>
                 </SettingCard>
 
-                {settings.tunEnabled && (
+                {settings.tunEnabled && !isAdmin && (
                   <div className="rounded-2xl p-5 border-2 border-amber-500 bg-amber-500/20">
                     <div className="flex items-center justify-between gap-4">
                       <div className="flex items-start gap-3">

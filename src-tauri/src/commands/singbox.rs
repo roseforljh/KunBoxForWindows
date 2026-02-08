@@ -93,9 +93,12 @@ pub async fn singbox_start(app: AppHandle, state: State<'_, AppState>) -> Result
     let _ = app.emit("singbox:state", "connecting");
 
     // Start sing-box process
+    let config_path_str = config_path.to_str()
+        .ok_or_else(|| "Config path contains invalid UTF-8 characters".to_string())?;
+
     #[cfg(windows)]
     let mut child = Command::new(&singbox_path)
-        .args(["run", "-c", config_path.to_str().unwrap()])
+        .args(["run", "-c", config_path_str])
         .current_dir(&state.config_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -106,7 +109,7 @@ pub async fn singbox_start(app: AppHandle, state: State<'_, AppState>) -> Result
 
     #[cfg(not(windows))]
     let mut child = Command::new(&singbox_path)
-        .args(["run", "-c", config_path.to_str().unwrap()])
+        .args(["run", "-c", config_path_str])
         .current_dir(&state.config_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

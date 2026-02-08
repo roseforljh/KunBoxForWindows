@@ -1153,9 +1153,17 @@ async fn start_temp_singbox(app: &AppHandle, state: &AppState) -> bool {
     }
     
     // Start temp sing-box
+    let config_path_str = match config_path.to_str() {
+        Some(s) => s,
+        None => {
+            log::error!("Config path contains invalid UTF-8 characters");
+            return false;
+        }
+    };
+
     #[cfg(windows)]
     let result = tokio::process::Command::new(&kernel_path)
-        .args(["run", "-c", config_path.to_str().unwrap()])
+        .args(["run", "-c", config_path_str])
         .current_dir(&temp_dir)
         .creation_flags(CREATE_NO_WINDOW)
         .kill_on_drop(true)
@@ -1163,7 +1171,7 @@ async fn start_temp_singbox(app: &AppHandle, state: &AppState) -> bool {
 
     #[cfg(not(windows))]
     let result = tokio::process::Command::new(&kernel_path)
-        .args(["run", "-c", config_path.to_str().unwrap()])
+        .args(["run", "-c", config_path_str])
         .current_dir(&temp_dir)
         .kill_on_drop(true)
         .spawn();

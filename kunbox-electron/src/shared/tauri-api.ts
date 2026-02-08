@@ -4,9 +4,6 @@ import { listen, emit } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { AppSettings, Profile, SingBoxOutbound, ProxyState, TrafficStats, LogEntry, DomainRule, ProcessRule, CustomRules, NodeWithProfile } from './types';
 
-// Event listener storage for cleanup
-const eventListeners = new Map<string, () => void>();
-
 export const api = {
   singbox: {
     start: () => invoke<{ success: boolean; error?: string }>('singbox_start'),
@@ -51,25 +48,10 @@ export const api = {
   },
 
   tray: {
-    onToggleConnection: (callback: () => void) => {
-      const unlisten = listen('tray:toggle-connection', () => callback());
-      return () => { unlisten.then(fn => fn()); };
-    },
-    onRestartCore: (callback: () => void) => {
-      const unlisten = listen('tray:restart-core', () => callback());
-      return () => { unlisten.then(fn => fn()); };
-    },
-    onSetMode: (callback: (mode: 'rule' | 'global' | 'direct') => void) => {
-      const unlisten = listen<string>('tray:set-mode', (event) => {
-        callback(event.payload as 'rule' | 'global' | 'direct');
-      });
-      return () => { unlisten.then(fn => fn()); };
-    },
     updateStatus: (_connected: boolean) => {
       // Tauri handles tray updates differently - emit event to backend
       emit('tray:status-update', { connected: _connected });
     },
-    // New tray events
     onVpnStart: (callback: () => void) => {
       const unlisten = listen('tray-vpn-start', () => callback());
       return () => { unlisten.then(fn => fn()); };
@@ -164,7 +146,12 @@ export const api = {
       const result = await invoke<{ version: string; versionDetail: string; isAlpha: boolean } | null>('kernel_get_local_version');
       return result;
     },
-    getInstalledVersions: () => Promise.resolve([]),
+    getInstalledVersions: () => invoke<Array<{
+      version: string;
+      versionDetail: string;
+      isBackup: boolean;
+      path: string;
+    }>>('kernel_get_installed_versions'),
     getRemoteReleases: async (includePrerelease?: boolean) => {
       // Tauri returns RemoteRelease[] directly with camelCase
       const releases = await invoke<Array<{

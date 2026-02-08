@@ -23,57 +23,56 @@ cd C:\path\to\project && npm run build
 
 ```
 KunBox-Windows/
-├── kunbox-electron/    # 主项目 - KunBox sing-box 代理客户端
+├── kunbox-electron/    # 前端 - React + Vite
+│   ├── src/
+│   │   ├── renderer/   # React 渲染层
+│   │   └── shared/     # 共享类型和 API
+│   └── package.json
+├── src-tauri/          # 后端 - Rust + Tauri
+│   ├── src/
+│   │   ├── commands/   # Tauri 命令
+│   │   ├── state.rs    # 应用状态
+│   │   ├── types.rs    # 类型定义
+│   │   └── lib.rs      # 入口点
+│   └── Cargo.toml
+└── build.ps1           # 构建脚本
 ```
 
-## 主项目: kunbox-electron
+## 技术栈
 
-KunBox 是一个跨平台的 sing-box 代理客户端。
+- **后端**: Tauri 2.x + Rust
+- **前端**: React 18 + TypeScript + Vite
+- **样式**: Tailwind CSS
+- **组件库**: Radix UI
+- **状态管理**: Zustand
+- **动画**: Framer Motion
 
-### 技术栈
-- Electron + Vite
-- React 18 + TypeScript
-- Tailwind CSS
-- Radix UI 组件库
-- Zustand 状态管理
-- Framer Motion 动画
+## 常用命令
 
-### 目录结构
-```
-src/
-├── main/       # Electron 主进程
-├── preload/    # 预加载脚本
-├── renderer/   # React 渲染进程
-└── shared/     # 共享代码
-```
-
-### 常用命令
-
-在 kunbox-electron 目录下执行：
+### 前端 (kunbox-electron 目录)
 
 ```powershell
-# 使用 cmd /c 包装以支持 && 语法
-cmd /c "cd /d C:\Users\33039\Desktop\KunBox-Windows\kunbox-electron && npm run dev"
-cmd /c "cd /d C:\Users\33039\Desktop\KunBox-Windows\kunbox-electron && npm run build"
-cmd /c "cd /d C:\Users\33039\Desktop\KunBox-Windows\kunbox-electron && npm run typecheck"
-cmd /c "cd /d C:\Users\33039\Desktop\KunBox-Windows\kunbox-electron && npm run lint"
+npm install      # 安装依赖
+npm run dev      # 开发模式
+npm run build    # 构建
+npm run typecheck # 类型检查
+npm run lint     # 代码检查
 ```
 
-可用脚本：
-- `npm run dev` - 开发模式
-- `npm run build` - 构建
-- `npm run build:win` - 构建 Windows 版本
-- `npm run lint` - 代码检查
-- `npm run typecheck` - 类型检查
+### 后端 (src-tauri 目录)
 
-## 参考项目: LinJun
+```powershell
+cargo check      # 检查编译
+cargo test       # 运行测试
+cargo tauri dev  # Tauri 开发模式
+cargo tauri build # 构建发布版
+```
 
-**用途**: 前端 UI/UX 设计参考，该项目的前端界面设计很好看。
+### 完整开发流程
 
-当需要设计新的 UI 组件或页面时，可以参考 LinJun 项目的实现：
-- 组件样式: `LinJun/src/renderer/components/`
-- 页面布局: `LinJun/src/renderer/`
-- Tailwind 配置: `LinJun/tailwind.config.js`
+1. 在 `kunbox-electron/` 运行 `npm install` 安装前端依赖
+2. 在 `kunbox-electron/` 运行 `npm run dev` 启动 Vite 开发服务器
+3. 在 `src-tauri/` 运行 `cargo tauri dev` 启动 Tauri 开发模式
 
 ## 开发约定
 
@@ -82,3 +81,4 @@ cmd /c "cd /d C:\Users\33039\Desktop\KunBox-Windows\kunbox-electron && npm run l
 3. 组件使用函数式组件 + Hooks
 4. 样式优先使用 Tailwind CSS
 5. 状态管理使用 Zustand
+6. 前后端 API 变更需同步更新两侧

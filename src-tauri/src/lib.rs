@@ -190,6 +190,7 @@ pub fn run() {
             commands::kernel_clear_cache,
             commands::kernel_open_releases_page,
             commands::kernel_open_directory,
+            commands::kernel_get_installed_versions,
             // Custom rules
             commands::custom_rules_get,
             commands::custom_rules_save,
@@ -250,8 +251,12 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         &quit_item,
     ])?;
 
+    let tray_icon = app.default_window_icon()
+        .ok_or_else(|| tauri::Error::AssetNotFound("default window icon".to_string()))?
+        .clone();
+
     let _tray = TrayIconBuilder::new()
-        .icon(app.default_window_icon().unwrap().clone())
+        .icon(tray_icon)
         .menu(&menu)
         .show_menu_on_left_click(false)
         .tooltip("KunBox")

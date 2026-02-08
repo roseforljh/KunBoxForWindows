@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  A modern, cross-platform sing-box proxy client built with Electron, React, and TypeScript.
+  A modern, cross-platform sing-box proxy client built with Tauri, React, and TypeScript.
 </p>
 
 ## Features
@@ -21,8 +21,8 @@
 
 ## Tech Stack
 
-- **Framework**: Electron + Vite
-- **Frontend**: React 18 + TypeScript
+- **Framework**: Tauri 2.x (Rust backend)
+- **Frontend**: React 18 + TypeScript + Vite
 - **Styling**: Tailwind CSS
 - **UI Components**: Radix UI
 - **State Management**: Zustand
@@ -31,19 +31,23 @@
 ## Project Structure
 
 ```
-kunbox-electron/
-├── src/
-│   ├── main/           # Electron main process
-│   │   ├── ipc/        # IPC handlers
-│   │   └── utils/      # Utilities
-│   ├── preload/        # Preload scripts
-│   ├── renderer/       # React frontend
-│   │   ├── components/ # UI components
-│   │   ├── stores/     # Zustand stores
-│   │   └── styles/     # Global styles
-│   └── shared/         # Shared types and constants
-├── electron-builder.yml
-└── package.json
+KunBox-Windows/
+├── kunbox-electron/        # Frontend (React + Vite)
+│   ├── src/
+│   │   ├── renderer/       # React frontend
+│   │   │   ├── components/ # UI components
+│   │   │   ├── stores/     # Zustand stores
+│   │   │   └── styles/     # Global styles
+│   │   └── shared/         # Shared types
+│   └── package.json
+├── src-tauri/              # Backend (Rust + Tauri)
+│   ├── src/
+│   │   ├── commands/       # Tauri commands
+│   │   ├── state.rs        # App state
+│   │   ├── types.rs        # Type definitions
+│   │   └── lib.rs          # Entry point
+│   └── Cargo.toml
+└── build.ps1               # Build script
 ```
 
 ## Getting Started
@@ -51,34 +55,39 @@ kunbox-electron/
 ### Prerequisites
 
 - Node.js 18+
+- Rust 1.77.2+
 - npm or yarn
 
 ### Installation
 
 ```bash
+# Install frontend dependencies
 cd kunbox-electron
 npm install
+
+# Check Rust backend
+cd ../src-tauri
+cargo check
 ```
 
 ### Development
 
 ```bash
+# Terminal 1: Start frontend dev server
+cd kunbox-electron
 npm run dev
+
+# Terminal 2: Start Tauri dev mode
+cd src-tauri
+cargo tauri dev
 ```
 
 ### Build
 
-```bash
-# Build for production
-npm run build
-
-# Build Windows installer
-npm run build:win
+```powershell
+# Build for production (from project root)
+.\build.ps1
 ```
-
-## Screenshots
-
-*Coming soon*
 
 ## Routing Modes
 
@@ -92,7 +101,7 @@ npm run build:win
 
 ## Configuration
 
-Settings are stored locally and include:
+Settings are stored in `%APPDATA%\KunBox` and include:
 
 - **Proxy Settings**: HTTP/SOCKS port, LAN access
 - **TUN Settings**: Enable TUN mode, network stack selection
@@ -108,3 +117,4 @@ MIT License
 - [sing-box](https://github.com/SagerNet/sing-box) - The universal proxy platform
 - [sing-geosite](https://github.com/SagerNet/sing-geosite) - GeoSite rule sets
 - [sing-geoip](https://github.com/SagerNet/sing-geoip) - GeoIP rule sets
+- [Tauri](https://tauri.app/) - Build smaller, faster, and more secure desktop applications

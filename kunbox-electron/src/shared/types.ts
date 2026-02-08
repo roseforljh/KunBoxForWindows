@@ -136,28 +136,3 @@ export interface CustomRules {
   domainRules: DomainRule[]
   processRules: ProcessRule[]
 }
-
-export const DEFAULT_SETTINGS: AppSettings = {
-  localPort: 7890,
-  socksPort: 7891,
-  allowLan: false,
-  systemProxy: true,
-  tunEnabled: false,
-  tunStack: 'mixed',
-  localDns: '223.5.5.5',
-  remoteDns: 'https://dns.google/dns-query',
-  fakeDns: false,
-  blockAds: false,
-  bypassLan: true,
-  routingMode: 'rule',
-  defaultRule: 'proxy',
-  latencyTestUrl: 'https://www.gstatic.com/generate_204',
-  latencyTestTimeout: 5000,
-  autoConnect: false,
-  minimizeToTray: true,
-  startWithWindows: false,
-  startMinimized: false,
-  exitOnClose: false,
-  theme: 'dark',
-  requireAdmin: false
-}

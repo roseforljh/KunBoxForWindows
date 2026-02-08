@@ -370,6 +370,8 @@ function useTheme() {
         setTheme(settings.theme)
         localStorage.setItem('kunbox-theme', settings.theme)
       }
+    }).catch((e) => {
+      console.error('Failed to get settings for theme:', e)
     })
   }, [])
 
@@ -420,7 +422,7 @@ export default function App() {
   const [currentPage, setCurrentPage] = useState<Page>('dashboard')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const { state, setState, setTraffic, connect, disconnect } = useConnectionStore()
-  const { setTheme } = useTheme()
+  useTheme()
 
   // Set sidebar width CSS variable on :root for fixed positioned elements
   useEffect(() => {
@@ -431,7 +433,7 @@ export default function App() {
   useEffect(() => {
     const checkAutoConnect = async () => {
       try {
-        const settings: any = await window.api.settings.get()
+        const settings = await window.api.settings.get()
         if (settings?.autoConnect) {
           // Small delay to ensure app is fully loaded
           await new Promise(resolve => setTimeout(resolve, 1000))
@@ -446,7 +448,7 @@ export default function App() {
       }
     }
     checkAutoConnect()
-  }, []) // Only run once on mount
+  }, [connect]) // Include connect in dependencies
 
   // Listen for singbox state and traffic updates
   useEffect(() => {
@@ -468,36 +470,19 @@ export default function App() {
 
   // Listen for tray menu events
   useEffect(() => {
-    const unsubToggle = window.api.tray.onToggleConnection(async () => {
-      if (state === 'connected') {
-        await disconnect()
-      } else if (state === 'idle' || state === 'error') {
-        await connect()
-      }
-    })
-
-    const unsubRestart = window.api.tray.onRestartCore(async () => {
-      if (state === 'connected') {
-        await disconnect()
-        await new Promise(resolve => setTimeout(resolve, 500))
-        await connect()
-      }
-    })
-
-    // New tray events
-    const unsubVpnStart = window.api.tray.onVpnStart?.(async () => {
+    const unsubVpnStart = window.api.tray.onVpnStart(async () => {
       if (state === 'idle' || state === 'error') {
         await connect()
       }
     })
 
-    const unsubVpnStop = window.api.tray.onVpnStop?.(async () => {
+    const unsubVpnStop = window.api.tray.onVpnStop(async () => {
       if (state === 'connected') {
         await disconnect()
       }
     })
 
-    const unsubVpnRestart = window.api.tray.onVpnRestart?.(async () => {
+    const unsubVpnRestart = window.api.tray.onVpnRestart(async () => {
       if (state === 'connected') {
         await disconnect()
         await new Promise(resolve => setTimeout(resolve, 500))
@@ -505,57 +490,69 @@ export default function App() {
       }
     })
 
-    const unsubProxyEnable = window.api.tray.onProxyEnable?.(async () => {
+    const unsubProxyEnable = window.api.tray.onProxyEnable(async () => {
       try {
-        await window.api.singbox.enableSystemProxy?.()
+        await window.api.singbox.enableSystemProxy()
       } catch (e) {
         console.error('Failed to enable proxy:', e)
       }
     })
 
-    const unsubProxyDisable = window.api.tray.onProxyDisable?.(async () => {
+    const unsubProxyDisable = window.api.tray.onProxyDisable(async () => {
       try {
-        await window.api.singbox.disableSystemProxy?.()
+        await window.api.singbox.disableSystemProxy()
       } catch (e) {
         console.error('Failed to disable proxy:', e)
       }
     })
 
-    const unsubTunEnable = window.api.tray.onTunEnable?.(async () => {
+    const unsubTunEnable = window.api.tray.onTunEnable(async () => {
       try {
         const settings = await window.api.settings.get()
+        if (settings.tunEnabled) return // Already enabled
         await window.api.settings.set({ ...settings, tunEnabled: true })
+        // Restart VPN if connected to apply TUN mode change
+        if (state === 'connected') {
+          await disconnect()
+          await new Promise(resolve => setTimeout(resolve, 500))
+          await connect()
+        }
       } catch (e) {
         console.error('Failed to enable TUN:', e)
       }
     })
 
-    const unsubTunDisable = window.api.tray.onTunDisable?.(async () => {
+    const unsubTunDisable = window.api.tray.onTunDisable(async () => {
       try {
         const settings = await window.api.settings.get()
+        if (!settings.tunEnabled) return // Already disabled
         await window.api.settings.set({ ...settings, tunEnabled: false })
+        // Restart VPN if connected to apply TUN mode change
+        if (state === 'connected') {
+          await disconnect()
+          await new Promise(resolve => setTimeout(resolve, 500))
+          await connect()
+        }
       } catch (e) {
         console.error('Failed to disable TUN:', e)
       }
     })
 
-    const unsubQuit = window.api.tray.onQuit?.(async () => {
+    const unsubQuit = window.api.tray.onQuit(async () => {
       if (state === 'connected') {
         await disconnect()
       }
     })
 
     return () => {
-      unsubToggle()
-      unsubRestart()
-      unsubVpnStart?.()
-      unsubVpnStop?.()
-      unsubVpnRestart?.()
-      unsubProxyEnable?.()
-      unsubProxyDisable?.()
-      unsubTunEnable?.()
-      unsubTunDisable?.()
-      unsubQuit?.()
+      unsubVpnStart()
+      unsubVpnStop()
+      unsubVpnRestart()
+      unsubProxyEnable()
+      unsubProxyDisable()
+      unsubTunEnable()
+      unsubTunDisable()
+      unsubQuit()
     }
   }, [state, connect, disconnect])
 
