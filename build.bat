@@ -56,7 +56,11 @@ echo.
 if "%BUILD_MODE%"=="debug" (
     echo Output: %~dp0src-tauri\target\debug
 ) else (
-    echo Output: %~dp0src-tauri\target\release\bundle
+    echo Output directory: %~dp0src-tauri\target\release\bundle
+    echo.
+    echo Installer packages:
+    echo   MSI:  %~dp0src-tauri\target\release\bundle\msi\
+    echo   NSIS: %~dp0src-tauri\target\release\bundle\nsis\
 )
 
 echo.

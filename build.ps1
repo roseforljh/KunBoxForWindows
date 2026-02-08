@@ -77,10 +77,12 @@ Write-Host ""
 
 # Show output location
 if ($isDebug) {
-    $outputPath = "$PSScriptRoot\src-tauri\target\debug"
+    Write-Host "Output: $PSScriptRoot\src-tauri\target\debug" -ForegroundColor Cyan
 } else {
-    $outputPath = "$PSScriptRoot\src-tauri\target\release\bundle"
+    Write-Host "Output directory: $PSScriptRoot\src-tauri\target\release\bundle" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "Installer packages:" -ForegroundColor Yellow
+    Write-Host "  MSI:  $PSScriptRoot\src-tauri\target\release\bundle\msi\" -ForegroundColor White
+    Write-Host "  NSIS: $PSScriptRoot\src-tauri\target\release\bundle\nsis\" -ForegroundColor White
 }
-
-Write-Host "Output: $outputPath" -ForegroundColor Cyan
 Write-Host ""

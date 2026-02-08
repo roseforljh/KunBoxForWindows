@@ -30,7 +30,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": ["msi", "nsis"],
     "resources": {
       "../kunbox-electron/resources/libs/*": "resources/libs/"
     },
