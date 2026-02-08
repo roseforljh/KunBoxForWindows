@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use crate::state::AppState;
 
 #[cfg(windows)]
+#[allow(unused_imports)]
 use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]

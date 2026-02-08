@@ -6,3 +6,5 @@ out/
 .env
 .DS_Store
 core/dist/
+CLAUDE.md
+.claude/settings.local.json

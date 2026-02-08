@@ -64,13 +64,15 @@ fn get_default_rulesets() -> Vec<RuleSet> {
     ]
 }
 
-fn load_rulesets(state: &AppState) -> Vec<RuleSet> {
+pub(crate) fn load_rulesets(state: &AppState) -> Vec<RuleSet> {
     let file = state.rulesets_file();
     if file.exists() {
-        if let Ok(content) = fs::read_to_string(&file) {
-            if let Ok(rulesets) = serde_json::from_str(&content) {
-                return rulesets;
-            }
+        match fs::read_to_string(&file) {
+            Ok(content) => match serde_json::from_str(&content) {
+                Ok(rulesets) => return rulesets,
+                Err(e) => log::warn!("Failed to parse rulesets file {:?}: {}", file, e),
+            },
+            Err(e) => log::warn!("Failed to read rulesets file {:?}: {}", file, e),
         }
     }
     get_default_rulesets()
@@ -139,6 +141,7 @@ pub async fn ruleset_download(state: State<'_, AppState>, ruleset: RuleSet) -> R
         vec![original_url.clone()]
     };
     
+    #[allow(unused_assignments)]
     let mut last_error = String::new();
     
     for url in &urls_to_try {
@@ -152,7 +155,7 @@ pub async fn ruleset_download(state: State<'_, AppState>, ruleset: RuleSet) -> R
                 }
                 Err(e) => {
                     log::warn!("Proxy download failed for {}: {}", url, e);
-                    last_error = e;
+                    // 继续尝试直连，不需要保存错误
                 }
             }
         }

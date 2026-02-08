@@ -7,7 +7,7 @@ export default function Logs() {
   const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    const unsubscribe = window.api.singbox.onLog((entry) => {
+    const unsubscribe = window.api.singbox.onLog((entry: LogEntry) => {
       setLogs((prev) => [...prev.slice(-499), entry])
     })
 

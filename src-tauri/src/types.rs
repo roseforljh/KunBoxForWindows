@@ -63,14 +63,6 @@ impl Default for ProfilesData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LogEntry {
-    pub timestamp: u64,
-    pub level: String,
-    pub tag: String,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     #[serde(rename = "localPort")]
     pub local_port: u16,
@@ -113,6 +105,9 @@ pub struct AppSettings {
     #[serde(rename = "exitOnClose")]
     pub exit_on_close: bool,
     pub theme: String,
+    /// If true, the app will auto-restart as admin on startup when not elevated
+    #[serde(rename = "requireAdmin", default)]
+    pub require_admin: bool,
 }
 
 impl Default for AppSettings {
@@ -139,6 +134,7 @@ impl Default for AppSettings {
             start_minimized: false,
             exit_on_close: false,
             theme: "dark".to_string(),
+            require_admin: false,
         }
     }
 }
@@ -190,25 +186,35 @@ impl CommandResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KernelVersion {
-    pub version: String,
-    pub tag: String,
-    #[serde(rename = "isAlpha")]
-    pub is_alpha: bool,
+pub struct DomainRule {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub rule_type: String,
+    pub value: String,
+    #[serde(rename = "outboundMode")]
+    pub outbound_mode: String,
+    #[serde(rename = "outboundValue")]
+    pub outbound_value: Option<String>,
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GithubRelease {
-    pub tag_name: String,
-    pub name: String,
-    pub prerelease: bool,
-    pub published_at: String,
-    pub assets: Vec<GithubAsset>,
+pub struct ProcessRule {
+    pub id: String,
+    #[serde(rename = "processName")]
+    pub process_name: String,
+    #[serde(rename = "outboundMode")]
+    pub outbound_mode: String,
+    #[serde(rename = "outboundValue")]
+    pub outbound_value: Option<String>,
+    pub enabled: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GithubAsset {
-    pub name: String,
-    pub browser_download_url: String,
-    pub size: u64,
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CustomRules {
+    #[serde(rename = "domainRules")]
+    pub domain_rules: Vec<DomainRule>,
+    #[serde(rename = "processRules")]
+    pub process_rules: Vec<ProcessRule>,
 }

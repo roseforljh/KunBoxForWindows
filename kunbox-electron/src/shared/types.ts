@@ -68,6 +68,11 @@ export interface SingBoxOutbound {
   multiplex?: object
 }
 
+export interface NodeWithProfile extends SingBoxOutbound {
+  sourceProfileId: string
+  sourceProfileName: string
+}
+
 export interface AppSettings {
   localPort: number
   socksPort: number
@@ -90,6 +95,7 @@ export interface AppSettings {
   startMinimized: boolean
   exitOnClose: boolean
   theme: 'dark' | 'light' | 'system'
+  requireAdmin: boolean
 }
 
 export interface RuleSet {
@@ -103,6 +109,32 @@ export interface RuleSet {
   enabled: boolean
   outboundMode: 'direct' | 'proxy' | 'block'
   isBuiltIn?: boolean
+}
+
+export type DomainRuleType = 'domain' | 'domain_suffix' | 'domain_keyword'
+export type OutboundMode = 'direct' | 'proxy' | 'block' | 'node' | 'profile'
+
+export interface DomainRule {
+  id: string
+  name: string
+  type: DomainRuleType
+  value: string
+  outboundMode: OutboundMode
+  outboundValue?: string
+  enabled: boolean
+}
+
+export interface ProcessRule {
+  id: string
+  processName: string
+  outboundMode: OutboundMode
+  outboundValue?: string
+  enabled: boolean
+}
+
+export interface CustomRules {
+  domainRules: DomainRule[]
+  processRules: ProcessRule[]
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -126,5 +158,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   startWithWindows: false,
   startMinimized: false,
   exitOnClose: false,
-  theme: 'dark'
+  theme: 'dark',
+  requireAdmin: false
 }

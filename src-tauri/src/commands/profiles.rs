@@ -7,6 +7,7 @@ use crate::state::AppState;
 use crate::types::{Profile, ProfilesData, ProxyState, SingBoxOutbound};
 
 #[cfg(windows)]
+#[allow(unused_imports)]
 use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]
@@ -151,6 +152,12 @@ pub async fn profile_delete(state: State<'_, AppState>, id: String) -> Result<()
 }
 
 #[tauri::command]
+pub async fn profile_get_active(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let data = load_profiles_data(&state);
+    Ok(data.active_profile_id)
+}
+
+#[tauri::command]
 pub async fn profile_set_active(state: State<'_, AppState>, id: String) -> Result<(), String> {
     let mut data = load_profiles_data(&state);
     if !data.profiles.iter().any(|p| p.id == id) {
@@ -254,6 +261,39 @@ pub async fn node_delete(state: State<'_, AppState>, tag: String) -> Result<(), 
     save_profiles_data(&state, &data)?;
     *state.profiles_data.lock().await = data;
     Ok(())
+}
+
+/// Node with source profile information
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NodeWithProfile {
+    #[serde(flatten)]
+    pub node: SingBoxOutbound,
+    #[serde(rename = "sourceProfileId")]
+    pub source_profile_id: String,
+    #[serde(rename = "sourceProfileName")]
+    pub source_profile_name: String,
+}
+
+#[tauri::command]
+pub async fn node_list_all(state: State<'_, AppState>) -> Result<Vec<NodeWithProfile>, String> {
+    let data = load_profiles_data(&state);
+    let mut all_nodes = Vec::new();
+    
+    for profile in &data.profiles {
+        if !profile.enabled {
+            continue;
+        }
+        let nodes = load_profile_nodes(&state, &profile.id);
+        for node in nodes {
+            all_nodes.push(NodeWithProfile {
+                node,
+                source_profile_id: profile.id.clone(),
+                source_profile_name: profile.name.clone(),
+            });
+        }
+    }
+    
+    Ok(all_nodes)
 }
 
 async fn fetch_subscription(url: &str) -> Result<Vec<SingBoxOutbound>, String> {
@@ -485,40 +525,440 @@ fn parse_singbox_outbounds(outbounds: &[serde_json::Value]) -> Result<Vec<SingBo
 
 fn parse_node_link(link: &str) -> Option<SingBoxOutbound> {
     if link.starts_with("ss://") {
-        // Parse Shadowsocks link
-        let rest = link.strip_prefix("ss://")?;
-        let (encoded, tag) = rest.split_once('#').unwrap_or((rest, "SS"));
-        let tag = urlencoding::decode(tag).ok()?.to_string();
-        
-        // Try decode base64 part
-        let parts: Vec<&str> = encoded.split('@').collect();
-        if parts.len() != 2 {
-            return None;
-        }
-        
-        let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, parts[0]).ok()?;
-        let decoded_str = String::from_utf8(decoded).ok()?;
-        let (method, password) = decoded_str.split_once(':')?;
-        
-        let host_port: Vec<&str> = parts[1].split(':').collect();
-        if host_port.len() != 2 {
-            return None;
-        }
-        
-        let mut extra = std::collections::HashMap::new();
-        extra.insert("method".to_string(), serde_json::Value::String(method.to_string()));
-        extra.insert("password".to_string(), serde_json::Value::String(password.to_string()));
-        
-        Some(SingBoxOutbound {
-            tag: Some(tag),
-            outbound_type: Some("shadowsocks".to_string()),
-            server: Some(host_port[0].to_string()),
-            server_port: host_port[1].parse().ok(),
-            extra,
-        })
+        parse_ss_link(link)
+    } else if link.starts_with("vless://") {
+        parse_vless_link(link)
+    } else if link.starts_with("vmess://") {
+        parse_vmess_link(link)
+    } else if link.starts_with("trojan://") {
+        parse_trojan_link(link)
+    } else if link.starts_with("hysteria2://") || link.starts_with("hy2://") {
+        parse_hysteria2_link(link)
+    } else if link.starts_with("hysteria://") {
+        parse_hysteria_link(link)
     } else {
         None
     }
+}
+
+fn parse_ss_link(link: &str) -> Option<SingBoxOutbound> {
+    let rest = link.strip_prefix("ss://")?;
+    let (encoded, tag) = rest.split_once('#').unwrap_or((rest, "SS"));
+    let tag = urlencoding::decode(tag).ok()?.to_string();
+    
+    let parts: Vec<&str> = encoded.split('@').collect();
+    if parts.len() != 2 {
+        return None;
+    }
+    
+    let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, parts[0]).ok()?;
+    let decoded_str = String::from_utf8(decoded).ok()?;
+    let (method, password) = decoded_str.split_once(':')?;
+    
+    let host_port: Vec<&str> = parts[1].split(':').collect();
+    if host_port.len() != 2 {
+        return None;
+    }
+    
+    let mut extra = std::collections::HashMap::new();
+    extra.insert("method".to_string(), serde_json::Value::String(method.to_string()));
+    extra.insert("password".to_string(), serde_json::Value::String(password.to_string()));
+    
+    Some(SingBoxOutbound {
+        tag: Some(tag),
+        outbound_type: Some("shadowsocks".to_string()),
+        server: Some(host_port[0].to_string()),
+        server_port: host_port[1].parse().ok(),
+        extra,
+    })
+}
+
+fn parse_vless_link(link: &str) -> Option<SingBoxOutbound> {
+    let rest = link.strip_prefix("vless://")?;
+    let (main_part, tag) = rest.split_once('#').unwrap_or((rest, "VLESS"));
+    let tag = urlencoding::decode(tag).ok()?.to_string();
+    
+    let (user_host, query) = main_part.split_once('?').unwrap_or((main_part, ""));
+    let (uuid, host_port) = user_host.split_once('@')?;
+    
+    let (server, port_str) = if host_port.starts_with('[') {
+        // IPv6
+        let end = host_port.find("]:")?;
+        (&host_port[1..end], &host_port[end+2..])
+    } else {
+        host_port.rsplit_once(':')?
+    };
+    let port: u16 = port_str.parse().ok()?;
+    
+    let params: std::collections::HashMap<String, String> = query
+        .split('&')
+        .filter_map(|p| p.split_once('='))
+        .map(|(k, v)| (k.to_string(), urlencoding::decode(v).unwrap_or_default().to_string()))
+        .collect();
+    
+    let mut extra = std::collections::HashMap::new();
+    extra.insert("uuid".to_string(), serde_json::Value::String(uuid.to_string()));
+    extra.insert("packet_encoding".to_string(), serde_json::Value::String("xudp".to_string()));
+    
+    if let Some(flow) = params.get("flow") {
+        if !flow.is_empty() {
+            extra.insert("flow".to_string(), serde_json::Value::String(flow.clone()));
+        }
+    }
+    
+    // TLS configuration
+    let security = params.get("security").map(|s| s.as_str()).unwrap_or("");
+    if security == "tls" || security == "reality" {
+        let mut tls = serde_json::Map::new();
+        tls.insert("enabled".to_string(), serde_json::Value::Bool(true));
+        
+        if let Some(sni) = params.get("sni").or(params.get("servername")) {
+            tls.insert("server_name".to_string(), serde_json::Value::String(sni.clone()));
+        } else {
+            tls.insert("server_name".to_string(), serde_json::Value::String(server.to_string()));
+        }
+        
+        if let Some(insecure) = params.get("insecure") {
+            tls.insert("insecure".to_string(), serde_json::Value::Bool(insecure == "1"));
+        }
+        
+        if let Some(alpn) = params.get("alpn") {
+            let alpn_arr: Vec<serde_json::Value> = alpn.split(',')
+                .map(|s| serde_json::Value::String(s.to_string()))
+                .collect();
+            tls.insert("alpn".to_string(), serde_json::Value::Array(alpn_arr));
+        }
+        
+        if let Some(fp) = params.get("fp") {
+            if !fp.is_empty() {
+                tls.insert("utls".to_string(), serde_json::json!({
+                    "enabled": true,
+                    "fingerprint": fp
+                }));
+            }
+        }
+        
+        if security == "reality" {
+            let mut reality = serde_json::Map::new();
+            reality.insert("enabled".to_string(), serde_json::Value::Bool(true));
+            if let Some(pbk) = params.get("pbk") {
+                reality.insert("public_key".to_string(), serde_json::Value::String(pbk.clone()));
+            }
+            if let Some(sid) = params.get("sid") {
+                reality.insert("short_id".to_string(), serde_json::Value::String(sid.clone()));
+            }
+            tls.insert("reality".to_string(), serde_json::Value::Object(reality));
+        }
+        
+        extra.insert("tls".to_string(), serde_json::Value::Object(tls));
+    }
+    
+    // Transport configuration
+    let transport_type = params.get("type").map(|s| s.as_str()).unwrap_or("tcp");
+    if transport_type != "tcp" {
+        let mut transport = serde_json::Map::new();
+        transport.insert("type".to_string(), serde_json::Value::String(transport_type.to_string()));
+        
+        match transport_type {
+            "ws" => {
+                if let Some(path) = params.get("path") {
+                    transport.insert("path".to_string(), serde_json::Value::String(path.clone()));
+                }
+                if let Some(host) = params.get("host") {
+                    transport.insert("headers".to_string(), serde_json::json!({ "Host": host }));
+                }
+            }
+            "grpc" => {
+                if let Some(sn) = params.get("serviceName") {
+                    transport.insert("service_name".to_string(), serde_json::Value::String(sn.clone()));
+                }
+            }
+            "http" | "h2" => {
+                transport.insert("type".to_string(), serde_json::Value::String("http".to_string()));
+                if let Some(path) = params.get("path") {
+                    transport.insert("path".to_string(), serde_json::Value::String(path.clone()));
+                }
+                if let Some(host) = params.get("host") {
+                    transport.insert("host".to_string(), serde_json::json!([host]));
+                }
+            }
+            _ => {}
+        }
+        
+        extra.insert("transport".to_string(), serde_json::Value::Object(transport));
+    }
+    
+    Some(SingBoxOutbound {
+        tag: Some(tag),
+        outbound_type: Some("vless".to_string()),
+        server: Some(server.to_string()),
+        server_port: Some(port),
+        extra,
+    })
+}
+
+fn parse_vmess_link(link: &str) -> Option<SingBoxOutbound> {
+    let rest = link.strip_prefix("vmess://")?;
+    let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, rest.trim()).ok()?;
+    let decoded_str = String::from_utf8(decoded).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&decoded_str).ok()?;
+    
+    let tag = json.get("ps").and_then(|v| v.as_str()).unwrap_or("VMess").to_string();
+    let server = json.get("add").and_then(|v| v.as_str())?.to_string();
+    let port: u16 = json.get("port").and_then(|v| {
+        v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+    })? as u16;
+    let uuid = json.get("id").and_then(|v| v.as_str())?.to_string();
+    
+    let mut extra = std::collections::HashMap::new();
+    extra.insert("uuid".to_string(), serde_json::Value::String(uuid));
+    extra.insert("security".to_string(), serde_json::Value::String(
+        json.get("scy").or(json.get("cipher")).and_then(|v| v.as_str()).unwrap_or("auto").to_string()
+    ));
+    
+    if let Some(aid) = json.get("aid").and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))) {
+        extra.insert("alter_id".to_string(), serde_json::Value::Number(aid.into()));
+    }
+    
+    // TLS
+    let tls = json.get("tls").and_then(|v| v.as_str()).unwrap_or("");
+    if tls == "tls" {
+        let mut tls_obj = serde_json::Map::new();
+        tls_obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
+        if let Some(sni) = json.get("sni").and_then(|v| v.as_str()) {
+            tls_obj.insert("server_name".to_string(), serde_json::Value::String(sni.to_string()));
+        } else {
+            tls_obj.insert("server_name".to_string(), serde_json::Value::String(server.clone()));
+        }
+        extra.insert("tls".to_string(), serde_json::Value::Object(tls_obj));
+    }
+    
+    // Transport
+    let net = json.get("net").and_then(|v| v.as_str()).unwrap_or("tcp");
+    if net != "tcp" {
+        let mut transport = serde_json::Map::new();
+        match net {
+            "ws" => {
+                transport.insert("type".to_string(), serde_json::Value::String("ws".to_string()));
+                if let Some(path) = json.get("path").and_then(|v| v.as_str()) {
+                    transport.insert("path".to_string(), serde_json::Value::String(path.to_string()));
+                }
+                if let Some(host) = json.get("host").and_then(|v| v.as_str()) {
+                    transport.insert("headers".to_string(), serde_json::json!({ "Host": host }));
+                }
+            }
+            "grpc" => {
+                transport.insert("type".to_string(), serde_json::Value::String("grpc".to_string()));
+                if let Some(path) = json.get("path").and_then(|v| v.as_str()) {
+                    transport.insert("service_name".to_string(), serde_json::Value::String(path.to_string()));
+                }
+            }
+            "h2" => {
+                transport.insert("type".to_string(), serde_json::Value::String("http".to_string()));
+                if let Some(path) = json.get("path").and_then(|v| v.as_str()) {
+                    transport.insert("path".to_string(), serde_json::Value::String(path.to_string()));
+                }
+            }
+            _ => {
+                transport.insert("type".to_string(), serde_json::Value::String(net.to_string()));
+            }
+        }
+        extra.insert("transport".to_string(), serde_json::Value::Object(transport));
+    }
+    
+    Some(SingBoxOutbound {
+        tag: Some(tag),
+        outbound_type: Some("vmess".to_string()),
+        server: Some(server),
+        server_port: Some(port),
+        extra,
+    })
+}
+
+fn parse_trojan_link(link: &str) -> Option<SingBoxOutbound> {
+    let rest = link.strip_prefix("trojan://")?;
+    let (main_part, tag) = rest.split_once('#').unwrap_or((rest, "Trojan"));
+    let tag = urlencoding::decode(tag).ok()?.to_string();
+    
+    let (password_host, query) = main_part.split_once('?').unwrap_or((main_part, ""));
+    let (password, host_port) = password_host.split_once('@')?;
+    let password = urlencoding::decode(password).ok()?.to_string();
+    
+    let (server, port_str) = host_port.rsplit_once(':')?;
+    let port: u16 = port_str.parse().ok()?;
+    
+    let params: std::collections::HashMap<String, String> = query
+        .split('&')
+        .filter_map(|p| p.split_once('='))
+        .map(|(k, v)| (k.to_string(), urlencoding::decode(v).unwrap_or_default().to_string()))
+        .collect();
+    
+    let mut extra = std::collections::HashMap::new();
+    extra.insert("password".to_string(), serde_json::Value::String(password));
+    
+    // TLS (Trojan always uses TLS)
+    let mut tls = serde_json::Map::new();
+    tls.insert("enabled".to_string(), serde_json::Value::Bool(true));
+    if let Some(sni) = params.get("sni") {
+        tls.insert("server_name".to_string(), serde_json::Value::String(sni.clone()));
+    } else {
+        tls.insert("server_name".to_string(), serde_json::Value::String(server.to_string()));
+    }
+    if params.get("allowInsecure").map(|s| s == "1").unwrap_or(false) {
+        tls.insert("insecure".to_string(), serde_json::Value::Bool(true));
+    }
+    extra.insert("tls".to_string(), serde_json::Value::Object(tls));
+    
+    // Transport
+    let transport_type = params.get("type").map(|s| s.as_str()).unwrap_or("tcp");
+    if transport_type != "tcp" {
+        let mut transport = serde_json::Map::new();
+        transport.insert("type".to_string(), serde_json::Value::String(transport_type.to_string()));
+        
+        if transport_type == "ws" {
+            if let Some(path) = params.get("path") {
+                transport.insert("path".to_string(), serde_json::Value::String(path.clone()));
+            }
+            if let Some(host) = params.get("host") {
+                transport.insert("headers".to_string(), serde_json::json!({ "Host": host }));
+            }
+        } else if transport_type == "grpc" {
+            if let Some(sn) = params.get("serviceName") {
+                transport.insert("service_name".to_string(), serde_json::Value::String(sn.clone()));
+            }
+        }
+        
+        extra.insert("transport".to_string(), serde_json::Value::Object(transport));
+    }
+    
+    Some(SingBoxOutbound {
+        tag: Some(tag),
+        outbound_type: Some("trojan".to_string()),
+        server: Some(server.to_string()),
+        server_port: Some(port),
+        extra,
+    })
+}
+
+fn parse_hysteria2_link(link: &str) -> Option<SingBoxOutbound> {
+    let rest = link.strip_prefix("hysteria2://").or_else(|| link.strip_prefix("hy2://"))?;
+    let (main_part, tag) = rest.split_once('#').unwrap_or((rest, "Hysteria2"));
+    let tag = urlencoding::decode(tag).ok()?.to_string();
+    
+    let (password_host, query) = main_part.split_once('?').unwrap_or((main_part, ""));
+    let (password, host_port) = password_host.split_once('@')?;
+    let password = urlencoding::decode(password).ok()?.to_string();
+    
+    let (server, port_str) = host_port.rsplit_once(':')?;
+    let port: u16 = port_str.parse().ok()?;
+    
+    let params: std::collections::HashMap<String, String> = query
+        .split('&')
+        .filter_map(|p| p.split_once('='))
+        .map(|(k, v)| (k.to_string(), urlencoding::decode(v).unwrap_or_default().to_string()))
+        .collect();
+    
+    let mut extra = std::collections::HashMap::new();
+    extra.insert("password".to_string(), serde_json::Value::String(password));
+    
+    // TLS (Hysteria2 always uses TLS)
+    let mut tls = serde_json::Map::new();
+    tls.insert("enabled".to_string(), serde_json::Value::Bool(true));
+    if let Some(sni) = params.get("sni") {
+        tls.insert("server_name".to_string(), serde_json::Value::String(sni.clone()));
+    } else {
+        tls.insert("server_name".to_string(), serde_json::Value::String(server.to_string()));
+    }
+    if params.get("insecure").map(|s| s == "1").unwrap_or(false) {
+        tls.insert("insecure".to_string(), serde_json::Value::Bool(true));
+    }
+    if let Some(alpn) = params.get("alpn") {
+        let alpn_arr: Vec<serde_json::Value> = alpn.split(',')
+            .map(|s| serde_json::Value::String(s.to_string()))
+            .collect();
+        tls.insert("alpn".to_string(), serde_json::Value::Array(alpn_arr));
+    }
+    extra.insert("tls".to_string(), serde_json::Value::Object(tls));
+    
+    // Obfs
+    if let Some(obfs_type) = params.get("obfs") {
+        let mut obfs = serde_json::Map::new();
+        obfs.insert("type".to_string(), serde_json::Value::String(obfs_type.clone()));
+        if let Some(obfs_password) = params.get("obfs-password") {
+            obfs.insert("password".to_string(), serde_json::Value::String(obfs_password.clone()));
+        }
+        extra.insert("obfs".to_string(), serde_json::Value::Object(obfs));
+    }
+    
+    Some(SingBoxOutbound {
+        tag: Some(tag),
+        outbound_type: Some("hysteria2".to_string()),
+        server: Some(server.to_string()),
+        server_port: Some(port),
+        extra,
+    })
+}
+
+fn parse_hysteria_link(link: &str) -> Option<SingBoxOutbound> {
+    let rest = link.strip_prefix("hysteria://")?;
+    let (main_part, tag) = rest.split_once('#').unwrap_or((rest, "Hysteria"));
+    let tag = urlencoding::decode(tag).ok()?.to_string();
+    
+    let (host_port, query) = main_part.split_once('?').unwrap_or((main_part, ""));
+    let (server, port_str) = host_port.rsplit_once(':')?;
+    let port: u16 = port_str.parse().ok()?;
+    
+    let params: std::collections::HashMap<String, String> = query
+        .split('&')
+        .filter_map(|p| p.split_once('='))
+        .map(|(k, v)| (k.to_string(), urlencoding::decode(v).unwrap_or_default().to_string()))
+        .collect();
+    
+    let mut extra = std::collections::HashMap::new();
+    
+    if let Some(auth) = params.get("auth") {
+        extra.insert("auth_str".to_string(), serde_json::Value::String(auth.clone()));
+    }
+    
+    // TLS
+    let mut tls = serde_json::Map::new();
+    tls.insert("enabled".to_string(), serde_json::Value::Bool(true));
+    if let Some(sni) = params.get("sni").or(params.get("peer")) {
+        tls.insert("server_name".to_string(), serde_json::Value::String(sni.clone()));
+    } else {
+        tls.insert("server_name".to_string(), serde_json::Value::String(server.to_string()));
+    }
+    if params.get("insecure").map(|s| s == "1").unwrap_or(false) {
+        tls.insert("insecure".to_string(), serde_json::Value::Bool(true));
+    }
+    if let Some(alpn) = params.get("alpn") {
+        let alpn_arr: Vec<serde_json::Value> = alpn.split(',')
+            .map(|s| serde_json::Value::String(s.to_string()))
+            .collect();
+        tls.insert("alpn".to_string(), serde_json::Value::Array(alpn_arr));
+    }
+    extra.insert("tls".to_string(), serde_json::Value::Object(tls));
+    
+    // Up/Down bandwidth
+    if let Some(up) = params.get("upmbps") {
+        extra.insert("up_mbps".to_string(), serde_json::Value::Number(up.parse::<i64>().unwrap_or(100).into()));
+    }
+    if let Some(down) = params.get("downmbps") {
+        extra.insert("down_mbps".to_string(), serde_json::Value::Number(down.parse::<i64>().unwrap_or(100).into()));
+    }
+    
+    // Obfs
+    if let Some(obfs_type) = params.get("obfs") {
+        extra.insert("obfs".to_string(), serde_json::Value::String(obfs_type.clone()));
+    }
+    
+    Some(SingBoxOutbound {
+        tag: Some(tag),
+        outbound_type: Some("hysteria".to_string()),
+        server: Some(server.to_string()),
+        server_port: Some(port),
+        extra,
+    })
 }
 
 fn map_clash_type(t: &str) -> String {
@@ -754,36 +1194,6 @@ async fn check_clash_api_running(port: u16) -> bool {
         }
     }
     false
-}
-
-fn generate_temp_config(nodes: &[SingBoxOutbound], api_port: u16) -> serde_json::Value {
-    // 直接序列化节点并添加 direct 出站
-    let mut outbounds: Vec<serde_json::Value> = nodes.iter()
-        .filter_map(|node| serde_json::to_value(node).ok())
-        .collect();
-    
-    // 添加 direct 出站
-    outbounds.push(serde_json::json!({ "type": "direct", "tag": "direct" }));
-    
-    serde_json::json!({
-        "log": {
-            "disabled": false,
-            "level": "info",
-            "timestamp": true
-        },
-        "experimental": {
-            "clash_api": {
-                "external_controller": format!("127.0.0.1:{}", api_port),
-                "default_mode": "rule"
-            }
-        },
-        "inbounds": [],
-        "outbounds": outbounds,
-        "route": {
-            "final": "direct",
-            "auto_detect_interface": true
-        }
-    })
 }
 
 fn generate_temp_config_raw(nodes: &[serde_json::Value], api_port: u16) -> serde_json::Value {

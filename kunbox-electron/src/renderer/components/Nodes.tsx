@@ -70,7 +70,7 @@ export default function Nodes() {
       const list = await window.api.profile.list()
       setProfiles(list)
       if (list.length > 0) {
-        const active = list.find(p => p.enabled) || list[0]
+        const active = list.find((p: Profile) => p.enabled) || list[0]
         setActiveProfileId(active?.id || null)
       }
     } catch (error) {

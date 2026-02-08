@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import * as Switch from '@radix-ui/react-switch'
 import * as Select from '@radix-ui/react-select'
-import { ChevronDown, Check, Globe, Shield, Wifi, Gauge, Monitor, RefreshCw, Settings2, Cpu } from 'lucide-react'
+import { ChevronDown, Check, Globe, Shield, Wifi, Gauge, Monitor, RefreshCw, Settings2, Cpu, RotateCcw } from 'lucide-react'
 import type { AppSettings } from '../../shared/types'
 import { KernelSettings } from './KernelSettings'
 
@@ -19,6 +19,7 @@ const TAB_ITEMS = [
 export default function Settings() {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [saving, setSaving] = useState(false)
+  const [isAdmin, setIsAdmin] = useState(false)
   const [activeTab, setActiveTab] = useState<SettingsTab>(() => {
     const savedTab = localStorage.getItem('kunbox-settings-tab') as SettingsTab | null
     if (savedTab && ['proxy', 'tun', 'dns', 'kernel', 'system'].includes(savedTab)) {
@@ -29,21 +30,42 @@ export default function Settings() {
   })
 
   useEffect(() => {
-    window.api.settings.get().then(setSettings)
+    window.api.settings.get().then((s: AppSettings) => {
+      setSettings(s)
+      // Sync requireAdmin state from settings
+    })
+    window.api.window.isAdmin().then(setIsAdmin)
   }, [])
 
   const updateSetting = async <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
     if (!settings) return
+    const prevSettings = settings
     const newSettings = { ...settings, [key]: value }
     setSettings(newSettings)
     setSaving(true)
-    await window.api.settings.set({ [key]: value })
-    if (key === 'theme') {
-      localStorage.setItem('kunbox-theme', value as string)
-      // Dispatch custom event to trigger theme change in App.tsx
-      window.dispatchEvent(new CustomEvent('theme-change'))
+
+    try {
+      await window.api.settings.set({ [key]: value })
+
+      if (key === 'theme') {
+        localStorage.setItem('kunbox-theme', value as string)
+        // Dispatch custom event to trigger theme change in App.tsx
+        window.dispatchEvent(new CustomEvent('theme-change'))
+      }
+
+      if (key === 'requireAdmin' && value === true && !isAdmin) {
+        try {
+          await window.api.window.restartAsAdmin()
+        } catch (e) {
+          // UAC canceled or elevation failed: rollback switch
+          setSettings(prevSettings)
+          await window.api.settings.set({ requireAdmin: false })
+          console.error('Failed to restart as admin, rolled back requireAdmin:', e)
+        }
+      }
+    } finally {
+      setSaving(false)
     }
-    setSaving(false)
   }
 
   if (!settings) {
@@ -159,9 +181,34 @@ export default function Settings() {
                   </SettingRow>
                 </SettingCard>
 
+                {settings.tunEnabled && (
+                  <div className="rounded-2xl p-5 border-2 border-amber-500 bg-amber-500/20">
+                    <div className="flex items-center justify-between gap-4">
+                      <div className="flex items-start gap-3">
+                        <div className="w-8 h-8 rounded-lg bg-amber-500/30 flex items-center justify-center flex-shrink-0 mt-0.5">
+                          <Shield className="w-4 h-4 text-amber-500" />
+                        </div>
+                        <div>
+                          <p className="text-sm font-semibold text-amber-500 mb-1">需要管理员权限</p>
+                          <p className="text-sm text-[var(--text-secondary)]">
+                            TUN 模式需要以管理员身份运行应用程序
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => window.api.window.restartAsAdmin()}
+                        className="flex-shrink-0 px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-medium text-sm flex items-center gap-2 transition-colors"
+                      >
+                        <RotateCcw className="w-4 h-4" />
+                        以管理员身份重启
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 <div className="glass-card rounded-2xl p-5">
                   <p className="text-sm text-[var(--text-muted)]">
-                    TUN 模式可接管系统全部流量，需要管理员权限。建议使用 gVisor 或 Mixed 网络栈以获得更好的兼容性。
+                    TUN 模式可接管系统全部流量。建议使用 gVisor 或 Mixed 网络栈以获得更好的兼容性。
                   </p>
                 </div>
               </div>
@@ -194,6 +241,34 @@ export default function Settings() {
 
             {activeTab === 'system' && (
               <div className="space-y-4">
+                {/* Admin Status Badge */}
+                <div className={`rounded-2xl p-4 border-2 ${isAdmin ? 'border-emerald-500 bg-emerald-500/10' : 'border-amber-500 bg-amber-500/10'}`}>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className={`w-8 h-8 rounded-lg ${isAdmin ? 'bg-emerald-500/30' : 'bg-amber-500/30'} flex items-center justify-center`}>
+                        <Shield className={`w-4 h-4 ${isAdmin ? 'text-emerald-500' : 'text-amber-500'}`} />
+                      </div>
+                      <div>
+                        <p className={`text-sm font-semibold ${isAdmin ? 'text-emerald-500' : 'text-amber-500'}`}>
+                          {isAdmin ? '管理员模式' : '普通用户模式'}
+                        </p>
+                        <p className="text-xs text-[var(--text-muted)]">
+                          {isAdmin ? 'TUN 模式可正常使用' : 'TUN 模式需要管理员权限'}
+                        </p>
+                      </div>
+                    </div>
+                    {!isAdmin && (
+                      <button
+                        onClick={() => window.api.window.restartAsAdmin()}
+                        className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-xs font-medium transition-colors flex items-center gap-1.5"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        以管理员身份重启
+                      </button>
+                    )}
+                  </div>
+                </div>
+
                 <SettingCard>
                   <SettingRow label="主题">
                     <Dropdown
@@ -207,6 +282,9 @@ export default function Settings() {
                       isTheme
                     />
                   </SettingRow>
+                  <SettingRow label="始终以管理员运行">
+                    <Toggle checked={settings.requireAdmin} onChange={(v) => updateSetting('requireAdmin', v)} />
+                  </SettingRow>
                   <SettingRow label="启动时自动连接">
                     <Toggle checked={settings.autoConnect} onChange={(v) => updateSetting('autoConnect', v)} />
                   </SettingRow>
@@ -217,6 +295,15 @@ export default function Settings() {
                     <Toggle checked={settings.startWithWindows} onChange={(v) => updateSetting('startWithWindows', v)} />
                   </SettingRow>
                 </SettingCard>
+
+                {/* Tip for requireAdmin */}
+                {settings.requireAdmin && !isAdmin && (
+                  <div className="glass-card rounded-2xl p-4">
+                    <p className="text-sm text-[var(--text-muted)]">
+                      已开启"始终以管理员运行"，下次启动应用时会自动请求管理员权限。
+                    </p>
+                  </div>
+                )}
               </div>
             )}
 

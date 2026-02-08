@@ -42,7 +42,8 @@ export function KernelSettings() {
 
   const showToast = useCallback((message: string, type: 'success' | 'error' | 'info' = 'info') => {
     const id = Date.now()
-    setToasts(prev => [...prev, { id, message, type }])
+    // Only keep the latest toast
+    setToasts([{ id, message, type }])
     setTimeout(() => {
       setToasts(prev => prev.filter(t => t.id !== id))
     }, 3000)
@@ -77,7 +78,7 @@ export function KernelSettings() {
       showToast('内核更新完成', 'success')
       loadVersions()
     })
-    const unsubError = window.api.kernel.onDownloadError((err) => {
+    const unsubError = window.api.kernel.onDownloadError((err: string) => {
       setDownloading(false)
       showToast(`下载失败: ${err}`, 'error')
     })

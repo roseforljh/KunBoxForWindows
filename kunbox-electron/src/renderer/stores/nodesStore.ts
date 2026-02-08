@@ -1,11 +1,16 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import type { SingBoxOutbound } from '@shared/types'
+import type { SingBoxOutbound, NodeWithProfile } from '@shared/types'
 
 interface NodeItem extends SingBoxOutbound {
   latencyMs?: number | null
   isTimeout?: boolean
   isTesting?: boolean
+}
+
+interface AllNodeItem extends NodeWithProfile {
+  latencyMs?: number | null
+  isTimeout?: boolean
 }
 
 export type FilterMode = 'none' | 'include' | 'exclude'
@@ -30,6 +35,7 @@ let abortController: AbortController | null = null
 
 interface NodesState {
   nodes: NodeItem[]
+  allNodes: AllNodeItem[]
   activeNodeTag: string | null
   searchText: string
   sortMode: 'default' | 'latency' | 'name' | 'region'
@@ -45,17 +51,19 @@ interface NodesState {
   setSortMode: (mode: NodesState['sortMode']) => void
   setNodeFilter: (filter: NodeFilter) => void
   clearNodeFilter: () => void
-  selectNode: (tag: string) => Promise<void>
+  selectNode: (tag: string) => Promise<boolean>
   testAllLatency: () => Promise<void>
   cancelTestAllLatency: () => void
   testNodeLatency: (tag: string) => Promise<void>
   loadNodes: () => Promise<void>
+  loadAllNodes: () => Promise<void>
 }
 
 export const useNodesStore = create<NodesState>()(
   persist(
     (set, get) => ({
       nodes: [],
+      allNodes: [],
       activeNodeTag: null,
       searchText: '',
       sortMode: 'default',
@@ -72,7 +80,7 @@ export const useNodesStore = create<NodesState>()(
       setNodes: (nodes) => {
         const { latencyCache } = get()
         // Restore latency from cache
-        const nodesWithLatency = nodes.map(n => {
+        const nodesWithLatency = nodes.map((n: SingBoxOutbound) => {
           const cached = n.tag ? latencyCache[n.tag] : null
           if (cached) {
             return { ...n, latencyMs: cached.latencyMs, isTimeout: cached.isTimeout }
@@ -90,17 +98,13 @@ export const useNodesStore = create<NodesState>()(
       }),
 
       selectNode: async (tag) => {
-        // Try hot switch first via Clash API
+        // Save selection to backend first
+        await window.api.node.setActive(tag)
+        set({ activeNodeTag: tag })
+        
+        // Try hot switch via Clash API (only works when VPN is running)
         const result = await window.api.singbox.switchNode(tag)
-        if (result.success) {
-          // Hot switch succeeded
-          await window.api.node.setActive(tag)
-          set({ activeNodeTag: tag })
-        } else {
-          // Hot switch failed, just save the selection (will apply on restart)
-          await window.api.node.setActive(tag)
-          set({ activeNodeTag: tag })
-        }
+        return result.success
       },
 
       testAllLatency: async () => {
@@ -204,9 +208,9 @@ export const useNodesStore = create<NodesState>()(
       loadNodes: async () => {
         const nodes = await window.api.node.list()
         const { activeNodeTag, latencyCache } = get()
-        
+
         // Restore latency from cache
-        const nodesWithLatency = nodes.map(n => {
+        const nodesWithLatency = nodes.map((n: SingBoxOutbound) => {
           const cached = n.tag ? latencyCache[n.tag] : null
           if (cached) {
             return { ...n, latencyMs: cached.latencyMs, isTimeout: cached.isTimeout }
@@ -225,6 +229,22 @@ export const useNodesStore = create<NodesState>()(
         }
         
         set({ nodes: nodesWithLatency })
+      },
+
+      loadAllNodes: async () => {
+        const allNodes = await window.api.node.listAll()
+        const { latencyCache } = get()
+        
+        // Restore latency from cache
+        const nodesWithLatency = allNodes.map((n: NodeWithProfile) => {
+          const cached = n.tag ? latencyCache[n.tag] : null
+          if (cached) {
+            return { ...n, latencyMs: cached.latencyMs, isTimeout: cached.isTimeout }
+          }
+          return { ...n }
+        })
+        
+        set({ allNodes: nodesWithLatency })
       }
     }),
     {

@@ -2,7 +2,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, emit } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import type { AppSettings, Profile, SingBoxOutbound, ProxyState, TrafficStats, LogEntry } from './types';
+import type { AppSettings, Profile, SingBoxOutbound, ProxyState, TrafficStats, LogEntry, DomainRule, ProcessRule, CustomRules, NodeWithProfile } from './types';
 
 // Event listener storage for cleanup
 const eventListeners = new Map<string, () => void>();
@@ -13,6 +13,8 @@ export const api = {
     stop: () => invoke<{ success: boolean; error?: string }>('singbox_stop'),
     restart: () => invoke<{ success: boolean; error?: string }>('singbox_restart'),
     switchNode: (nodeTag: string) => invoke<{ success: boolean; error?: string }>('singbox_switch_node', { nodeTag }),
+    enableSystemProxy: (port?: number) => invoke<{ success: boolean; error?: string }>('singbox_enable_system_proxy', { port }),
+    disableSystemProxy: () => invoke<{ success: boolean; error?: string }>('singbox_disable_system_proxy'),
     onStateChange: (callback: (state: ProxyState) => void) => {
       const unlisten = listen<string>('singbox:state', (event) => {
         callback(event.payload as ProxyState);
@@ -27,6 +29,21 @@ export const api = {
     },
     onLog: (callback: (entry: LogEntry) => void) => {
       const unlisten = listen<LogEntry>('singbox:log', (event) => {
+        callback(event.payload);
+      });
+      return () => { unlisten.then(fn => fn()); };
+    },
+    testSelectorLatency: (selectorTag: string, testUrl?: string): Promise<{
+      success: boolean;
+      selector: string;
+      total: number;
+      tested: number;
+      timeout: number;
+      bestNode?: string;
+      bestDelay?: number;
+    }> => invoke('singbox_test_selector_latency', { selectorTag, testUrl }),
+    onSelectorSwitch: (callback: (data: { selector: string; node: string; delay: number; stage: 'first' | 'final' }) => void) => {
+      const unlisten = listen<{ selector: string; node: string; delay: number; stage: 'first' | 'final' }>('singbox:selector-switch', (event) => {
         callback(event.payload);
       });
       return () => { unlisten.then(fn => fn()); };
@@ -51,6 +68,39 @@ export const api = {
     updateStatus: (_connected: boolean) => {
       // Tauri handles tray updates differently - emit event to backend
       emit('tray:status-update', { connected: _connected });
+    },
+    // New tray events
+    onVpnStart: (callback: () => void) => {
+      const unlisten = listen('tray-vpn-start', () => callback());
+      return () => { unlisten.then(fn => fn()); };
+    },
+    onVpnStop: (callback: () => void) => {
+      const unlisten = listen('tray-vpn-stop', () => callback());
+      return () => { unlisten.then(fn => fn()); };
+    },
+    onVpnRestart: (callback: () => void) => {
+      const unlisten = listen('tray-vpn-restart', () => callback());
+      return () => { unlisten.then(fn => fn()); };
+    },
+    onProxyEnable: (callback: () => void) => {
+      const unlisten = listen('tray-proxy-enable', () => callback());
+      return () => { unlisten.then(fn => fn()); };
+    },
+    onProxyDisable: (callback: () => void) => {
+      const unlisten = listen('tray-proxy-disable', () => callback());
+      return () => { unlisten.then(fn => fn()); };
+    },
+    onTunEnable: (callback: () => void) => {
+      const unlisten = listen('tray-tun-enable', () => callback());
+      return () => { unlisten.then(fn => fn()); };
+    },
+    onTunDisable: (callback: () => void) => {
+      const unlisten = listen('tray-tun-disable', () => callback());
+      return () => { unlisten.then(fn => fn()); };
+    },
+    onQuit: (callback: () => void) => {
+      const unlisten = listen('tray-quit', () => callback());
+      return () => { unlisten.then(fn => fn()); };
     }
   },
 
@@ -74,6 +124,7 @@ export const api = {
       }),
     update: (id: string): Promise<Profile> => invoke('profile_update', { id }),
     delete: (id: string): Promise<void> => invoke('profile_delete', { id }),
+    getActive: (): Promise<string | null> => invoke('profile_get_active'),
     setActive: (id: string): Promise<void> => invoke('profile_set_active', { id }),
     refresh: (id: string): Promise<Profile> => invoke('profile_update', { id }),
     edit: (id: string, data: { name: string; url: string; autoUpdateInterval?: number; dnsPreResolve?: boolean; dnsServer?: string | null }): Promise<Profile> => 
@@ -98,7 +149,8 @@ export const api = {
     testLatency: (tag: string): Promise<number> => invoke<number>('node_test_latency', { tag }),
     testAll: (): Promise<Record<string, number>> => invoke('node_test_all'),
     delete: (tag: string): Promise<void> => invoke('node_delete', { tag }),
-    export: (tag: string): Promise<string> => invoke('node_export', { tag })
+    export: (tag: string): Promise<string> => invoke('node_export', { tag }),
+    listAll: (): Promise<NodeWithProfile[]> => invoke('node_list_all')
   },
 
   settings: {
@@ -128,7 +180,7 @@ export const api = {
     download: (release: any, _isAlpha?: boolean) => invoke<{ success: boolean }>('kernel_download', { release }),
     rollback: (_isAlpha?: boolean) => invoke<{ success: boolean }>('kernel_rollback'),
     canRollback: (_isAlpha?: boolean) => invoke<boolean>('kernel_can_rollback'),
-    clearCache: () => invoke<{ success: boolean }>('kernel_clear_cache'),
+    clearCache: () => invoke<{ success: boolean; freedBytes: number }>('kernel_clear_cache'),
     openReleasesPage: () => invoke('kernel_open_releases_page'),
     openDirectory: () => invoke('kernel_open_directory'),
     onDownloadProgress: (callback: (progress: { downloaded: number; total: number; percent: number }) => void) => {
@@ -150,17 +202,29 @@ export const api = {
   },
 
   ruleset: {
-    list: () => invoke('ruleset_list'),
+    list: () => invoke<any[]>('ruleset_list'),
     save: (ruleSets: any[]) => invoke('ruleset_save', { rulesets: ruleSets }),
-    download: (ruleSet: any) => invoke('ruleset_download', { ruleset: ruleSet }),
-    isCached: (tag: string) => invoke('ruleset_is_cached', { tag }),
+    download: (ruleSet: any) => invoke<{ success: boolean; cached?: boolean; error?: string }>('ruleset_download', { ruleset: ruleSet }),
+    isCached: (tag: string) => invoke<boolean>('ruleset_is_cached', { tag }),
     fetchHub: () => invoke<{ tree: Array<{ type: string; path: string }> }>('ruleset_fetch_hub')
+  },
+
+  customRules: {
+    get: (): Promise<CustomRules> => invoke('custom_rules_get'),
+    save: (rules: CustomRules): Promise<void> => invoke('custom_rules_save', { rules }),
+    getDomainRules: (): Promise<DomainRule[]> => invoke('domain_rules_get'),
+    saveDomainRules: (rules: DomainRule[]): Promise<void> => invoke('domain_rules_save', { rules }),
+    getProcessRules: (): Promise<ProcessRule[]> => invoke('process_rules_get'),
+    saveProcessRules: (rules: ProcessRule[]): Promise<void> => invoke('process_rules_save', { rules })
   },
 
   window: {
     minimize: () => invoke('window_minimize'),
     maximize: () => invoke('window_maximize'),
-    close: () => invoke('window_close')
+    close: () => invoke('window_close'),
+    restartAsAdmin: () => invoke('restart_as_admin'),
+    isAdmin: (): Promise<boolean> => invoke('is_admin'),
+    quit: () => invoke('quit_app')
   }
 };
 

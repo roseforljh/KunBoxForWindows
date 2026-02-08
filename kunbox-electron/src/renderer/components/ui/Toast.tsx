@@ -42,7 +42,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
   const showToast = useCallback((message: string, type: ToastType = 'info', action?: ToastAction) => {
     const id = Date.now()
-    setToasts(prev => [...prev, { id, message, type, action }])
+    // Only keep the latest toast
+    setToasts([{ id, message, type, action }])
     setTimeout(() => {
       setToasts(prev => prev.filter(t => t.id !== id))
     }, action ? 8000 : 3000)
@@ -92,7 +93,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       >
         {children}
       </ToastProviderInner>
-      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[9999] flex flex-col-reverse gap-2 pointer-events-none">
+      <div className="fixed bottom-6 left-[calc(50%+var(--sidebar-width,160px)/2)] -translate-x-1/2 z-[9999] flex flex-col-reverse gap-2 pointer-events-none">
         <AnimatePresence>
           {toasts.map((toast) => (
             <motion.div

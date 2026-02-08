@@ -15,7 +15,7 @@ interface ModalProps {
 
 const modalTransition = {
   duration: 0.15,
-  ease: [0.4, 0, 0.2, 1]
+  ease: [0.4, 0, 0.2, 1] as const
 }
 
 export const Modal = memo(function Modal({
@@ -79,8 +79,8 @@ export const Modal = memo(function Modal({
                 </button>
               </div>
 
-              {/* Content area - scrollable */}
-              <div className="p-6 overflow-y-auto">{children}</div>
+              {/* Content area - scrollable with stable width */}
+              <div className="p-6 overflow-y-scroll">{children}</div>
 
               {/* Footer */}
               {footer && (

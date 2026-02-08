@@ -3,6 +3,48 @@ use std::fs;
 use crate::state::AppState;
 use crate::types::AppSettings;
 
+#[cfg(windows)]
+use std::process::Command;
+
+/// Set or remove Windows startup registry entry
+#[cfg(windows)]
+fn set_windows_startup(enable: bool) -> Result<(), String> {
+    let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe_path_str = exe_path.to_string_lossy();
+    
+    if enable {
+        // Add to registry Run key
+        Command::new("reg")
+            .args([
+                "add",
+                "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                "/v", "KunBox",
+                "/t", "REG_SZ",
+                "/d", &exe_path_str,
+                "/f"
+            ])
+            .output()
+            .map_err(|e| e.to_string())?;
+    } else {
+        // Remove from registry Run key
+        Command::new("reg")
+            .args([
+                "delete",
+                "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                "/v", "KunBox",
+                "/f"
+            ])
+            .output()
+            .ok(); // Ignore error if key doesn't exist
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn set_windows_startup(_enable: bool) -> Result<(), String> {
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, String> {
     let file = state.settings_file();
@@ -21,6 +63,7 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, Str
 pub async fn set_settings(state: State<'_, AppState>, settings: serde_json::Value) -> Result<(), String> {
     // Get current settings
     let mut current = state.settings.lock().await.clone();
+    let old_start_with_windows = current.start_with_windows;
     
     // Merge with incoming partial settings
     if let Some(obj) = settings.as_object() {
@@ -45,6 +88,14 @@ pub async fn set_settings(state: State<'_, AppState>, settings: serde_json::Valu
         if let Some(v) = obj.get("startMinimized").and_then(|v| v.as_bool()) { current.start_minimized = v; }
         if let Some(v) = obj.get("exitOnClose").and_then(|v| v.as_bool()) { current.exit_on_close = v; }
         if let Some(v) = obj.get("theme").and_then(|v| v.as_str()) { current.theme = v.to_string(); }
+        if let Some(v) = obj.get("requireAdmin").and_then(|v| v.as_bool()) { current.require_admin = v; }
+    }
+    
+    // Handle Windows startup setting change
+    if current.start_with_windows != old_start_with_windows {
+        if let Err(e) = set_windows_startup(current.start_with_windows) {
+            log::error!("Failed to set Windows startup: {}", e);
+        }
     }
     
     fs::create_dir_all(&state.data_dir).map_err(|e| e.to_string())?;

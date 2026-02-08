@@ -365,7 +365,7 @@ function useTheme() {
   })
 
   useEffect(() => {
-    window.api.settings.get().then((settings) => {
+    window.api.settings.get().then((settings: { theme?: Theme }) => {
       if (settings?.theme) {
         setTheme(settings.theme)
         localStorage.setItem('kunbox-theme', settings.theme)
@@ -422,15 +422,41 @@ export default function App() {
   const { state, setState, setTraffic, connect, disconnect } = useConnectionStore()
   const { setTheme } = useTheme()
 
+  // Set sidebar width CSS variable on :root for fixed positioned elements
+  useEffect(() => {
+    document.documentElement.style.setProperty('--sidebar-width', sidebarCollapsed ? '72px' : '256px')
+  }, [sidebarCollapsed])
+
+  // Auto connect on startup if enabled
+  useEffect(() => {
+    const checkAutoConnect = async () => {
+      try {
+        const settings: any = await window.api.settings.get()
+        if (settings?.autoConnect) {
+          // Small delay to ensure app is fully loaded
+          await new Promise(resolve => setTimeout(resolve, 1000))
+          // Only connect if we're in idle state
+          const currentState = useConnectionStore.getState().state
+          if (currentState === 'idle') {
+            await connect()
+          }
+        }
+      } catch (e) {
+        console.error('Auto connect failed:', e)
+      }
+    }
+    checkAutoConnect()
+  }, []) // Only run once on mount
+
   // Listen for singbox state and traffic updates
   useEffect(() => {
-    const unsubState = window.api.singbox.onStateChange((newState) => {
-      setState(newState)
+    const unsubState = window.api.singbox.onStateChange((newState: string) => {
+      setState(newState as any)
       // Sync tray status
       window.api.tray.updateStatus(newState === 'connected')
     })
 
-    const unsubTraffic = window.api.singbox.onTraffic((stats) => {
+    const unsubTraffic = window.api.singbox.onTraffic((stats: any) => {
       setTraffic(stats)
     })
 
@@ -458,9 +484,78 @@ export default function App() {
       }
     })
 
+    // New tray events
+    const unsubVpnStart = window.api.tray.onVpnStart?.(async () => {
+      if (state === 'idle' || state === 'error') {
+        await connect()
+      }
+    })
+
+    const unsubVpnStop = window.api.tray.onVpnStop?.(async () => {
+      if (state === 'connected') {
+        await disconnect()
+      }
+    })
+
+    const unsubVpnRestart = window.api.tray.onVpnRestart?.(async () => {
+      if (state === 'connected') {
+        await disconnect()
+        await new Promise(resolve => setTimeout(resolve, 500))
+        await connect()
+      }
+    })
+
+    const unsubProxyEnable = window.api.tray.onProxyEnable?.(async () => {
+      try {
+        await window.api.singbox.enableSystemProxy?.()
+      } catch (e) {
+        console.error('Failed to enable proxy:', e)
+      }
+    })
+
+    const unsubProxyDisable = window.api.tray.onProxyDisable?.(async () => {
+      try {
+        await window.api.singbox.disableSystemProxy?.()
+      } catch (e) {
+        console.error('Failed to disable proxy:', e)
+      }
+    })
+
+    const unsubTunEnable = window.api.tray.onTunEnable?.(async () => {
+      try {
+        const settings = await window.api.settings.get()
+        await window.api.settings.set({ ...settings, tunEnabled: true })
+      } catch (e) {
+        console.error('Failed to enable TUN:', e)
+      }
+    })
+
+    const unsubTunDisable = window.api.tray.onTunDisable?.(async () => {
+      try {
+        const settings = await window.api.settings.get()
+        await window.api.settings.set({ ...settings, tunEnabled: false })
+      } catch (e) {
+        console.error('Failed to disable TUN:', e)
+      }
+    })
+
+    const unsubQuit = window.api.tray.onQuit?.(async () => {
+      if (state === 'connected') {
+        await disconnect()
+      }
+    })
+
     return () => {
       unsubToggle()
       unsubRestart()
+      unsubVpnStart?.()
+      unsubVpnStop?.()
+      unsubVpnRestart?.()
+      unsubProxyEnable?.()
+      unsubProxyDisable?.()
+      unsubTunEnable?.()
+      unsubTunDisable?.()
+      unsubQuit?.()
     }
   }, [state, connect, disconnect])
 
@@ -486,12 +581,17 @@ export default function App() {
 
   return (
     <ToastProvider>
-      <div className="flex flex-col h-screen relative" style={{ backgroundColor: 'var(--bg-primary)' }}>
+      <div 
+        className="flex flex-col h-screen relative" 
+        style={{ backgroundColor: 'var(--bg-primary)', '--sidebar-width': sidebarCollapsed ? '72px' : '256px' } as React.CSSProperties}
+      >
         <BokehBackground />
         <TopBar />
 
       <div className="flex flex-1 overflow-hidden">
-        <aside className={`glass-sidebar flex-shrink-0 flex flex-col overflow-hidden transition-[width] duration-300 ease-in-out ${sidebarCollapsed ? 'w-[72px]' : 'w-64'}`}>
+        <aside 
+          className={`glass-sidebar flex-shrink-0 flex flex-col overflow-hidden transition-[width] duration-300 ease-in-out ${sidebarCollapsed ? 'w-[72px]' : 'w-64'}`}
+        >
           <div className="flex items-center gap-3 p-4 min-h-[68px] overflow-hidden">
             <img 
               src={logoImg} 

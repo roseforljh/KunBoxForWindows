@@ -2,6 +2,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use std::fs;
 use std::process::Stdio;
 use std::sync::Arc;
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::process::Command;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio_util::sync::CancellationToken;
@@ -9,10 +10,52 @@ use crate::state::AppState;
 use crate::types::{CommandResult, ProxyState, TrafficStats};
 
 #[cfg(windows)]
+#[allow(unused_imports)]
 use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+#[cfg(windows)]
+fn is_running_as_admin() -> bool {
+    use std::process::Command as StdCommand;
+    
+    let output = StdCommand::new("net")
+        .args(["session"])
+        .output();
+    
+    match output {
+        Ok(o) => o.status.success(),
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(windows))]
+fn is_running_as_admin() -> bool {
+    false
+}
+
+/// Kill all existing sing-box processes to avoid conflicts
+#[cfg(windows)]
+fn kill_existing_singbox_processes() {
+    use std::process::Command as StdCommand;
+    use std::os::windows::process::CommandExt;
+    
+    let _ = StdCommand::new("taskkill")
+        .args(["/F", "/IM", "sing-box.exe"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+    
+    // Wait a bit for processes to terminate
+    std::thread::sleep(std::time::Duration::from_millis(300));
+}
+
+#[cfg(not(windows))]
+fn kill_existing_singbox_processes() {
+    use std::process::Command as StdCommand;
+    let _ = StdCommand::new("pkill").args(["-9", "sing-box"]).output();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+}
 
 #[tauri::command]
 pub async fn singbox_start(app: AppHandle, state: State<'_, AppState>) -> Result<CommandResult, String> {
@@ -20,6 +63,21 @@ pub async fn singbox_start(app: AppHandle, state: State<'_, AppState>) -> Result
     
     if !singbox_path.exists() {
         return Ok(CommandResult::err("sing-box.exe not found. Please install kernel first."));
+    }
+
+    // Check if TUN mode is enabled and admin rights are required
+    let settings = state.settings.lock().await;
+    if settings.tun_enabled && !is_running_as_admin() {
+        return Ok(CommandResult::err("TUN 模式需要管理员权限。请右键点击应用图标，选择「以管理员身份运行」后重试。"));
+    }
+    drop(settings);
+
+    // Kill any existing sing-box processes before starting
+    kill_existing_singbox_processes();
+
+    // Stop any existing process in our state
+    if let Some(mut child) = state.singbox_process.lock().await.take() {
+        let _ = child.kill().await;
     }
 
     // Generate config
@@ -80,10 +138,25 @@ pub async fn singbox_start(app: AppHandle, state: State<'_, AppState>) -> Result
     
     let _ = app.emit("singbox:state", "connected");
 
+    // 连接成功后，后台自动测试 profile selector 延迟并切换
+    let selector_tags = collect_referenced_profile_selector_tags(&state).await;
+    if !selector_tags.is_empty() {
+        let app_for_selector_test = app.clone();
+        tokio::spawn(async move {
+            // 给 Clash API 一点准备时间
+            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+            for selector_tag in selector_tags {
+                if let Err(err) = test_selector_latency_internal(&app_for_selector_test, selector_tag.clone(), None).await {
+                    log::warn!("Auto selector latency test failed for '{}': {}", selector_tag, err);
+                }
+            }
+        });
+    }
+
     // Start traffic polling
     let cancel_token = CancellationToken::new();
     *state.traffic_cancel.lock().await = Some(cancel_token.clone());
-    
+
     let app_for_traffic = app.clone();
     let traffic_stats = state.traffic_stats.clone();
     tokio::spawn(async move {
@@ -109,10 +182,13 @@ pub async fn singbox_stop(app: AppHandle, state: State<'_, AppState>) -> Result<
     *state.proxy_state.lock().await = ProxyState::Disconnecting;
     let _ = app.emit("singbox:state", "disconnecting");
 
-    // Kill process
+    // Kill process from state
     if let Some(mut child) = state.singbox_process.lock().await.take() {
         let _ = child.kill().await;
     }
+
+    // Also kill any orphan sing-box processes
+    kill_existing_singbox_processes();
 
     // Disable system proxy
     let _ = disable_system_proxy_internal().await;
@@ -261,9 +337,18 @@ fn load_all_profiles(state: &AppState, profiles_data: &crate::types::ProfilesDat
 }
 
 async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
-    let profiles_data = state.profiles_data.lock().await;
+    // Always reload profiles data from file to ensure we have the latest
+    let profiles_file = state.profiles_file();
+    let profiles_data: crate::types::ProfilesData = if profiles_file.exists() {
+        let content = fs::read_to_string(&profiles_file).map_err(|e| e.to_string())?;
+        serde_json::from_str(&content).unwrap_or_default()
+    } else {
+        return Ok(CommandResult::err("No profiles file found"));
+    };
+    
     let settings = state.settings.lock().await;
     let rulesets = state.rulesets.lock().await;
+    let custom_rules = state.custom_rules.lock().await;
 
     let active_profile_id = match &profiles_data.active_profile_id {
         Some(id) => id.clone(),
@@ -306,8 +391,132 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
         }
     }
 
+    // 收集自定义规则引用的 profile 和 node
+    for rule in custom_rules.domain_rules.iter().filter(|r| r.enabled) {
+        if let Some(ref value) = rule.outbound_value {
+            match rule.outbound_mode.as_str() {
+                "profile" => { referenced_profile_ids.insert(value.clone()); }
+                "node" => { 
+                    // Parse "profileId::nodeTag" format
+                    let node_tag = if value.contains("::") {
+                        value.split("::").nth(1).unwrap_or(value).to_string()
+                    } else {
+                        value.clone()
+                    };
+                    referenced_node_tags.insert(node_tag);
+                }
+                _ => {}
+            }
+        }
+    }
+    for rule in custom_rules.process_rules.iter().filter(|r| r.enabled) {
+        if let Some(ref value) = rule.outbound_value {
+            match rule.outbound_mode.as_str() {
+                "profile" => { referenced_profile_ids.insert(value.clone()); }
+                "node" => {
+                    // Parse "profileId::nodeTag" format
+                    let node_tag = if value.contains("::") {
+                        value.split("::").nth(1).unwrap_or(value).to_string()
+                    } else {
+                        value.clone()
+                    };
+                    referenced_node_tags.insert(node_tag);
+                }
+                _ => {}
+            }
+        }
+    }
+
     // Build config - 使用 sing-box 1.11+ 新格式
     let listen_addr = if settings.allow_lan { "0.0.0.0" } else { "127.0.0.1" };
+    
+    // 构建 DNS 服务器列表
+    let mut dns_servers = vec![
+        serde_json::json!({
+            "tag": "dns-local",
+            "address": settings.local_dns,
+            "detour": "direct"
+        }),
+        serde_json::json!({
+            "tag": "dns-remote",
+            "address": settings.remote_dns,
+            "detour": "PROXY"
+        })
+    ];
+    
+    // 如果启用 FakeDNS，添加 fakeip 服务器
+    if settings.fake_dns {
+        dns_servers.push(serde_json::json!({
+            "tag": "dns-fakeip",
+            "address": "fakeip"
+        }));
+    }
+    
+    // 构建 DNS 规则
+    let mut dns_rules: Vec<serde_json::Value> = vec![
+        serde_json::json!({
+            "outbound": "any",
+            "server": "dns-local"
+        })
+    ];
+    
+    // FakeDNS 规则：非中国域名使用 fakeip
+    if settings.fake_dns {
+        dns_rules.push(serde_json::json!({
+            "query_type": ["A", "AAAA"],
+            "server": "dns-fakeip"
+        }));
+    }
+    
+    // 构建 inbounds
+    let mut inbounds = vec![
+        serde_json::json!({
+            "type": "mixed",
+            "tag": "mixed-in",
+            "listen": listen_addr,
+            "listen_port": settings.local_port,
+            "sniff": true,
+            "sniff_override_destination": true
+        }),
+        serde_json::json!({
+            "type": "socks",
+            "tag": "socks-in",
+            "listen": listen_addr,
+            "listen_port": settings.socks_port
+        })
+    ];
+    
+    // 如果启用 TUN 模式，添加 TUN inbound
+    if settings.tun_enabled {
+        inbounds.push(serde_json::json!({
+            "type": "tun",
+            "tag": "tun-in",
+            "interface_name": "kunbox-tun",
+            "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
+            "mtu": 9000,
+            "auto_route": true,
+            "strict_route": true,
+            "stack": settings.tun_stack,
+            "sniff": true,
+            "sniff_override_destination": true
+        }));
+    }
+    
+    let mut dns_config = serde_json::json!({
+        "servers": dns_servers,
+        "rules": dns_rules,
+        "final": if settings.fake_dns { "dns-fakeip" } else { "dns-remote" },
+        "independent_cache": true
+    });
+    
+    // 如果启用 FakeDNS，添加 fakeip 配置
+    if settings.fake_dns {
+        dns_config["fakeip"] = serde_json::json!({
+            "enabled": true,
+            "inet4_range": "198.18.0.0/15",
+            "inet6_range": "fc00::/18"
+        });
+    }
     
     let mut config = serde_json::json!({
         "log": {
@@ -325,44 +534,8 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
                 "path": "cache.db"
             }
         },
-        "dns": {
-            "servers": [
-                {
-                    "tag": "dns-local",
-                    "address": settings.local_dns,
-                    "detour": "direct"
-                },
-                {
-                    "tag": "dns-remote",
-                    "address": settings.remote_dns,
-                    "detour": "PROXY"
-                }
-            ],
-            "rules": [
-                {
-                    "outbound": "any",
-                    "server": "dns-local"
-                }
-            ],
-            "final": "dns-remote",
-            "independent_cache": true
-        },
-        "inbounds": [
-            {
-                "type": "mixed",
-                "tag": "mixed-in",
-                "listen": listen_addr,
-                "listen_port": settings.local_port,
-                "sniff": true,
-                "sniff_override_destination": true
-            },
-            {
-                "type": "socks",
-                "tag": "socks-in",
-                "listen": listen_addr,
-                "listen_port": settings.socks_port
-            }
-        ],
+        "dns": dns_config,
+        "inbounds": inbounds,
         "route": {
             "auto_detect_interface": true,
             "final": if settings.default_rule == "proxy" { "PROXY" } else { &settings.default_rule }
@@ -434,16 +607,14 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
                 }
             }
 
-            // 创建 urltest 类型的 selector（自动选择最低延迟节点）
+            // 创建 selector 类型（由应用层管理延迟测试和切换）
             if !profile_proxy_tags.is_empty() {
                 outbounds.push(serde_json::json!({
-                    "type": "urltest",
+                    "type": "selector",
                     "tag": selector_tag,
                     "outbounds": profile_proxy_tags,
-                    "url": settings.latency_test_url,
-                    "interval": "30m",
-                    "tolerance": 50,
-                    "interrupt_exist_connections": true
+                    "default": profile_proxy_tags.first(),
+                    "interrupt_exist_connections": false
                 }));
                 existing_tags.insert(selector_tag.clone());
                 profile_id_to_selector.insert(profile_id.clone(), selector_tag.clone());
@@ -471,7 +642,8 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
             "tag": "auto",
             "outbounds": proxy_tags,
             "url": settings.latency_test_url,
-            "interval": "300s",
+            "interval": "10m",
+            "idle_timeout": "30m",
             "tolerance": 50
         }));
     }
@@ -494,6 +666,157 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
 
     if settings.bypass_lan {
         rules.push(serde_json::json!({ "ip_is_private": true, "outbound": "direct" }));
+    }
+
+    // 如果启用广告屏蔽，添加广告屏蔽规则
+    if settings.block_ads {
+        // 使用内置的广告域名规则
+        rules.push(serde_json::json!({
+            "domain_keyword": ["ad", "ads", "advert", "tracking", "tracker", "analytics"],
+            "outbound": "block"
+        }));
+        rules.push(serde_json::json!({
+            "domain_suffix": [
+                "doubleclick.net",
+                "googlesyndication.com",
+                "googleadservices.com",
+                "google-analytics.com",
+                "adnxs.com",
+                "adsrvr.org",
+                "adcolony.com",
+                "facebook.com/tr",
+                "advertising.com",
+                "taboola.com",
+                "outbrain.com"
+            ],
+            "outbound": "block"
+        }));
+    }
+
+    // ========== 添加自定义域名分流规则 ==========
+    for rule in custom_rules.domain_rules.iter().filter(|r| r.enabled) {
+        let outbound = match rule.outbound_mode.as_str() {
+            "proxy" => "PROXY".to_string(),
+            "direct" => "direct".to_string(),
+            "block" => "block".to_string(),
+            "node" => {
+                if let Some(ref node_ref) = rule.outbound_value {
+                    // Parse "profileId::nodeTag" format
+                    let node_tag = if node_ref.contains("::") {
+                        node_ref.split("::").nth(1).unwrap_or(node_ref).to_string()
+                    } else {
+                        node_ref.clone()
+                    };
+                    if available_outbound_tags.contains(&node_tag) {
+                        node_tag
+                    } else {
+                        log::warn!("Node '{}' not found for domain rule '{}', falling back to PROXY", node_tag, rule.value);
+                        "PROXY".to_string()
+                    }
+                } else {
+                    "PROXY".to_string()
+                }
+            },
+            "profile" => {
+                if let Some(ref profile_id) = rule.outbound_value {
+                    if let Some(selector_tag) = profile_id_to_selector.get(profile_id) {
+                        if available_outbound_tags.contains(selector_tag) {
+                            selector_tag.clone()
+                        } else {
+                            log::warn!("Profile selector '{}' not found for domain rule '{}', falling back to PROXY", selector_tag, rule.value);
+                            "PROXY".to_string()
+                        }
+                    } else {
+                        log::warn!("Profile '{}' not found for domain rule '{}', falling back to PROXY", profile_id, rule.value);
+                        "PROXY".to_string()
+                    }
+                } else {
+                    "PROXY".to_string()
+                }
+            },
+            other => other.to_string()
+        };
+
+        match rule.rule_type.as_str() {
+            "domain" => {
+                rules.push(serde_json::json!({
+                    "domain": [&rule.value],
+                    "outbound": outbound
+                }));
+            },
+            "domain_suffix" => {
+                rules.push(serde_json::json!({
+                    "domain_suffix": [&rule.value],
+                    "outbound": outbound
+                }));
+            },
+            "domain_keyword" => {
+                rules.push(serde_json::json!({
+                    "domain_keyword": [&rule.value],
+                    "outbound": outbound
+                }));
+            },
+            _ => {
+                rules.push(serde_json::json!({
+                    "domain_suffix": [&rule.value],
+                    "outbound": outbound
+                }));
+            }
+        }
+        log::info!("Added domain rule: {} ({}) -> {}", rule.value, rule.rule_type, outbound);
+    }
+
+    // ========== 添加自定义进程分流规则（仅 TUN 模式有效）==========
+    if settings.tun_enabled {
+        for rule in custom_rules.process_rules.iter().filter(|r| r.enabled) {
+            let outbound = match rule.outbound_mode.as_str() {
+                "proxy" => "PROXY".to_string(),
+                "direct" => "direct".to_string(),
+                "block" => "block".to_string(),
+                "node" => {
+                    if let Some(ref node_ref) = rule.outbound_value {
+                        // Parse "profileId::nodeTag" format
+                        let node_tag = if node_ref.contains("::") {
+                            node_ref.split("::").nth(1).unwrap_or(node_ref).to_string()
+                        } else {
+                            node_ref.clone()
+                        };
+                        if available_outbound_tags.contains(&node_tag) {
+                            node_tag
+                        } else {
+                            log::warn!("Node '{}' not found for process rule '{}', falling back to PROXY", node_tag, rule.process_name);
+                            "PROXY".to_string()
+                        }
+                    } else {
+                        "PROXY".to_string()
+                    }
+                },
+                "profile" => {
+                    if let Some(ref profile_id) = rule.outbound_value {
+                        if let Some(selector_tag) = profile_id_to_selector.get(profile_id) {
+                            if available_outbound_tags.contains(selector_tag) {
+                                selector_tag.clone()
+                            } else {
+                                log::warn!("Profile selector '{}' not found for process rule '{}', falling back to PROXY", selector_tag, rule.process_name);
+                                "PROXY".to_string()
+                            }
+                        } else {
+                            log::warn!("Profile '{}' not found for process rule '{}', falling back to PROXY", profile_id, rule.process_name);
+                            "PROXY".to_string()
+                        }
+                    } else {
+                        "PROXY".to_string()
+                    }
+                },
+                other => other.to_string()
+            };
+
+            rules.push(serde_json::json!({
+                "process_name": [&rule.process_name],
+                "outbound": outbound
+            }));
+            log::info!("Added process rule: {} -> {}", rule.process_name, outbound);
+        }
     }
 
     // 添加规则集路由规则
@@ -681,4 +1004,227 @@ async fn start_traffic_polling(
             }
         }
     }
+}
+
+async fn load_profiles_data_from_file(state: &AppState) -> crate::types::ProfilesData {
+    let profiles_file = state.profiles_file();
+    if !profiles_file.exists() {
+        return crate::types::ProfilesData::default();
+    }
+
+    match fs::read_to_string(&profiles_file) {
+        Ok(content) => serde_json::from_str::<crate::types::ProfilesData>(&content).unwrap_or_default(),
+        Err(err) => {
+            log::warn!("Failed to read profiles file for selector collection: {}", err);
+            crate::types::ProfilesData::default()
+        }
+    }
+}
+
+async fn collect_referenced_profile_selector_tags(state: &AppState) -> Vec<String> {
+    let rulesets = state.rulesets.lock().await.clone();
+    let custom_rules = state.custom_rules.lock().await.clone();
+
+    let mut referenced_profile_ids = std::collections::HashSet::new();
+
+    for rs in rulesets.iter().filter(|r| r.enabled) {
+        if let Some(value) = &rs.outbound_value {
+            if matches!(rs.outbound_mode.as_str(), "profile" | "配置") {
+                referenced_profile_ids.insert(value.clone());
+            }
+        }
+    }
+
+    for rule in custom_rules.domain_rules.iter().filter(|r| r.enabled) {
+        if let Some(value) = &rule.outbound_value {
+            if rule.outbound_mode == "profile" {
+                referenced_profile_ids.insert(value.clone());
+            }
+        }
+    }
+
+    for rule in custom_rules.process_rules.iter().filter(|r| r.enabled) {
+        if let Some(value) = &rule.outbound_value {
+            if rule.outbound_mode == "profile" {
+                referenced_profile_ids.insert(value.clone());
+            }
+        }
+    }
+
+    if referenced_profile_ids.is_empty() {
+        return Vec::new();
+    }
+
+    let profiles_data = load_profiles_data_from_file(state).await;
+    let profile_name_map: std::collections::HashMap<String, String> = profiles_data
+        .profiles
+        .iter()
+        .map(|p| (p.id.clone(), p.name.clone()))
+        .collect();
+
+    let mut selector_tags: Vec<String> = referenced_profile_ids
+        .into_iter()
+        .filter_map(|profile_id| profile_name_map.get(&profile_id).map(|name| format!("P:{}", name)))
+        .collect();
+
+    selector_tags.sort();
+    selector_tags.dedup();
+    selector_tags
+}
+
+async fn switch_selector_to_node(
+    client: &reqwest::Client,
+    selector_tag: &str,
+    node_tag: &str,
+) {
+    if let Err(err) = client
+        .put(format!("http://127.0.0.1:9090/proxies/{}", urlencoding::encode(selector_tag)))
+        .json(&serde_json::json!({ "name": node_tag }))
+        .send()
+        .await
+    {
+        log::warn!(
+            "Failed to switch selector '{}' to node '{}': {}",
+            selector_tag,
+            node_tag,
+            err
+        );
+    }
+}
+
+async fn test_selector_latency_internal(
+    app: &AppHandle,
+    selector_tag: String,
+    test_url: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::new();
+    let test_url = test_url.unwrap_or_else(|| "https://www.gstatic.com/generate_204".to_string());
+
+    let resp = client
+        .get(format!("http://127.0.0.1:9090/proxies/{}", urlencoding::encode(&selector_tag)))
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to get selector info: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Selector '{}' not found", selector_tag));
+    }
+
+    let selector_info: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let node_tags: Vec<String> = selector_info
+        .get("all")
+        .and_then(|a| a.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+        .unwrap_or_default();
+
+    if node_tags.is_empty() {
+        return Ok(serde_json::json!({ "success": true, "message": "No nodes to test" }));
+    }
+
+    log::info!("Testing {} nodes for selector '{}'", node_tags.len(), selector_tag);
+
+    let mut futures = FuturesUnordered::new();
+    for tag in node_tags.clone() {
+        let client = client.clone();
+        let test_url = test_url.clone();
+        futures.push(async move {
+            let result = client
+                .get(format!("http://127.0.0.1:9090/proxies/{}/delay", urlencoding::encode(&tag)))
+                .query(&[("url", &test_url), ("timeout", &"5000".to_string())])
+                .timeout(std::time::Duration::from_secs(6))
+                .send()
+                .await;
+
+            let delay = match result {
+                Ok(resp) if resp.status().is_success() => {
+                    if let Ok(data) = resp.json::<serde_json::Value>().await {
+                        match data.get("delay").and_then(|d| d.as_u64()) {
+                            Some(value) if value > 0 => Some(value as u32),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
+
+            (tag, delay)
+        });
+    }
+
+    let mut results: Vec<(String, Option<u32>)> = Vec::new();
+    let mut first_switch_done = false;
+    let mut best_node: Option<(String, u32)> = None;
+    let mut valid_count: usize = 0;
+    let first_switch_threshold = std::cmp::min(5usize, node_tags.len());
+
+    while let Some((tag, delay)) = futures.next().await {
+        results.push((tag.clone(), delay));
+
+        if let Some(d) = delay {
+            valid_count += 1;
+            match &best_node {
+                None => best_node = Some((tag.clone(), d)),
+                Some((_, best_delay)) if d < *best_delay => best_node = Some((tag.clone(), d)),
+                _ => {}
+            }
+        }
+
+        if !first_switch_done && valid_count >= first_switch_threshold {
+            if let Some((best_tag, best_delay)) = &best_node {
+                log::info!("First phase done, switching '{}' to '{}' ({}ms)", selector_tag, best_tag, best_delay);
+                switch_selector_to_node(&client, &selector_tag, best_tag).await;
+                let _ = app.emit(
+                    "singbox:selector-switch",
+                    serde_json::json!({
+                        "selector": selector_tag,
+                        "node": best_tag,
+                        "delay": best_delay,
+                        "stage": "first"
+                    }),
+                );
+            }
+            first_switch_done = true;
+        }
+    }
+
+    if let Some((best_tag, best_delay)) = &best_node {
+        log::info!("Final switch '{}' to '{}' ({}ms)", selector_tag, best_tag, best_delay);
+        switch_selector_to_node(&client, &selector_tag, best_tag).await;
+        let _ = app.emit(
+            "singbox:selector-switch",
+            serde_json::json!({
+                "selector": selector_tag,
+                "node": best_tag,
+                "delay": best_delay,
+                "stage": "final"
+            }),
+        );
+    }
+
+    let tested_count = results.iter().filter(|(_, d)| d.is_some()).count();
+    let timeout_count = results.iter().filter(|(_, d)| d.is_none()).count();
+
+    Ok(serde_json::json!({
+        "success": true,
+        "selector": selector_tag,
+        "total": results.len(),
+        "tested": tested_count,
+        "timeout": timeout_count,
+        "bestNode": best_node.as_ref().map(|(t, _)| t),
+        "bestDelay": best_node.as_ref().map(|(_, d)| d)
+    }))
+}
+
+/// 测试指定 selector 的所有节点延迟，并智能切换
+/// 逻辑：前5个有效结果（不足5则按总节点数）时选最低延迟，全部测完再选一次
+#[tauri::command]
+pub async fn singbox_test_selector_latency(
+    app: AppHandle,
+    selector_tag: String,
+    test_url: Option<String>
+) -> Result<serde_json::Value, String> {
+    test_selector_latency_internal(&app, selector_tag, test_url).await
 }

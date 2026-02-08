@@ -6,6 +6,8 @@ import { ConfirmModal } from './ui/ConfirmModal'
 import { EditProfileModal } from './ui/EditProfileModal'
 import { AddProfileModal } from './ui/AddProfileModal'
 import { useToast } from './ui/Toast'
+import { useNodesStore } from '../stores/nodesStore'
+import { useConnectionStore } from '../stores/connectionStore'
 
 export default function Profiles() {
   const [profiles, setProfiles] = useState<Profile[]>([])
@@ -43,10 +45,14 @@ export default function Profiles() {
     const list = await window.api.profile.list()
     setProfiles(list)
     
-    // Auto-select first enabled profile if none is active
-    if (list.length > 0) {
-      const enabledProfiles = list.filter(p => p.enabled)
-      if (enabledProfiles.length > 0 && !activeId) {
+    // Load active profile from backend
+    const savedActiveId = await window.api.profile.getActive()
+    if (savedActiveId && list.some((p: Profile) => p.id === savedActiveId && p.enabled)) {
+      setActiveId(savedActiveId)
+    } else if (list.length > 0) {
+      // Fallback: auto-select first enabled profile if saved active is invalid
+      const enabledProfiles = list.filter((p: Profile) => p.enabled)
+      if (enabledProfiles.length > 0) {
         const first = enabledProfiles[0]
         setActiveId(first.id)
         await window.api.profile.setActive(first.id)
@@ -148,8 +154,32 @@ export default function Profiles() {
   }
 
   const handleSelect = async (id: string) => {
+    if (id === activeId) return
+    
+    // 1. Set active profile (backend will also set first node as active)
     await window.api.profile.setActive(id)
     setActiveId(id)
+    
+    // 2. Load nodes first to get the first node tag
+    const nodes = await window.api.node.list()
+    const firstTag = nodes.length > 0 ? nodes[0].tag : null
+    
+    // 3. Update frontend state
+    if (firstTag) {
+      useNodesStore.getState().setNodes(nodes)
+      useNodesStore.getState().setActiveNode(firstTag)
+    }
+    
+    // 4. If VPN is running, restart to apply new profile config
+    const connectionState = useConnectionStore.getState().state
+    if (connectionState === 'connected') {
+      try {
+        await window.api.singbox.restart()
+        toast.success('已切换订阅并重启内核')
+      } catch (err) {
+        toast.error(`重启内核失败: ${err}`)
+      }
+    }
   }
 
   const formatDate = (timestamp?: number) => {

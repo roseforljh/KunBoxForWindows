@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import * as Switch from '@radix-ui/react-switch'
 import {
@@ -14,26 +14,15 @@ import {
   Check,
   XCircle,
   AlertCircle,
-  Loader2
+  Loader2,
+  Search,
+  ChevronDown
 } from 'lucide-react'
 import { Modal, ModalButton } from './ui/Modal'
 import { useNodesStore } from '../stores/nodesStore'
-import type { Profile } from '@shared/types'
+import type { Profile, DomainRule, DomainRuleType, OutboundMode } from '@shared/types'
 
-const fastTransition = { duration: 0.15, ease: [0.4, 0, 0.2, 1] }
-
-type DomainRuleType = 'domain' | 'domain_suffix' | 'domain_keyword'
-type OutboundMode = 'direct' | 'proxy' | 'block' | 'node' | 'profile'
-
-interface DomainRule {
-  id: string
-  name: string
-  type: DomainRuleType
-  value: string
-  outboundMode: OutboundMode
-  outboundValue?: string
-  enabled: boolean
-}
+const fastTransition = { duration: 0.15, ease: [0.4, 0, 0.2, 1] as const }
 
 interface ToastMessage {
   id: number
@@ -41,23 +30,128 @@ interface ToastMessage {
   type: 'success' | 'error' | 'info'
 }
 
-const defaultDomainRules: DomainRule[] = []
+// Searchable Select Component
+interface SearchableSelectProps {
+  value: string
+  onChange: (value: string) => void
+  options: { value: string; label: string }[]
+  placeholder?: string
+}
+
+function SearchableSelect({ value, onChange, options, placeholder = '请选择...' }: SearchableSelectProps) {
+  const [isOpen, setIsOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const containerRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  const filteredOptions = options.filter(opt => 
+    opt.label.toLowerCase().includes(search.toLowerCase())
+  )
+
+  const selectedOption = options.find(opt => opt.value === value)
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setIsOpen(false)
+        setSearch('')
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  useEffect(() => {
+    if (isOpen && inputRef.current) {
+      inputRef.current.focus()
+    }
+  }, [isOpen])
+
+  // Always drop down since modal has enough height
+  const handleOpen = () => {
+    setIsOpen(!isOpen)
+  }
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        type="button"
+        onClick={handleOpen}
+        className="w-full h-10 px-3 rounded-xl bg-[var(--bg-secondary)] text-[var(--text-primary)] border border-[var(--glass-border)] outline-none cursor-pointer flex items-center justify-between"
+      >
+        <span className={selectedOption ? '' : 'text-[var(--text-muted)]'}>
+          {selectedOption?.label || placeholder}
+        </span>
+        <ChevronDown className={`w-4 h-4 text-[var(--text-muted)] transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+      </button>
+
+      <AnimatePresence>
+        {isOpen && (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.15 }}
+            className="absolute z-50 w-full top-full mt-1 rounded-xl bg-[var(--bg-secondary)] border border-[var(--glass-border)] shadow-xl overflow-hidden flex flex-col"
+          >
+            <div className="p-2 border-b border-[var(--glass-border)]">
+              <div className="relative">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
+                <input
+                  ref={inputRef}
+                  type="text"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="搜索节点..."
+                  className="w-full h-8 pl-8 pr-3 rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-sm border-none outline-none placeholder:text-[var(--text-muted)]"
+                />
+              </div>
+            </div>
+            <div className="max-h-[200px] overflow-y-scroll">
+              {filteredOptions.length === 0 ? (
+                <div className="p-3 text-center text-sm text-[var(--text-muted)]">
+                  未找到匹配的节点
+                </div>
+              ) : (
+                filteredOptions.map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => {
+                      onChange(opt.value)
+                      setIsOpen(false)
+                      setSearch('')
+                    }}
+                    className={`w-full px-3 py-2 text-left text-sm hover:bg-[var(--bg-tertiary)] transition-colors flex items-center justify-between ${
+                      opt.value === value ? 'text-[var(--accent-primary)] bg-[var(--accent-primary)]/10' : 'text-[var(--text-primary)]'
+                    }`}
+                  >
+                    <span className="truncate">{opt.label}</span>
+                    {opt.value === value && <Check className="w-4 h-4 flex-shrink-0" />}
+                  </button>
+                ))
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  )
+}
 
 export default function DomainRules() {
-  const [rules, setRules] = useState<DomainRule[]>(() => {
-    const saved = localStorage.getItem('kunbox-domain-rules')
-    return saved ? JSON.parse(saved) : defaultDomainRules
-  })
+  const [rules, setRules] = useState<DomainRule[]>([])
   const [showAddDialog, setShowAddDialog] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null)
   const [editingRule, setEditingRule] = useState<DomainRule | null>(null)
   const [toasts, setToasts] = useState<ToastMessage[]>([])
+  const [isLoading, setIsLoading] = useState(true)
 
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [isLoadingData, setIsLoadingData] = useState(false)
 
-  const { nodes, loadNodes } = useNodesStore()
+  const { allNodes, loadAllNodes } = useNodesStore()
 
   const [dialogData, setDialogData] = useState({
     value: '',
@@ -65,9 +159,31 @@ export default function DomainRules() {
     outboundValue: ''
   })
 
+  // Load rules from backend
+  const loadRules = useCallback(async () => {
+    try {
+      const savedRules = await window.api.customRules.getDomainRules()
+      setRules(savedRules)
+    } catch (error) {
+      console.error('Failed to load domain rules:', error)
+    } finally {
+      setIsLoading(false)
+    }
+  }, [])
+
+  // Save rules to backend
+  const saveRules = useCallback(async (newRules: DomainRule[]) => {
+    try {
+      await window.api.customRules.saveDomainRules(newRules)
+      setRules(newRules)
+    } catch (error) {
+      console.error('Failed to save domain rules:', error)
+    }
+  }, [])
+
   useEffect(() => {
-    localStorage.setItem('kunbox-domain-rules', JSON.stringify(rules))
-  }, [rules])
+    loadRules()
+  }, [loadRules])
 
   const loadProfiles = async () => {
     try {
@@ -81,11 +197,11 @@ export default function DomainRules() {
   const loadAllData = useCallback(async () => {
     setIsLoadingData(true)
     try {
-      await Promise.all([loadNodes(), loadProfiles()])
+      await Promise.all([loadAllNodes(), loadProfiles()])
     } finally {
       setIsLoadingData(false)
     }
-  }, [loadNodes])
+  }, [loadAllNodes])
 
   useEffect(() => {
     loadAllData()
@@ -94,7 +210,8 @@ export default function DomainRules() {
   const showToast = useCallback(
     (message: string, type: 'success' | 'error' | 'info' = 'info') => {
       const id = Date.now()
-      setToasts((prev) => [...prev, { id, message, type }])
+      // Only keep the latest toast
+      setToasts([{ id, message, type }])
       setTimeout(() => {
         setToasts((prev) => prev.filter((t) => t.id !== id))
       }, 3000)
@@ -195,17 +312,15 @@ export default function DomainRules() {
   }
 
   const toggleRule = (id: string) => {
-    setRules((prev) =>
-      prev.map((r) => (r.id === id ? { ...r, enabled: !r.enabled } : r))
-    )
+    const newRules = rules.map((r) => (r.id === id ? { ...r, enabled: !r.enabled } : r))
+    saveRules(newRules)
   }
 
   const changeOutboundMode = (id: string, mode: OutboundMode) => {
-    setRules((prev) =>
-      prev.map((r) =>
-        r.id === id ? { ...r, outboundMode: mode, outboundValue: '' } : r
-      )
+    const newRules = rules.map((r) =>
+      r.id === id ? { ...r, outboundMode: mode, outboundValue: undefined } : r
     )
+    saveRules(newRules)
   }
 
   const confirmDelete = (id: string) => {
@@ -216,7 +331,8 @@ export default function DomainRules() {
   const deleteRule = () => {
     if (deleteTargetId) {
       const target = rules.find((r) => r.id === deleteTargetId)
-      setRules((prev) => prev.filter((r) => r.id !== deleteTargetId))
+      const newRules = rules.filter((r) => r.id !== deleteTargetId)
+      saveRules(newRules)
       showToast(`已删除规则「${target?.name || target?.value}」`, 'success')
       setDeleteTargetId(null)
     }
@@ -264,20 +380,19 @@ export default function DomainRules() {
     const finalName = finalValue.substring(0, 50)
 
     if (editingRule) {
-      setRules((prev) =>
-        prev.map((r) =>
-          r.id === editingRule.id
-            ? {
-                ...r,
-                name: finalName,
-                type: smartType,
-                value: finalValue,
-                outboundMode: dialogData.outboundMode,
-                outboundValue: dialogData.outboundValue || undefined
-              }
-            : r
-        )
+      const newRules = rules.map((r) =>
+        r.id === editingRule.id
+          ? {
+              ...r,
+              name: finalName,
+              type: smartType,
+              value: finalValue,
+              outboundMode: dialogData.outboundMode,
+              outboundValue: dialogData.outboundValue || undefined
+            }
+          : r
       )
+      saveRules(newRules)
       showToast(`规则「${finalName}」已更新`, 'success')
     } else {
       const newRule: DomainRule = {
@@ -289,7 +404,7 @@ export default function DomainRules() {
         outboundValue: dialogData.outboundValue || undefined,
         enabled: true
       }
-      setRules((prev) => [...prev, newRule])
+      saveRules([...rules, newRule])
       showToast(`规则「${finalName}」已添加`, 'success')
     }
     setShowAddDialog(false)
@@ -298,7 +413,7 @@ export default function DomainRules() {
   const needsOutboundValue =
     dialogData.outboundMode === 'node' || dialogData.outboundMode === 'profile'
 
-  const availableNodes = nodes.filter((n) => n.tag)
+  const availableNodes = allNodes.filter((n) => n.tag)
   const availableProfiles = profiles
 
   return (
@@ -372,7 +487,11 @@ export default function DomainRules() {
                 </div>
                 {rule.outboundValue && (
                   <p className="text-[10px] text-[var(--text-faint)]">
-                    → {rule.outboundValue}
+                    → {rule.outboundMode === 'profile' 
+                      ? (profiles.find(p => p.id === rule.outboundValue)?.name || rule.outboundValue)
+                      : rule.outboundValue.includes('::') 
+                        ? rule.outboundValue.split('::')[1] 
+                        : rule.outboundValue}
                   </p>
                 )}
               </div>
@@ -524,6 +643,7 @@ export default function DomainRules() {
         onClose={() => setShowAddDialog(false)}
         title={editingRule ? '编辑域名规则' : '添加域名规则'}
         maxWidth="max-w-md"
+        className="min-h-[520px]"
         footer={
           <>
             <ModalButton variant="ghost" onClick={() => setShowAddDialog(false)}>
@@ -609,20 +729,15 @@ export default function DomainRules() {
                   </p>
                 </div>
               ) : (
-                <select
-                  value={dialogData.outboundValue}
-                  onChange={(e) =>
-                    setDialogData({ ...dialogData, outboundValue: e.target.value })
-                  }
-                  className="w-full h-10 px-3 rounded-xl bg-[var(--bg-secondary)] text-[var(--text-primary)] border border-[var(--glass-border)] outline-none cursor-pointer"
-                >
-                  <option value="">请选择节点...</option>
-                  {availableNodes.map((node) => (
-                    <option key={node.tag} value={node.tag}>
-                      {node.tag} ({node.type})
-                    </option>
-                  ))}
-                </select>
+                <SearchableSelect
+                  value={dialogData.outboundValue || ''}
+                  onChange={(value) => setDialogData({ ...dialogData, outboundValue: value })}
+                  options={availableNodes.map((node) => ({
+                    value: `${node.sourceProfileId}::${node.tag}`,
+                    label: `${node.tag} (${node.sourceProfileName})`
+                  }))}
+                  placeholder="请选择节点..."
+                />
               )}
               <p className="text-xs text-[var(--text-faint)] mt-1.5">
                 共 {availableNodes.length} 个可用节点
@@ -658,7 +773,7 @@ export default function DomainRules() {
                 >
                   <option value="">请选择配置...</option>
                   {availableProfiles.map((profile) => (
-                    <option key={profile.id} value={profile.name}>
+                    <option key={profile.id} value={profile.id}>
                       {profile.name}
                     </option>
                   ))}

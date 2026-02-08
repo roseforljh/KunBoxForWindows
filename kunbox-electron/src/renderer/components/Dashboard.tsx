@@ -27,6 +27,19 @@ export default function Dashboard() {
     loadNodes()
   }, [loadNodes])
 
+  // Listen for selector switch events
+  useEffect(() => {
+    const unlisten = window.api.singbox.onSelectorSwitch((data: { selector: string; node: string; delay: number; stage: 'first' | 'final' }) => {
+      console.log(`Selector ${data.selector} switched to ${data.node} (${data.delay}ms) - ${data.stage}`)
+      if (data.stage === 'first') {
+        toast.info(`配置分流: 已选择延迟最低的节点 (${data.delay}ms)`)
+      } else if (data.stage === 'final') {
+        toast.success(`配置分流: 最终选择 ${data.node} (${data.delay}ms)`)
+      }
+    })
+    return unlisten
+  }, [toast])
+
   // Update traffic history for chart
   useEffect(() => {
     if (isConnected && traffic) {
@@ -520,16 +533,17 @@ function HealthGauge({ score, label }: { score: number; label: string }) {
 }
 
 function ProgressBar({ value, label, color }: { value: number; label: string; color: string }) {
+  const displayValue = Math.round(value)
   return (
     <div className="flex items-center gap-2">
       <div className="w-16 h-1.5 bg-[var(--bg-tertiary)] rounded-full overflow-hidden">
         <div
           className="h-full rounded-full transition-all duration-300"
-          style={{ width: `${value}%`, backgroundColor: color }}
+          style={{ width: `${displayValue}%`, backgroundColor: color }}
         />
       </div>
       <span className="text-xs text-[var(--text-muted)]">
-        {label} {value}%
+        {label} {displayValue}%
       </span>
     </div>
   )
@@ -573,7 +587,7 @@ function MetricCard({
       </div>
       <div className="text-xs text-[var(--text-muted)] mb-1">{title}</div>
       <div className="flex items-baseline gap-1">
-        <span className={`text-lg font-semibold truncate ${valueColor || 'text-[var(--text-primary)]'}`}>
+        <span className={`text-sm font-semibold truncate ${valueColor || 'text-[var(--text-primary)]'}`}>
           {value}
         </span>
       </div>

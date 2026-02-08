@@ -1,9 +1,7 @@
-import type { API } from '../preload/index'
+type API = import('@shared/tauri-api').API
 
-declare global {
-  interface Window {
-    api: API
-  }
+interface Window {
+  api: API
 }
 
 declare module '*.png' {

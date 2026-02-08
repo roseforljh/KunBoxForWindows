@@ -28,7 +28,7 @@ import { useNodesStore } from '../stores/nodesStore'
 import { useConnectionStore } from '../stores/connectionStore'
 import type { Profile } from '@shared/types'
 
-const fastTransition = { duration: 0.15, ease: [0.4, 0, 0.2, 1] }
+const fastTransition = { duration: 0.15, ease: [0.4, 0, 0.2, 1] as const }
 
 interface ToastMessage {
   id: number
@@ -337,7 +337,8 @@ export default function RuleSets() {
   const showToast = useCallback(
     (message: string, type: 'success' | 'error' | 'info' = 'info', action?: { label: string; onClick: () => void }) => {
       const id = Date.now()
-      setToasts((prev) => [...prev, { id, message, type, action }])
+      // Only keep the latest toast
+      setToasts([{ id, message, type, action }])
       setTimeout(() => {
         setToasts((prev) => prev.filter((t) => t.id !== id))
       }, action ? 8000 : 3000)
@@ -389,7 +390,7 @@ export default function RuleSets() {
 
   // Load rulesets from main process on mount
   useEffect(() => {
-    window.api.ruleset.list().then((data: RuleSetItem[]) => {
+    window.api.ruleset.list().then((data) => {
       if (data && data.length > 0) {
         setRuleSets(data)
       } else {
@@ -1115,7 +1116,7 @@ export default function RuleSets() {
                     ? nodes
                         .filter((n) => n.tag)
                         .map((node) => (
-                          <option key={node.id} value={node.tag}>
+                          <option key={node.tag} value={node.tag}>
                             {node.tag} ({node.type})
                           </option>
                         ))
