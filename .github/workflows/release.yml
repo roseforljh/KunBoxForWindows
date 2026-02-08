@@ -35,15 +35,17 @@ jobs:
         shell: pwsh
         run: |
           # 获取最新的 tag 版本号
-          $ErrorActionPreference = "SilentlyContinue"
-          $latestTag = git describe --tags --abbrev=0 2>$null
-          $ErrorActionPreference = "Stop"
+          try {
+            $latestTag = git describe --tags --abbrev=0 2>$null
+          } catch {
+            $latestTag = $null
+          }
           if (-not $latestTag) {
             $latestTag = "v0.0.0"
           }
           $version = $latestTag -replace '^v', ''
           Write-Host "Latest version: $version"
-          "current_version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "current_version=$version"
 
       - name: Calculate new version
         id: new_version
@@ -73,7 +75,7 @@ jobs:
 
           $newVersion = "$major.$minor.$patch"
           Write-Host "New version: $newVersion"
-          "version=$newVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$newVersion"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
