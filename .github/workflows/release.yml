@@ -107,9 +107,9 @@ jobs:
           $packageJson.version = $newVersion
           $packageJson | ConvertTo-Json -Depth 10 | Set-Content kunbox-electron/package.json -Encoding UTF8
 
-          # Update Cargo.toml
+          # Update Cargo.toml (only package version, not rust-version)
           $cargoContent = Get-Content src-tauri/Cargo.toml -Raw
-          $cargoContent = $cargoContent -replace 'version = "[0-9]+\.[0-9]+\.[0-9]+"', "version = `"$newVersion`""
+          $cargoContent = $cargoContent -replace '(?m)^version = "[0-9]+\.[0-9]+\.[0-9]+"', "version = `"$newVersion`""
           Set-Content src-tauri/Cargo.toml -Value $cargoContent -Encoding UTF8
 
       - name: Build Tauri app
