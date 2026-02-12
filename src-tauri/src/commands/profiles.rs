@@ -164,9 +164,21 @@ pub async fn profile_set_active(state: State<'_, AppState>, id: String) -> Resul
         return Err("Profile not found".to_string());
     }
     
+    // Save current profile's node selection before switching
+    if let (Some(old_id), Some(old_tag)) = (&data.active_profile_id, &data.active_node_tag) {
+        data.node_selections.insert(old_id.clone(), old_tag.clone());
+    }
+    
     data.active_profile_id = Some(id.clone());
     let nodes = load_profile_nodes(&state, &id);
-    data.active_node_tag = nodes.first().and_then(|n| n.tag.clone());
+    
+    // Restore saved node selection if the node still exists, otherwise fallback to first node
+    data.active_node_tag = data.node_selections.get(&id)
+        .and_then(|saved_tag| {
+            nodes.iter().any(|n| n.tag.as_deref() == Some(saved_tag.as_str()))
+                .then(|| saved_tag.clone())
+        })
+        .or_else(|| nodes.first().and_then(|n| n.tag.clone()));
     
     save_profiles_data(&state, &data)?;
     *state.profiles_data.lock().await = data;
@@ -229,7 +241,11 @@ pub async fn node_list(state: State<'_, AppState>) -> Result<Vec<SingBoxOutbound
 #[tauri::command]
 pub async fn node_set_active(state: State<'_, AppState>, tag: String) -> Result<(), String> {
     let mut data = load_profiles_data(&state);
-    data.active_node_tag = Some(tag);
+    data.active_node_tag = Some(tag.clone());
+    // Also save to per-profile node selections
+    if let Some(profile_id) = &data.active_profile_id {
+        data.node_selections.insert(profile_id.clone(), tag);
+    }
     save_profiles_data(&state, &data)?;
     *state.profiles_data.lock().await = data;
     Ok(())

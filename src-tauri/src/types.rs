@@ -50,6 +50,8 @@ pub struct ProfilesData {
     pub active_profile_id: Option<String>,
     #[serde(rename = "activeNodeTag")]
     pub active_node_tag: Option<String>,
+    #[serde(rename = "nodeSelections", default)]
+    pub node_selections: HashMap<String, String>,
 }
 
 impl Default for ProfilesData {
@@ -58,6 +60,7 @@ impl Default for ProfilesData {
             profiles: Vec::new(),
             active_profile_id: None,
             active_node_tag: None,
+            node_selections: HashMap::new(),
         }
     }
 }

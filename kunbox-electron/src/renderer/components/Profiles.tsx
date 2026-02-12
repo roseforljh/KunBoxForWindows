@@ -44,7 +44,7 @@ export default function Profiles() {
   const loadProfiles = async () => {
     const list = await window.api.profile.list()
     setProfiles(list)
-    
+
     // Load active profile from backend
     const savedActiveId = await window.api.profile.getActive()
     if (savedActiveId && list.some((p: Profile) => p.id === savedActiveId && p.enabled)) {
@@ -155,22 +155,32 @@ export default function Profiles() {
 
   const handleSelect = async (id: string) => {
     if (id === activeId) return
-    
-    // 1. Set active profile (backend will also set first node as active)
+
+    const nodesStore = useNodesStore.getState()
+
+    // 1. Save current profile's node selection before switching
+    if (activeId && nodesStore.activeNodeTag) {
+      nodesStore.saveNodeSelection(activeId, nodesStore.activeNodeTag)
+    }
+
+    // 2. Set active profile (backend will save/restore node selection)
     await window.api.profile.setActive(id)
     setActiveId(id)
-    
-    // 2. Load nodes first to get the first node tag
+
+    // 3. Load nodes for the new profile
     const nodes = await window.api.node.list()
-    const firstTag = nodes.length > 0 ? nodes[0].tag : null
-    
-    // 3. Update frontend state
-    if (firstTag) {
-      useNodesStore.getState().setNodes(nodes)
-      useNodesStore.getState().setActiveNode(firstTag)
+    nodesStore.setNodes(nodes)
+
+    // 4. Restore saved node selection, or fallback to first node
+    const savedTag = nodesStore.restoreNodeSelection(id)
+    const validSavedTag = savedTag && nodes.some((n: any) => n.tag === savedTag) ? savedTag : null
+    const targetTag = validSavedTag || (nodes.length > 0 ? nodes[0].tag : null)
+
+    if (targetTag) {
+      nodesStore.setActiveNode(targetTag)
     }
-    
-    // 4. If VPN is running, restart to apply new profile config
+
+    // 5. If VPN is running, restart to apply new profile config
     const connectionState = useConnectionStore.getState().state
     if (connectionState === 'connected') {
       try {
@@ -227,19 +237,16 @@ export default function Profiles() {
                 <motion.div
                   key={profile.id}
                   onClick={() => !isDisabled && handleSelect(profile.id)}
-                  className={`group/card glass-card p-5 rounded-2xl cursor-pointer relative ${
-                    openMenuId === profile.id ? 'z-50' : 'z-0'
-                  } ${activeId === profile.id ? 'border-[var(--accent-primary)]/50 bg-[var(--accent-muted)]' : ''} ${
-                    isDisabled ? 'opacity-50' : ''
-                  }`}
+                  className={`group/card glass-card p-5 rounded-2xl cursor-pointer relative ${openMenuId === profile.id ? 'z-50' : 'z-0'
+                    } ${activeId === profile.id ? 'border-[var(--accent-primary)]/50 bg-[var(--accent-muted)]' : ''} ${isDisabled ? 'opacity-50' : ''
+                    }`}
                 >
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-4">
                       <div className="w-10 h-10 flex items-center justify-center relative">
                         <div
-                          className={`w-8 h-8 rounded-full border-2 border-[var(--border-secondary)] transition-opacity duration-150 ${
-                            activeId === profile.id ? 'opacity-0' : 'opacity-100'
-                          }`}
+                          className={`w-8 h-8 rounded-full border-2 border-[var(--border-secondary)] transition-opacity duration-150 ${activeId === profile.id ? 'opacity-0' : 'opacity-100'
+                            }`}
                         />
                         <AnimatePresence>
                           {activeId === profile.id && (
@@ -285,11 +292,10 @@ export default function Profiles() {
                       </button>
 
                       <div
-                        className={`absolute right-0 top-12 z-[100] w-32 py-2 glass-card rounded-xl border border-[var(--glass-border)] shadow-xl origin-top-right transition-all duration-150 ${
-                          openMenuId === profile.id
+                        className={`absolute right-0 top-12 z-[100] w-32 py-2 glass-card rounded-xl border border-[var(--glass-border)] shadow-xl origin-top-right transition-all duration-150 ${openMenuId === profile.id
                             ? 'opacity-100 scale-100 pointer-events-auto'
                             : 'opacity-0 scale-90 pointer-events-none'
-                        }`}
+                          }`}
                       >
                         <button
                           onClick={() => handleRefresh(profile.id)}

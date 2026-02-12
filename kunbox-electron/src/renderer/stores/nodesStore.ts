@@ -44,6 +44,7 @@ interface NodesState {
   testProgress: number
   testTotal: number
   latencyCache: LatencyCache
+  nodeSelections: Record<string, string>
 
   setNodes: (nodes: SingBoxOutbound[]) => void
   setActiveNode: (tag: string | null) => void
@@ -57,6 +58,8 @@ interface NodesState {
   testNodeLatency: (tag: string) => Promise<void>
   loadNodes: () => Promise<void>
   loadAllNodes: () => Promise<void>
+  saveNodeSelection: (profileId: string, nodeTag: string) => void
+  restoreNodeSelection: (profileId: string) => string | null
 }
 
 export const useNodesStore = create<NodesState>()(
@@ -76,6 +79,7 @@ export const useNodesStore = create<NodesState>()(
       testProgress: 0,
       testTotal: 0,
       latencyCache: {},
+      nodeSelections: {},
 
       setNodes: (nodes) => {
         const { latencyCache } = get()
@@ -105,6 +109,19 @@ export const useNodesStore = create<NodesState>()(
         // Try hot switch via Clash API (only works when VPN is running)
         const result = await window.api.singbox.switchNode(tag)
         return result.success
+      },
+
+      saveNodeSelection: (profileId, nodeTag) => {
+        set((state) => ({
+          nodeSelections: {
+            ...state.nodeSelections,
+            [profileId]: nodeTag
+          }
+        }))
+      },
+
+      restoreNodeSelection: (profileId) => {
+        return get().nodeSelections[profileId] || null
       },
 
       testAllLatency: async () => {
@@ -251,7 +268,8 @@ export const useNodesStore = create<NodesState>()(
       name: 'kunbox-nodes-store',
       partialize: (state) => ({ 
         latencyCache: state.latencyCache,
-        activeNodeTag: state.activeNodeTag
+        activeNodeTag: state.activeNodeTag,
+        nodeSelections: state.nodeSelections
       })
     }
   )
