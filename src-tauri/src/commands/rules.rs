@@ -1,7 +1,7 @@
 use tauri::State;
 use std::fs;
 use crate::state::AppState;
-use crate::types::{CustomRules, DomainRule, ProcessRule};
+use crate::types::{CustomRules, DomainRule};
 
 pub(crate) fn load_custom_rules(state: &AppState) -> CustomRules {
     let file = state.custom_rules_file();
@@ -53,17 +53,3 @@ pub async fn domain_rules_save(state: State<'_, AppState>, rules: Vec<DomainRule
     Ok(())
 }
 
-#[tauri::command]
-pub async fn process_rules_get(state: State<'_, AppState>) -> Result<Vec<ProcessRule>, String> {
-    let rules = load_custom_rules(&state);
-    *state.custom_rules.lock().await = rules.clone();
-    Ok(rules.process_rules)
-}
-
-#[tauri::command]
-pub async fn process_rules_save(state: State<'_, AppState>, rules: Vec<ProcessRule>) -> Result<(), String> {
-    let mut custom_rules = state.custom_rules.lock().await;
-    custom_rules.process_rules = rules;
-    save_custom_rules(&state, &custom_rules)?;
-    Ok(())
-}

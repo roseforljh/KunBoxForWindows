@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Download, Upload, Wifi, Server, Play, Square, RotateCw, Zap, Loader2, AlertTriangle } from 'lucide-react'
 import { useConnectionStore } from '../stores/connectionStore'
@@ -8,7 +8,7 @@ import { useToast } from './ui/Toast'
 import type { Profile } from '@shared/types'
 
 export default function Dashboard() {
-  const { state, traffic, connect, disconnect, needsRestart, setNeedsRestart } = useConnectionStore()
+  const { state, traffic, connect, disconnect, needsRestart } = useConnectionStore()
   const { nodes, activeNodeTag, loadNodes, testNodeLatency } = useNodesStore()
   const [isAnimating, setIsAnimating] = useState(false)
   const [profiles, setProfiles] = useState<Profile[]>([])
@@ -51,7 +51,7 @@ export default function Dashboard() {
     } else {
       setTrafficHistory([])
     }
-  }, [isConnected, traffic?.downloadSpeed, traffic?.uploadSpeed])
+  }, [isConnected, traffic, traffic?.downloadSpeed, traffic?.uploadSpeed])
 
   const loadProfiles = async () => {
     try {
@@ -69,7 +69,6 @@ export default function Dashboard() {
 
   // Calculate total nodes count from all enabled profiles
   const totalNodes = nodes.length
-  const enabledProfilesCount = profiles.filter(p => p.enabled).length
 
   const handleToggle = async () => {
     if (isAnimating || isConnecting || isDisconnecting) return
@@ -125,9 +124,9 @@ export default function Dashboard() {
     }
   }
 
-  const testLatency = async () => {
+  const testLatency = useCallback(async () => {
     if (isTesting || !activeNodeTag) return
-    
+
     setIsTesting(true)
     try {
       await testNodeLatency(activeNodeTag)
@@ -136,7 +135,7 @@ export default function Dashboard() {
     } finally {
       setIsTesting(false)
     }
-  }
+  }, [isTesting, activeNodeTag, testNodeLatency])
 
   // Auto test latency when connected and node has no latency
   useEffect(() => {
@@ -144,7 +143,7 @@ export default function Dashboard() {
       const timer = setTimeout(() => testLatency(), 1000)
       return () => clearTimeout(timer)
     }
-  }, [isConnected, activeNodeTag, currentLatency])
+  }, [isConnected, activeNodeTag, currentLatency, isTesting, testLatency])
 
   // Show error toast when state changes to error
   useEffect(() => {

@@ -196,7 +196,7 @@ export default function Nodes() {
       const link = await window.api.node.export(node.tag)
       await navigator.clipboard.writeText(link)
       toast.success(`已复制「${node.tag}」的分享链接`)
-    } catch (error) {
+    } catch {
       toast.error('导出失败')
     }
   }
@@ -366,7 +366,9 @@ export default function Nodes() {
                     <button
                       onClick={(e) => {
                         e.stopPropagation()
-                        node.tag && handleTestSingleNode(node.tag)
+                        if (node.tag) {
+                          handleTestSingleNode(node.tag)
+                        }
                       }}
                       className={cn(
                         'text-xs font-bold font-mono flex items-center gap-1 px-2 py-1 rounded-lg transition-all duration-200',
@@ -400,7 +402,7 @@ export default function Nodes() {
                     onClick={(e) => e.stopPropagation()}
                   >
                     <button
-                      onClick={() => setOpenMenuTag(openMenuTag === node.tag ? null : node.tag ?? null)}
+                      onClick={() => setOpenMenuTag(openMenuTag === node.tag ? null : (node.tag ?? null))}
                       className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--bg-elevated)] transition-colors"
                     >
                       <MoreVertical className="w-4 h-4 text-[var(--text-muted)]" />
@@ -481,6 +483,7 @@ export default function Nodes() {
       />
 
       <NodeFilterModal
+        key={`${filterModalOpen ? 'open' : 'closed'}-${nodeFilter.filterMode}-${nodeFilter.includeKeywords.join(',')}-${nodeFilter.excludeKeywords.join(',')}`}
         isOpen={filterModalOpen}
         onClose={() => setFilterModalOpen(false)}
         currentFilter={nodeFilter}

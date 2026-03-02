@@ -146,7 +146,6 @@ export default function DomainRules() {
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null)
   const [editingRule, setEditingRule] = useState<DomainRule | null>(null)
   const [toasts, setToasts] = useState<ToastMessage[]>([])
-  const [isLoading, setIsLoading] = useState(true)
 
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [isLoadingData, setIsLoadingData] = useState(false)
@@ -166,8 +165,6 @@ export default function DomainRules() {
       setRules(savedRules)
     } catch (error) {
       console.error('Failed to load domain rules:', error)
-    } finally {
-      setIsLoading(false)
     }
   }, [])
 

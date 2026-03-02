@@ -52,7 +52,6 @@ export default function Settings() {
 
       if (key === 'theme') {
         localStorage.setItem('kunbox-theme', value as string)
-        // Dispatch custom event to trigger theme change in App.tsx
         window.dispatchEvent(new CustomEvent('theme-change'))
       }
 
@@ -60,7 +59,6 @@ export default function Settings() {
         try {
           await window.api.window.restartAsAdmin()
         } catch (e) {
-          // UAC canceled or elevation failed: rollback switch
           setSettings(prevSettings)
           await window.api.settings.set({ requireAdmin: false })
           console.error('Failed to restart as admin, rolled back requireAdmin:', e)
@@ -70,6 +68,8 @@ export default function Settings() {
       setSaving(false)
     }
   }
+
+
 
   if (!settings) {
     return (
@@ -128,7 +128,7 @@ export default function Settings() {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -15 }}
             transition={{ duration: 0.25, ease: [0.25, 0.46, 0.45, 0.94] }}
-            className="h-full"
+            className="h-full overflow-y-auto pr-1"
           >
             {activeTab === 'proxy' && (
               <div className="space-y-4">
@@ -150,18 +150,23 @@ export default function Settings() {
                 <SettingCard>
                   <SettingRow label="路由模式">
                     <Dropdown
-                      value={settings.blockAds ? 'block' : 'normal'}
+                      value={settings.routingMode}
                       options={[
-                        { value: 'normal', label: '正常' },
-                        { value: 'block', label: '屏蔽广告' }
+                        { value: 'rule', label: '规则模式' },
+                        { value: 'global-proxy', label: '全局代理' },
+                        { value: 'global-direct', label: '全局直连' }
                       ]}
-                      onChange={(v) => updateSetting('blockAds', v === 'block')}
+                      onChange={(v) => updateSetting('routingMode', v as AppSettings['routingMode'])}
                     />
                   </SettingRow>
-                  <SettingRow label="绕过局域网" isLast>
+                  <SettingRow label="绕过局域网">
                     <Toggle checked={settings.bypassLan} onChange={(v) => updateSetting('bypassLan', v)} />
                   </SettingRow>
+                  <SettingRow label="广告屏蔽" isLast>
+                    <Toggle checked={settings.blockAds} onChange={(v) => updateSetting('blockAds', v)} />
+                  </SettingRow>
                 </SettingCard>
+
               </div>
             )}
 

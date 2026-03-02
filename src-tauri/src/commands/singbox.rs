@@ -20,11 +20,13 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 #[cfg(windows)]
 fn is_running_as_admin() -> bool {
     use std::process::Command as StdCommand;
-    
+    use std::os::windows::process::CommandExt;
+
     let output = StdCommand::new("net")
         .args(["session"])
+        .creation_flags(CREATE_NO_WINDOW)
         .output();
-    
+
     match output {
         Ok(o) => o.status.success(),
         Err(_) => false,
@@ -484,23 +486,6 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
             }
         }
     }
-    for rule in custom_rules.process_rules.iter().filter(|r| r.enabled) {
-        if let Some(ref value) = rule.outbound_value {
-            match rule.outbound_mode.as_str() {
-                "profile" => { referenced_profile_ids.insert(value.clone()); }
-                "node" => {
-                    // Parse "profileId::nodeTag" format
-                    let node_tag = if value.contains("::") {
-                        value.split("::").nth(1).unwrap_or(value).to_string()
-                    } else {
-                        value.clone()
-                    };
-                    referenced_node_tags.insert(node_tag);
-                }
-                _ => {}
-            }
-        }
-    }
 
     // Build config - 使用 sing-box 1.11+ 新格式
     let listen_addr = if settings.allow_lan { "0.0.0.0" } else { "127.0.0.1" };
@@ -571,7 +556,14 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
     });
 
     // 避免 1.13+ 硬错误，始终不生成已弃用 outbound DNS rule item
-    
+
+    let routing_mode = settings.routing_mode.as_str();
+    let route_final = match routing_mode {
+        "global-proxy" => "PROXY",
+        "global-direct" => "direct",
+        _ => if settings.default_rule == "proxy" { "PROXY" } else { &settings.default_rule },
+    };
+
     let mut config = serde_json::json!({
         "log": {
             "disabled": false,
@@ -593,7 +585,7 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
         "route": {
             "auto_detect_interface": true,
             "default_domain_resolver": "dns-local",
-            "final": if settings.default_rule == "proxy" { "PROXY" } else { &settings.default_rule }
+            "final": route_final
         }
     });
 
@@ -749,81 +741,8 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
     }
 
     // ========== 添加自定义域名分流规则 ==========
-    for rule in custom_rules.domain_rules.iter().filter(|r| r.enabled) {
-        let outbound = match rule.outbound_mode.as_str() {
-            "proxy" => "PROXY".to_string(),
-            "direct" => "direct".to_string(),
-            "block" => "block".to_string(),
-            "node" => {
-                if let Some(ref node_ref) = rule.outbound_value {
-                    // Parse "profileId::nodeTag" format
-                    let node_tag = if node_ref.contains("::") {
-                        node_ref.split("::").nth(1).unwrap_or(node_ref).to_string()
-                    } else {
-                        node_ref.clone()
-                    };
-                    if available_outbound_tags.contains(&node_tag) {
-                        node_tag
-                    } else {
-                        log::warn!("Node '{}' not found for domain rule '{}', falling back to PROXY", node_tag, rule.value);
-                        "PROXY".to_string()
-                    }
-                } else {
-                    "PROXY".to_string()
-                }
-            },
-            "profile" => {
-                if let Some(ref profile_id) = rule.outbound_value {
-                    if let Some(selector_tag) = profile_id_to_selector.get(profile_id) {
-                        if available_outbound_tags.contains(selector_tag) {
-                            selector_tag.clone()
-                        } else {
-                            log::warn!("Profile selector '{}' not found for domain rule '{}', falling back to PROXY", selector_tag, rule.value);
-                            "PROXY".to_string()
-                        }
-                    } else {
-                        log::warn!("Profile '{}' not found for domain rule '{}', falling back to PROXY", profile_id, rule.value);
-                        "PROXY".to_string()
-                    }
-                } else {
-                    "PROXY".to_string()
-                }
-            },
-            other => other.to_string()
-        };
-
-        match rule.rule_type.as_str() {
-            "domain" => {
-                rules.push(serde_json::json!({
-                    "domain": [&rule.value],
-                    "outbound": outbound
-                }));
-            },
-            "domain_suffix" => {
-                rules.push(serde_json::json!({
-                    "domain_suffix": [&rule.value],
-                    "outbound": outbound
-                }));
-            },
-            "domain_keyword" => {
-                rules.push(serde_json::json!({
-                    "domain_keyword": [&rule.value],
-                    "outbound": outbound
-                }));
-            },
-            _ => {
-                rules.push(serde_json::json!({
-                    "domain_suffix": [&rule.value],
-                    "outbound": outbound
-                }));
-            }
-        }
-        log::info!("Added domain rule: {} ({}) -> {}", rule.value, rule.rule_type, outbound);
-    }
-
-    // ========== 添加自定义进程分流规则（仅 TUN 模式有效）==========
-    if settings.tun_enabled {
-        for rule in custom_rules.process_rules.iter().filter(|r| r.enabled) {
+    if routing_mode == "rule" {
+        for rule in custom_rules.domain_rules.iter().filter(|r| r.enabled) {
             let outbound = match rule.outbound_mode.as_str() {
                 "proxy" => "PROXY".to_string(),
                 "direct" => "direct".to_string(),
@@ -839,7 +758,7 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
                         if available_outbound_tags.contains(&node_tag) {
                             node_tag
                         } else {
-                            log::warn!("Node '{}' not found for process rule '{}', falling back to PROXY", node_tag, rule.process_name);
+                            log::warn!("Node '{}' not found for domain rule '{}', falling back to PROXY", node_tag, rule.value);
                             "PROXY".to_string()
                         }
                     } else {
@@ -852,11 +771,11 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
                             if available_outbound_tags.contains(selector_tag) {
                                 selector_tag.clone()
                             } else {
-                                log::warn!("Profile selector '{}' not found for process rule '{}', falling back to PROXY", selector_tag, rule.process_name);
+                                log::warn!("Profile selector '{}' not found for domain rule '{}', falling back to PROXY", selector_tag, rule.value);
                                 "PROXY".to_string()
                             }
                         } else {
-                            log::warn!("Profile '{}' not found for process rule '{}', falling back to PROXY", profile_id, rule.process_name);
+                            log::warn!("Profile '{}' not found for domain rule '{}', falling back to PROXY", profile_id, rule.value);
                             "PROXY".to_string()
                         }
                     } else {
@@ -866,11 +785,26 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
                 other => other.to_string()
             };
 
-            rules.push(serde_json::json!({
-                "process_name": [&rule.process_name],
-                "outbound": outbound
-            }));
-            log::info!("Added process rule: {} -> {}", rule.process_name, outbound);
+            let rule_json = match rule.rule_type.as_str() {
+                "domain" => serde_json::json!({
+                    "domain": [&rule.value],
+                    "outbound": outbound
+                }),
+                "domain_suffix" => serde_json::json!({
+                    "domain_suffix": [&rule.value],
+                    "outbound": outbound
+                }),
+                "domain_keyword" => serde_json::json!({
+                    "domain_keyword": [&rule.value],
+                    "outbound": outbound
+                }),
+                _ => serde_json::json!({
+                    "domain_suffix": [&rule.value],
+                    "outbound": outbound
+                })
+            };
+            rules.push(rule_json);
+            log::info!("Added domain rule: {} ({}) -> {}", rule.value, rule.rule_type, outbound);
         }
     }
 
@@ -878,7 +812,8 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
     let mut rule_set_refs = Vec::new();
     let rulesets_cache_dir = state.rulesets_cache_dir();
 
-    for rs in &enabled_rulesets {
+    if routing_mode == "rule" {
+        for rs in &enabled_rulesets {
         // 检查本地缓存文件是否存在
         let local_path = rulesets_cache_dir.join(format!("{}.srs", rs.tag));
         
@@ -934,10 +869,12 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
             other => other.to_string()
         };
 
-        rules.push(serde_json::json!({
+        let rule_json = serde_json::json!({
             "rule_set": [rs.tag],
             "outbound": outbound
-        }));
+        });
+        rules.push(rule_json);
+        }
     }
 
     if !rule_set_refs.is_empty() {
@@ -1084,29 +1021,12 @@ async fn load_profiles_data_from_file(state: &AppState) -> crate::types::Profile
 
 async fn collect_referenced_profile_selector_tags(state: &AppState) -> Vec<String> {
     let rulesets = state.rulesets.lock().await.clone();
-    let custom_rules = state.custom_rules.lock().await.clone();
 
     let mut referenced_profile_ids = std::collections::HashSet::new();
 
     for rs in rulesets.iter().filter(|r| r.enabled) {
         if let Some(value) = &rs.outbound_value {
             if matches!(rs.outbound_mode.as_str(), "profile" | "配置") {
-                referenced_profile_ids.insert(value.clone());
-            }
-        }
-    }
-
-    for rule in custom_rules.domain_rules.iter().filter(|r| r.enabled) {
-        if let Some(value) = &rule.outbound_value {
-            if rule.outbound_mode == "profile" {
-                referenced_profile_ids.insert(value.clone());
-            }
-        }
-    }
-
-    for rule in custom_rules.process_rules.iter().filter(|r| r.enabled) {
-        if let Some(value) = &rule.outbound_value {
-            if rule.outbound_mode == "profile" {
                 referenced_profile_ids.insert(value.clone());
             }
         }

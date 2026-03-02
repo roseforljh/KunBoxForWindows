@@ -182,6 +182,7 @@ pub fn run() {
             commands::window_maximize,
             commands::window_close,
             commands::window_show,
+            commands::list_running_processes,
             commands::restart_as_admin,
             commands::quit_app,
             commands::is_admin,
@@ -206,8 +207,6 @@ pub fn run() {
             commands::custom_rules_save,
             commands::domain_rules_get,
             commands::domain_rules_save,
-            commands::process_rules_get,
-            commands::process_rules_save,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

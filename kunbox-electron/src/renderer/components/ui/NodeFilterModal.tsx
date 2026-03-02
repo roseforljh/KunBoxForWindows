@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Plus, Trash2 } from 'lucide-react'
@@ -22,15 +22,6 @@ export function NodeFilterModal({ isOpen, onClose, currentFilter, onApply }: Nod
   const [includeKeywords, setIncludeKeywords] = useState<string[]>(currentFilter.includeKeywords)
   const [excludeKeywords, setExcludeKeywords] = useState<string[]>(currentFilter.excludeKeywords)
   const [newKeyword, setNewKeyword] = useState('')
-
-  useEffect(() => {
-    if (isOpen) {
-      setFilterMode(currentFilter.filterMode)
-      setIncludeKeywords([...currentFilter.includeKeywords])
-      setExcludeKeywords([...currentFilter.excludeKeywords])
-      setNewKeyword('')
-    }
-  }, [isOpen, currentFilter])
 
   const handleAddKeyword = () => {
     const trimmed = newKeyword.trim()

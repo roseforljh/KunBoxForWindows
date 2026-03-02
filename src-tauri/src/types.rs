@@ -205,22 +205,8 @@ pub struct DomainRule {
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProcessRule {
-    pub id: String,
-    #[serde(rename = "processName")]
-    pub process_name: String,
-    #[serde(rename = "outboundMode")]
-    pub outbound_mode: String,
-    #[serde(rename = "outboundValue")]
-    pub outbound_value: Option<String>,
-    pub enabled: bool,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CustomRules {
     #[serde(rename = "domainRules")]
     pub domain_rules: Vec<DomainRule>,
-    #[serde(rename = "processRules")]
-    pub process_rules: Vec<ProcessRule>,
 }

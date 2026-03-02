@@ -1,8 +1,7 @@
 // Tauri API adapter - provides the same interface as Electron's window.api
 import { invoke } from '@tauri-apps/api/core';
 import { listen, emit } from '@tauri-apps/api/event';
-import { getCurrentWindow } from '@tauri-apps/api/window';
-import type { AppSettings, Profile, SingBoxOutbound, ProxyState, TrafficStats, LogEntry, DomainRule, ProcessRule, CustomRules, NodeWithProfile } from './types';
+import type { AppSettings, Profile, SingBoxOutbound, ProxyState, TrafficStats, LogEntry, DomainRule, CustomRules, NodeWithProfile } from './types';
 
 export const api = {
   singbox: {
@@ -206,9 +205,7 @@ export const api = {
     get: (): Promise<CustomRules> => invoke('custom_rules_get'),
     save: (rules: CustomRules): Promise<void> => invoke('custom_rules_save', { rules }),
     getDomainRules: (): Promise<DomainRule[]> => invoke('domain_rules_get'),
-    saveDomainRules: (rules: DomainRule[]): Promise<void> => invoke('domain_rules_save', { rules }),
-    getProcessRules: (): Promise<ProcessRule[]> => invoke('process_rules_get'),
-    saveProcessRules: (rules: ProcessRule[]): Promise<void> => invoke('process_rules_save', { rules })
+    saveDomainRules: (rules: DomainRule[]): Promise<void> => invoke('domain_rules_save', { rules })
   },
 
   updater: {
@@ -230,6 +227,7 @@ export const api = {
     minimize: () => invoke('window_minimize'),
     maximize: () => invoke('window_maximize'),
     close: () => invoke('window_close'),
+    listRunningProcesses: (): Promise<string[]> => invoke('list_running_processes'),
     restartAsAdmin: () => invoke('restart_as_admin'),
     isAdmin: (): Promise<boolean> => invoke('is_admin'),
     quit: () => invoke('quit_app')

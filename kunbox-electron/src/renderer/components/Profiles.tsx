@@ -362,6 +362,7 @@ export default function Profiles() {
       />
 
       <EditProfileModal
+        key={editTarget?.id ?? 'edit-empty'}
         isOpen={editModalOpen}
         onClose={() => {
           setEditModalOpen(false)

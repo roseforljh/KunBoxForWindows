@@ -233,6 +233,48 @@ pub async fn restart_as_admin(app: AppHandle, state: State<'_, AppState>) -> Res
 }
 
 #[tauri::command]
+pub async fn list_running_processes() -> Result<Vec<String>, String> {
+    #[cfg(windows)]
+    {
+        let output = StdCommand::new("tasklist")
+            .args(["/FO", "CSV", "/NH"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map_err(|e| e.to_string())?;
+
+        if !output.status.success() {
+            return Err("获取运行中进程失败".to_string());
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut names = std::collections::BTreeSet::new();
+
+        for line in stdout.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            if let Some(stripped) = trimmed.strip_prefix('"') {
+                if let Some((name, _)) = stripped.split_once('"') {
+                    let lower = name.to_ascii_lowercase();
+                    if lower.ends_with(".exe") && lower != "sing-box.exe" && lower != "kunbox.exe" {
+                        names.insert(name.to_string());
+                    }
+                }
+            }
+        }
+
+        Ok(names.into_iter().collect())
+    }
+
+    #[cfg(not(windows))]
+    {
+        Ok(Vec::new())
+    }
+}
+
+#[tauri::command]
 pub async fn quit_app(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     // Stop sing-box process if running
     if let Some(cancel) = state.traffic_cancel.lock().await.take() {

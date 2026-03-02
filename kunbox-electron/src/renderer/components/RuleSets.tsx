@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, memo } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { motion, AnimatePresence, Reorder } from 'framer-motion'
 import * as Switch from '@radix-ui/react-switch'
 import {
@@ -376,17 +376,6 @@ export default function RuleSets() {
       showToast(message, 'success')
     }
   }, [vpnState, showToast, restartVpn])
-
-  // Mark needs restart when rulesets change while VPN is running
-  const updateRuleSets = useCallback((updater: (prev: RuleSetItem[]) => RuleSetItem[]) => {
-    setRuleSets(prev => {
-      const newRuleSets = updater(prev)
-      if (vpnState === 'connected') {
-        setNeedsRestart(true)
-      }
-      return newRuleSets
-    })
-  }, [vpnState, setNeedsRestart])
 
   // Load rulesets from main process on mount
   useEffect(() => {

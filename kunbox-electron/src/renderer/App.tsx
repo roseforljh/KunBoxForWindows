@@ -10,11 +10,10 @@ import SettingsPage from './components/Settings'
 import Logs from './components/Logs'
 import RuleSets from './components/RuleSets'
 import DomainRules from './components/DomainRules'
-import ProcessRules from './components/ProcessRules'
 import About from './components/About'
 import { Logo } from './components/Logo'
 
-type Page = 'dashboard' | 'nodes' | 'profiles' | 'settings' | 'logs' | 'rulesets' | 'domainrules' | 'processrules' | 'about'
+type Page = 'dashboard' | 'nodes' | 'profiles' | 'settings' | 'logs' | 'rulesets' | 'domainrules' | 'about'
 type Theme = 'dark' | 'light' | 'system'
 
 interface IconHandle {
@@ -186,45 +185,6 @@ const RouteIcon = forwardRef<IconHandle, AnimatedIconProps>(({ size = 20, classN
   )
 })
 
-const CpuIcon = forwardRef<IconHandle, AnimatedIconProps>(({ size = 20, className }, ref) => {
-  const controls = useAnimation()
-  const isControlledRef = useRef(false)
-
-  useImperativeHandle(ref, () => {
-    isControlledRef.current = true
-    return {
-      startAnimation: () => controls.start("animate"),
-      stopAnimation: () => controls.start("normal"),
-    }
-  })
-
-  return (
-    <div className={className}>
-      <svg fill="none" height={size} width={size} viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <motion.rect
-          animate={controls}
-          x="4" y="4" width="16" height="16" rx="2"
-          transition={defaultTransition}
-          variants={{
-            animate: { scale: 1.05 },
-            normal: { scale: 1 },
-          }}
-          style={{ transformOrigin: "center" }}
-        />
-        <rect x="9" y="9" width="6" height="6" />
-        <path d="M15 2v2" />
-        <path d="M15 20v2" />
-        <path d="M2 15h2" />
-        <path d="M2 9h2" />
-        <path d="M20 15h2" />
-        <path d="M20 9h2" />
-        <path d="M9 2v2" />
-        <path d="M9 20v2" />
-      </svg>
-    </div>
-  )
-})
-
 const SettingsIcon = forwardRef<IconHandle, AnimatedIconProps>(({ size = 20, className }, ref) => {
   const controls = useAnimation()
   const isControlledRef = useRef(false)
@@ -296,8 +256,7 @@ const navItems = [
   { id: 'nodes' as Page, Icon: GlobeIcon, label: '节点' },
   { id: 'profiles' as Page, Icon: FolderIcon, label: '订阅' },
   { id: 'rulesets' as Page, Icon: ShieldIcon, label: '规则集' },
-  { id: 'domainrules' as Page, Icon: RouteIcon, label: '域名分流' },
-  { id: 'processrules' as Page, Icon: CpuIcon, label: '进程分流' }
+  { id: 'domainrules' as Page, Icon: RouteIcon, label: '域名分流' }
 ]
 
 const footerItems = [
@@ -558,13 +517,6 @@ export default function App() {
     }
   }, [state, connect, disconnect])
 
-  const handleNavigate = useCallback((page: string, tab?: string) => {
-    if (tab) {
-      localStorage.setItem('kunbox-settings-tab', tab)
-    }
-    setCurrentPage(page as Page)
-  }, [])
-
   const renderPage = () => {
     switch (currentPage) {
       case 'dashboard': return <Dashboard />
@@ -574,7 +526,6 @@ export default function App() {
       case 'logs': return <Logs />
       case 'rulesets': return <RuleSets />
       case 'domainrules': return <DomainRules />
-      case 'processrules': return <ProcessRules onNavigate={handleNavigate} />
       case 'about': return <About />
     }
   }

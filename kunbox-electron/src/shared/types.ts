@@ -125,15 +125,6 @@ export interface DomainRule {
   enabled: boolean
 }
 
-export interface ProcessRule {
-  id: string
-  processName: string
-  outboundMode: OutboundMode
-  outboundValue?: string
-  enabled: boolean
-}
-
 export interface CustomRules {
   domainRules: DomainRule[]
-  processRules: ProcessRule[]
 }

@@ -24,7 +24,11 @@ const GITHUB_MIRRORS: &[&str] = &[
 const GITHUB_API_MIRRORS: &[&str] = &[
     "https://api.github.com",              // 原始 API
     "https://gh-api.p3terx.com",           // P3TERX 镜像
+    "https://api.github.moeyy.xyz",        // GitHub API 镜像
+    "https://github.api.99988866.xyz",     // GitHub API 镜像
 ];
+
+const VERSION_FALLBACK_API: &str = "https://data.jsdelivr.com/v1/package/gh/SagerNet/sing-box";
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -66,6 +70,11 @@ struct GithubRelease {
 struct GithubAsset {
     name: String,
     browser_download_url: String,
+}
+
+#[derive(serde::Deserialize, Debug)]
+struct JsDelivrPackage {
+    versions: Vec<String>,
 }
 
 fn get_data_kernel_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -124,6 +133,56 @@ fn version_gte(version: &str, min: (u64, u64, u64)) -> bool {
     parse_semver_triplet(version)
         .map(|v| v >= min)
         .unwrap_or(false)
+}
+
+fn is_prerelease_version(version: &str) -> bool {
+    version.contains('-')
+}
+
+fn build_release_from_version(version: &str, is_prerelease: bool) -> RemoteRelease {
+    let tag = format!("v{}", version);
+    let asset_name = format!("sing-box-{}-windows-amd64.zip", version);
+    let download_url = format!(
+        "https://github.com/SagerNet/sing-box/releases/download/{}/{}",
+        tag, asset_name
+    );
+
+    RemoteRelease {
+        version: version.to_string(),
+        tag_name: tag,
+        published_at: chrono::Utc::now().to_rfc3339(),
+        is_prerelease,
+        download_url,
+        asset_name,
+    }
+}
+
+async fn fetch_release_fallback_from_jsdelivr(
+    client: &reqwest::Client,
+    include_prerelease: bool,
+) -> Result<Vec<RemoteRelease>, String> {
+    let pkg = client
+        .get(VERSION_FALLBACK_API)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json::<JsDelivrPackage>()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut result = Vec::new();
+
+    if let Some(stable) = pkg.versions.iter().find(|v| !is_prerelease_version(v)) {
+        result.push(build_release_from_version(stable, false));
+    }
+
+    if include_prerelease {
+        if let Some(pre) = pkg.versions.iter().find(|v| is_prerelease_version(v)) {
+            result.push(build_release_from_version(pre, true));
+        }
+    }
+
+    Ok(result)
 }
 
 #[tauri::command]
@@ -294,6 +353,21 @@ pub async fn kernel_get_remote_releases(include_prerelease: Option<bool>) -> Res
                 }
             }
         }
+    }
+
+    if releases.is_empty() {
+        match fetch_release_fallback_from_jsdelivr(&client, include_pre).await {
+            Ok(mut fallback) => {
+                releases.append(&mut fallback);
+            }
+            Err(e) => {
+                log::warn!("Kernel fallback source failed: {}", e);
+            }
+        }
+    }
+
+    if releases.is_empty() {
+        return Err("无法获取内核版本列表，请检查网络后重试。".to_string());
     }
 
     Ok(releases)

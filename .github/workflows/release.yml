@@ -142,6 +142,10 @@ jobs:
             notes    = "KunBox v$version"
             pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
             platforms = [ordered]@{
+              "windows-x86_64" = [ordered]@{
+                signature = $nsisSignature
+                url       = "$baseUrl/$($nsisExe.Name)"
+              }
               "windows-x86_64-nsis" = [ordered]@{
                 signature = $nsisSignature
                 url       = "$baseUrl/$($nsisExe.Name)"

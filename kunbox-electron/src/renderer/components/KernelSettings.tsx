@@ -73,7 +73,7 @@ export function KernelSettings() {
       setRemoteReleases(releases)
       setCapabilities(kernelCaps)
       setCanRollback(activeBranch === 'stable' ? rollbackStable : rollbackAlpha)
-    } catch (err) {
+    } catch {
       showToast('加载版本信息失败', 'error')
     } finally {
       setLoading(false)

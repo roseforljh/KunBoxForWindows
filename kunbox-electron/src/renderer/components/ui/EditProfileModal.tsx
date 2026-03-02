@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { Modal, ModalButton } from './Modal'
 import { Loader2, ChevronDown } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -46,18 +46,6 @@ export function EditProfileModal({
   const [dnsServer, setDnsServer] = useState(initialDnsServer || DNS_SERVERS[0].value)
   const [dnsDropdownOpen, setDnsDropdownOpen] = useState(false)
   const [error, setError] = useState('')
-
-  useEffect(() => {
-    if (isOpen) {
-      setName(initialName)
-      setUrl(initialUrl)
-      setAutoUpdateEnabled(initialAutoUpdateInterval > 0)
-      setAutoUpdateMinutes(initialAutoUpdateInterval > 0 ? initialAutoUpdateInterval.toString() : '60')
-      setDnsPreResolve(initialDnsPreResolve)
-      setDnsServer(initialDnsServer || DNS_SERVERS[0].value)
-      setError('')
-    }
-  }, [isOpen, initialName, initialUrl, initialAutoUpdateInterval, initialDnsPreResolve, initialDnsServer])
 
   const handleSave = () => {
     if (!name.trim()) {
