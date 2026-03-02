@@ -380,6 +380,9 @@ fn parse_clash_proxies(proxies: &[serde_json::Value]) -> Result<Vec<SingBoxOutbo
             let mut extra = serde_json::Map::new();
             
             // Basic fields
+            if let Some(username) = p.get("username").and_then(|v| v.as_str()) {
+                extra.insert("username".to_string(), serde_json::Value::String(username.to_string()));
+            }
             if let Some(pwd) = p.get("password").and_then(|v| v.as_str()) {
                 extra.insert("password".to_string(), serde_json::Value::String(pwd.to_string()));
             }
@@ -417,8 +420,14 @@ fn parse_clash_proxies(proxies: &[serde_json::Value]) -> Result<Vec<SingBoxOutbo
             let tls_enabled = p.get("tls").and_then(|v| v.as_bool()).unwrap_or(false);
             let servername = p.get("servername").or(p.get("sni")).and_then(|v| v.as_str());
             let skip_cert = p.get("skip-cert-verify").and_then(|v| v.as_bool()).unwrap_or(false);
-            
-            if tls_enabled || network == "ws" || network == "grpc" || network == "h2" || proxy_type == "hysteria2" || proxy_type == "hysteria" || proxy_type == "tuic" {
+
+            if proxy_type == "naive" {
+                extra.insert("tls".to_string(), serde_json::json!({
+                    "enabled": true,
+                    "server_name": servername.unwrap_or(&server),
+                    "insecure": skip_cert
+                }));
+            } else if tls_enabled || network == "ws" || network == "grpc" || network == "h2" || proxy_type == "hysteria2" || proxy_type == "hysteria" || proxy_type == "tuic" {
                 let mut tls = serde_json::Map::new();
                 tls.insert("enabled".to_string(), serde_json::Value::Bool(true));
                 tls.insert("server_name".to_string(), serde_json::Value::String(
@@ -461,27 +470,26 @@ fn parse_clash_proxies(proxies: &[serde_json::Value]) -> Result<Vec<SingBoxOutbo
                     let ws_opts = p.get("ws-opts").and_then(|v| v.as_object());
                     let mut transport = serde_json::Map::new();
                     transport.insert("type".to_string(), serde_json::Value::String("ws".to_string()));
-                    
+
                     let mut path = ws_opts.and_then(|o| o.get("path")).and_then(|v| v.as_str())
                         .unwrap_or("/").to_string();
-                    
-                    // Parse early data from path (e.g., /path?ed=2560)
+
                     if let Some(ed_pos) = path.find("?ed=") {
                         let ed_str = &path[ed_pos + 4..];
                         if let Ok(ed) = ed_str.parse::<u32>() {
                             transport.insert("max_early_data".to_string(), serde_json::Value::Number(ed.into()));
-                            transport.insert("early_data_header_name".to_string(), 
+                            transport.insert("early_data_header_name".to_string(),
                                 serde_json::Value::String("Sec-WebSocket-Protocol".to_string()));
                         }
                         path = path[..ed_pos].to_string();
                     }
-                    
+
                     transport.insert("path".to_string(), serde_json::Value::String(path));
-                    
+
                     if let Some(headers) = ws_opts.and_then(|o| o.get("headers")).and_then(|v| v.as_object()) {
                         transport.insert("headers".to_string(), serde_json::Value::Object(headers.clone()));
                     }
-                    
+
                     extra.insert("transport".to_string(), serde_json::Value::Object(transport));
                 }
                 "grpc" => {
@@ -510,6 +518,15 @@ fn parse_clash_proxies(proxies: &[serde_json::Value]) -> Result<Vec<SingBoxOutbo
                     extra.insert("transport".to_string(), serde_json::Value::Object(transport));
                 }
                 _ => {}
+            }
+
+            if proxy_type == "naive" {
+                if let Some(network_type) = p.get("network").and_then(|v| v.as_str()) {
+                    extra.insert("network".to_string(), serde_json::Value::String(network_type.to_string()));
+                }
+                if let Some(udp_over_tcp) = p.get("udp-over-tcp").and_then(|v| v.as_bool()) {
+                    extra.insert("udp_over_tcp".to_string(), serde_json::Value::Bool(udp_over_tcp));
+                }
             }
 
             Some(SingBoxOutbound {
@@ -552,6 +569,8 @@ fn parse_node_link(link: &str) -> Option<SingBoxOutbound> {
         parse_hysteria2_link(link)
     } else if link.starts_with("hysteria://") {
         parse_hysteria_link(link)
+    } else if link.starts_with("naive+") {
+        parse_naive_link(link)
     } else {
         None
     }
@@ -989,8 +1008,67 @@ fn map_clash_type(t: &str) -> String {
         "tuic" => "tuic",
         "http" => "http",
         "socks5" => "socks",
+        "naive" => "naive",
         other => other,
     }.to_string()
+}
+
+fn parse_naive_link(link: &str) -> Option<SingBoxOutbound> {
+    let rest = link.strip_prefix("naive+")?;
+    let (main_part, tag_part) = rest.split_once('#').unwrap_or((rest, "Naive"));
+    let tag = urlencoding::decode(tag_part).ok()?.to_string();
+
+    let url = url::Url::parse(main_part).ok()?;
+    let host = url.host_str()?.to_string();
+    let port = url.port_or_known_default().unwrap_or(443) as u16;
+    let username = urlencoding::decode(url.username()).ok()?.to_string();
+    let password = url.password().and_then(|p| urlencoding::decode(p).ok().map(|s| s.to_string())).unwrap_or_default();
+
+    let mut extra = std::collections::HashMap::new();
+    extra.insert("username".to_string(), serde_json::Value::String(username));
+    extra.insert("password".to_string(), serde_json::Value::String(password));
+
+    if let Some(q) = url.query() {
+        for (k, v) in url::form_urlencoded::parse(q.as_bytes()) {
+            match k.as_ref() {
+                "sni" => {
+                    extra.insert("tls".to_string(), serde_json::json!({
+                        "enabled": true,
+                        "server_name": v.to_string(),
+                        "insecure": false
+                    }));
+                }
+                "insecure" => {
+                    let insecure = v == "1" || v.eq_ignore_ascii_case("true");
+                    let tls_value = extra.remove("tls").unwrap_or_else(|| serde_json::json!({ "enabled": true }));
+                    let mut tls_obj = tls_value.as_object().cloned().unwrap_or_default();
+                    tls_obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
+                    tls_obj.insert("insecure".to_string(), serde_json::Value::Bool(insecure));
+                    if !tls_obj.contains_key("server_name") {
+                        tls_obj.insert("server_name".to_string(), serde_json::Value::String(host.clone()));
+                    }
+                    extra.insert("tls".to_string(), serde_json::Value::Object(tls_obj));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if !extra.contains_key("tls") {
+        extra.insert("tls".to_string(), serde_json::json!({
+            "enabled": true,
+            "server_name": host,
+            "insecure": false
+        }));
+    }
+
+    Some(SingBoxOutbound {
+        tag: Some(tag),
+        outbound_type: Some("naive".to_string()),
+        server: Some(url.host_str()?.to_string()),
+        server_port: Some(port),
+        extra,
+    })
 }
 
 fn extract_hostname(url: &str) -> String {
@@ -1001,26 +1079,33 @@ fn extract_hostname(url: &str) -> String {
 
 #[tauri::command]
 pub async fn node_test_latency(app: AppHandle, state: State<'_, AppState>, tag: String) -> Result<i64, String> {
-    // Check if main VPN is running
     let is_vpn_running = {
         let proxy_state = state.proxy_state.lock().await;
         matches!(*proxy_state, ProxyState::Connected)
     };
-    
+
     if is_vpn_running {
-        // Use main sing-box Clash API
-        test_latency_via_clash_api(&tag, 9090).await
-    } else {
-        // Start temp sing-box if needed
-        let started = start_temp_singbox(&app, &state).await;
-        if !started {
-            return Ok(-1);
+        match test_latency_via_clash_api(&tag, 9090).await {
+            Ok(v) if v > 0 => return Ok(v),
+            Ok(_) => {}
+            Err(e) => {
+                log::warn!("Main Clash API latency test failed for '{}': {}", tag, e);
+            }
         }
-        
-        // Wait for sing-box to be ready
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        
-        test_latency_via_clash_api(&tag, TEMP_SINGBOX_PORT).await
+    }
+
+    let started = start_temp_singbox(&app, &state).await;
+    if !started {
+        log::warn!("Temp sing-box not available for latency test: {}", tag);
+        return Ok(-1);
+    }
+
+    match test_latency_via_clash_api(&tag, TEMP_SINGBOX_PORT).await {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            log::warn!("Temp Clash API latency test failed for '{}': {}", tag, e);
+            Ok(-1)
+        }
     }
 }
 
@@ -1040,17 +1125,19 @@ pub async fn node_test_all(app: AppHandle, state: State<'_, AppState>) -> Result
         matches!(*proxy_state, ProxyState::Connected)
     };
     
-    let port = if is_vpn_running {
-        9090
-    } else {
-        // Start temp sing-box if needed
-        let started = start_temp_singbox(&app, &state).await;
-        if !started {
-            return Ok(std::collections::HashMap::new());
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        TEMP_SINGBOX_PORT
-    };
+    let mut ports: Vec<u16> = Vec::new();
+    if is_vpn_running {
+        ports.push(9090);
+    }
+
+    let temp_ready = start_temp_singbox(&app, &state).await;
+    if temp_ready {
+        ports.push(TEMP_SINGBOX_PORT);
+    }
+
+    if ports.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
     
     let mut results = std::collections::HashMap::new();
     
@@ -1061,8 +1148,21 @@ pub async fn node_test_all(app: AppHandle, state: State<'_, AppState>) -> Result
             .filter_map(|node| node.tag.clone())
             .map(|tag| {
                 let tag_clone = tag.clone();
+                let ports_clone = ports.clone();
                 async move {
-                    let latency = test_latency_via_clash_api(&tag_clone, port).await.unwrap_or(-1);
+                    let mut latency = -1;
+                    for p in ports_clone {
+                        match test_latency_via_clash_api(&tag_clone, p).await {
+                            Ok(v) if v > 0 => {
+                                latency = v;
+                                break;
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                log::debug!("Latency test failed on port {} for '{}': {}", p, tag_clone, e);
+                            }
+                        }
+                    }
                     (tag_clone, latency)
                 }
             })
@@ -1093,15 +1193,30 @@ async fn test_latency_via_clash_api(proxy_name: &str, port: u16) -> Result<i64, 
     );
     
     let response = client.get(&url).send().await.map_err(|e| e.to_string())?;
-    
-    if response.status().is_success() {
-        let json: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
-        if let Some(delay) = json.get("delay").and_then(|d| d.as_i64()) {
-            return Ok(delay);
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("HTTP {}: {}", status, body));
+    }
+
+    let json: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+    if let Some(delay) = json.get("delay").and_then(|d| d.as_i64()) {
+        return Ok(delay);
+    }
+
+    Ok(-1)
+}
+
+fn get_kernel_path_with_fallback(app: &AppHandle) -> Option<std::path::PathBuf> {
+    if let Ok(data_dir) = app.path().app_data_dir() {
+        let data_kernel = data_dir.join("libs").join("sing-box.exe");
+        if data_kernel.exists() {
+            return Some(data_kernel);
         }
     }
-    
-    Ok(-1)
+
+    app.path().resource_dir().ok().map(|dir| dir.join("resources").join("libs").join("sing-box.exe"))
 }
 
 async fn start_temp_singbox(app: &AppHandle, state: &AppState) -> bool {
@@ -1126,9 +1241,9 @@ async fn start_temp_singbox(app: &AppHandle, state: &AppState) -> bool {
     }
     
     // Get kernel path
-    let kernel_path = match app.path().resource_dir() {
-        Ok(dir) => dir.join("resources").join("libs").join("sing-box.exe"),
-        Err(_) => return false,
+    let kernel_path = match get_kernel_path_with_fallback(app) {
+        Some(path) => path,
+        None => return false,
     };
     
     if !kernel_path.exists() {
@@ -1194,10 +1309,21 @@ async fn start_temp_singbox(app: &AppHandle, state: &AppState) -> bool {
     
     match result {
         Ok(child) => {
-            let mut process = TEMP_SINGBOX_PROCESS.lock().await;
-            *process = Some(child);
-            log::info!("Started temp sing-box on port {}", TEMP_SINGBOX_PORT);
-            true
+            {
+                let mut process = TEMP_SINGBOX_PROCESS.lock().await;
+                *process = Some(child);
+            }
+
+            for _ in 0..20 {
+                if check_clash_api_running(TEMP_SINGBOX_PORT).await {
+                    log::info!("Started temp sing-box on port {}", TEMP_SINGBOX_PORT);
+                    return true;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            }
+
+            log::warn!("Temp sing-box started but Clash API not ready in time");
+            false
         }
         Err(e) => {
             log::error!("Failed to start temp sing-box: {}", e);

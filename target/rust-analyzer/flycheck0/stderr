@@ -1,0 +1,65 @@
+   0.312792100s  INFO prepare_target{force=false package_id=kunbox v1.0.0 (C:\Users\33039\Desktop\KunBox-Windows\src-tauri) target="kunbox_lib"}: cargo::core::compiler::fingerprint: stale: changed "C:\\Users\\33039\\Desktop\\KunBox-Windows\\src-tauri\\target\\debug\\build\\kunbox-73c7e29ea3b7395b\\out\\tauri-codegen-assets\\41ca9a187ab959f5d03dcf6672dc9992d6c81ba398b02a39112c8e6a5725885c.html"
+   0.313099400s  INFO prepare_target{force=false package_id=kunbox v1.0.0 (C:\Users\33039\Desktop\KunBox-Windows\src-tauri) target="kunbox_lib"}: cargo::core::compiler::fingerprint:           (vs) "C:\\Users\\33039\\Desktop\\KunBox-Windows\\src-tauri\\target\\debug\\.fingerprint\\kunbox-c412f2167ffe7f41\\dep-lib-kunbox_lib"
+   0.313104800s  INFO prepare_target{force=false package_id=kunbox v1.0.0 (C:\Users\33039\Desktop\KunBox-Windows\src-tauri) target="kunbox_lib"}: cargo::core::compiler::fingerprint:                FileTime { seconds: 13415374540, nanos: 670527300 } < FileTime { seconds: 13415374540, nanos: 966147700 }
+   0.313990900s  INFO prepare_target{force=false package_id=kunbox v1.0.0 (C:\Users\33039\Desktop\KunBox-Windows\src-tauri) target="kunbox_lib"}: cargo::core::compiler::fingerprint: fingerprint dirty for kunbox v1.0.0 (C:\Users\33039\Desktop\KunBox-Windows\src-tauri)/Check { test: false }/TargetInner { ..: lib_target("kunbox_lib", ["staticlib", "cdylib", "rlib"], "C:\\Users\\33039\\Desktop\\KunBox-Windows\\src-tauri\\src\\lib.rs", Edition2021) }
+   0.314574500s  INFO prepare_target{force=false package_id=kunbox v1.0.0 (C:\Users\33039\Desktop\KunBox-Windows\src-tauri) target="kunbox_lib"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleItem(ChangedFile { reference: "C:\\Users\\33039\\Desktop\\KunBox-Windows\\src-tauri\\target\\debug\\.fingerprint\\kunbox-c412f2167ffe7f41\\dep-lib-kunbox_lib", reference_mtime: FileTime { seconds: 13415374540, nanos: 670527300 }, stale: "C:\\Users\\33039\\Desktop\\KunBox-Windows\\src-tauri\\target\\debug\\build\\kunbox-73c7e29ea3b7395b\\out\\tauri-codegen-assets\\41ca9a187ab959f5d03dcf6672dc9992d6c81ba398b02a39112c8e6a5725885c.html", stale_mtime: FileTime { seconds: 13415374540, nanos: 966147700 } }))
+   0.383285300s  INFO prepare_target{force=false package_id=kunbox v1.0.0 (C:\Users\33039\Desktop\KunBox-Windows\src-tauri) target="kunbox_lib"}: cargo::core::compiler::fingerprint: fingerprint error for kunbox v1.0.0 (C:\Users\33039\Desktop\KunBox-Windows\src-tauri)/Check { test: true }/TargetInner { ..: lib_target("kunbox_lib", ["staticlib", "cdylib", "rlib"], "C:\\Users\\33039\\Desktop\\KunBox-Windows\\src-tauri\\src\\lib.rs", Edition2021) }
+   0.383310000s  INFO prepare_target{force=false package_id=kunbox v1.0.0 (C:\Users\33039\Desktop\KunBox-Windows\src-tauri) target="kunbox_lib"}: cargo::core::compiler::fingerprint:     err: failed to read `C:\Users\33039\Desktop\KunBox-Windows\src-tauri\target\debug\.fingerprint\kunbox-42858e45497d9d5f\test-lib-kunbox_lib`
+
+Caused by:
+    系统找不到指定的文件。 (os error 2)
+
+Stack backtrace:
+   0: git_midx_writer_dump
+   1: git_midx_writer_dump
+   2: git_midx_writer_dump
+   3: git_midx_writer_dump
+   4: git_filter_source_repo
+   5: git_filter_source_repo
+   6: git_filter_source_repo
+   7: git_filter_source_repo
+   8: git_filter_source_repo
+   9: git_filter_source_repo
+  10: git_filter_source_repo
+  11: git_libgit2_prerelease
+  12: <unknown>
+  13: <unknown>
+  14: <unknown>
+  15: <unknown>
+  16: git_midx_writer_dump
+  17: git_filter_source_repo
+  18: git_midx_writer_dump
+  19: BaseThreadInitThunk
+  20: RtlUserThreadStart
+   0.397200500s  INFO prepare_target{force=false package_id=kunbox v1.0.0 (C:\Users\33039\Desktop\KunBox-Windows\src-tauri) target="kunbox"}: cargo::core::compiler::fingerprint: fingerprint dirty for kunbox v1.0.0 (C:\Users\33039\Desktop\KunBox-Windows\src-tauri)/Check { test: false }/TargetInner { name: "kunbox", doc: true, ..: with_path("C:\\Users\\33039\\Desktop\\KunBox-Windows\\src-tauri\\src\\main.rs", Edition2021) }
+   0.397355400s  INFO prepare_target{force=false package_id=kunbox v1.0.0 (C:\Users\33039\Desktop\KunBox-Windows\src-tauri) target="kunbox"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleDepFingerprint { name: "kunbox_lib" })
+   0.398972500s  INFO prepare_target{force=false package_id=kunbox v1.0.0 (C:\Users\33039\Desktop\KunBox-Windows\src-tauri) target="kunbox"}: cargo::core::compiler::fingerprint: fingerprint error for kunbox v1.0.0 (C:\Users\33039\Desktop\KunBox-Windows\src-tauri)/Check { test: true }/TargetInner { name: "kunbox", doc: true, ..: with_path("C:\\Users\\33039\\Desktop\\KunBox-Windows\\src-tauri\\src\\main.rs", Edition2021) }
+   0.398998400s  INFO prepare_target{force=false package_id=kunbox v1.0.0 (C:\Users\33039\Desktop\KunBox-Windows\src-tauri) target="kunbox"}: cargo::core::compiler::fingerprint:     err: failed to read `C:\Users\33039\Desktop\KunBox-Windows\src-tauri\target\debug\.fingerprint\kunbox-0609a5064643878c\test-bin-kunbox`
+
+Caused by:
+    系统找不到指定的文件。 (os error 2)
+
+Stack backtrace:
+   0: git_midx_writer_dump
+   1: git_midx_writer_dump
+   2: git_midx_writer_dump
+   3: git_midx_writer_dump
+   4: git_filter_source_repo
+   5: git_filter_source_repo
+   6: git_filter_source_repo
+   7: git_filter_source_repo
+   8: git_filter_source_repo
+   9: git_filter_source_repo
+  10: git_filter_source_repo
+  11: git_libgit2_prerelease
+  12: <unknown>
+  13: <unknown>
+  14: <unknown>
+  15: <unknown>
+  16: git_midx_writer_dump
+  17: git_filter_source_repo
+  18: git_midx_writer_dump
+  19: BaseThreadInitThunk
+  20: RtlUserThreadStart
+    Checking kunbox v1.0.0 (C:\Users\33039\Desktop\KunBox-Windows\src-tauri)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.71s

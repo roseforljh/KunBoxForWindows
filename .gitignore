@@ -8,3 +8,6 @@ out/
 core/dist/
 CLAUDE.md
 .claude/settings.local.json
+
+tauri-signing.local.ps1
+tauri-private.key

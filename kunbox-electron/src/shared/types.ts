@@ -93,6 +93,7 @@ export interface AppSettings {
   minimizeToTray: boolean
   startWithWindows: boolean
   startMinimized: boolean
+  silentStart: boolean
   exitOnClose: boolean
   theme: 'dark' | 'light' | 'system'
   requireAdmin: boolean

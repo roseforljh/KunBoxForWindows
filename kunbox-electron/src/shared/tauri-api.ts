@@ -152,6 +152,12 @@ export const api = {
       isBackup: boolean;
       path: string;
     }>>('kernel_get_installed_versions'),
+    getCapabilities: () => invoke<{
+      version: string;
+      supportsNaive: boolean;
+      supportsIcmpProxy: boolean;
+      supportsBypassAction: boolean;
+    }>('kernel_get_capabilities'),
     getRemoteReleases: async (includePrerelease?: boolean) => {
       // Tauri returns RemoteRelease[] directly with camelCase
       const releases = await invoke<Array<{
@@ -203,6 +209,21 @@ export const api = {
     saveDomainRules: (rules: DomainRule[]): Promise<void> => invoke('domain_rules_save', { rules }),
     getProcessRules: (): Promise<ProcessRule[]> => invoke('process_rules_get'),
     saveProcessRules: (rules: ProcessRule[]): Promise<void> => invoke('process_rules_save', { rules })
+  },
+
+  updater: {
+    check: (): Promise<{ currentVersion: string; hasUpdate: boolean; version?: string; date?: string; body?: string }> => invoke('updater_check'),
+    downloadAndInstall: (): Promise<{ currentVersion: string; hasUpdate: boolean; version?: string; date?: string; body?: string }> => invoke('updater_download_and_install'),
+    onDownloadProgress: (callback: (progress: { chunkLength: number; contentLength: number }) => void) => {
+      const unlisten = listen<{ chunkLength: number; contentLength: number }>('updater:download-progress', (event) => {
+        callback(event.payload);
+      });
+      return () => { unlisten.then(fn => fn()); };
+    },
+    onDownloadFinished: (callback: () => void) => {
+      const unlisten = listen('updater:download-finished', () => callback());
+      return () => { unlisten.then(fn => fn()); };
+    }
   },
 
   window: {

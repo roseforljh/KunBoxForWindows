@@ -1,6 +1,6 @@
 use tauri::{AppHandle, Emitter, Manager, State};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use crate::state::AppState;
 
 #[cfg(windows)]
@@ -34,6 +34,15 @@ pub struct KernelVersion {
     pub is_alpha: bool,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct KernelCapabilities {
+    pub version: String,
+    pub supports_naive: bool,
+    pub supports_icmp_proxy: bool,
+    pub supports_bypass_action: bool,
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteRelease {
@@ -59,19 +68,62 @@ struct GithubAsset {
     browser_download_url: String,
 }
 
-fn get_kernel_dir(app: &AppHandle) -> Result<PathBuf, String> {
+fn get_data_kernel_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(app_data_dir.join("libs"))
+}
+
+fn get_bundle_kernel_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
     Ok(resource_dir.join("resources").join("libs"))
 }
 
+fn resolve_kernel_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let data_dir = get_data_kernel_dir(app)?;
+    if data_dir.join(KERNEL_FILENAME).exists() {
+        return Ok(data_dir);
+    }
+
+    let bundle_dir = get_bundle_kernel_dir(app)?;
+    if bundle_dir.join(KERNEL_FILENAME).exists() {
+        return Ok(bundle_dir);
+    }
+
+    Ok(data_dir)
+}
+
+fn get_kernel_dir_for_install(app: &AppHandle) -> Result<PathBuf, String> {
+    get_data_kernel_dir(app)
+}
+
 fn get_kernel_path(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(get_kernel_dir(app)?.join(KERNEL_FILENAME))
+    Ok(resolve_kernel_dir(app)?.join(KERNEL_FILENAME))
+}
+
+fn path_exists(path: &Path) -> bool {
+    fs::metadata(path).is_ok()
 }
 
 fn find_windows_asset<'a>(assets: &'a [GithubAsset], tag_name: &str) -> Option<&'a GithubAsset> {
     let version = tag_name.trim_start_matches('v');
     let expected_name = format!("sing-box-{}-windows-amd64.zip", version);
     assets.iter().find(|a| a.name == expected_name)
+}
+
+fn parse_semver_triplet(version: &str) -> Option<(u64, u64, u64)> {
+    let raw = version.trim().trim_start_matches('v');
+    let core = raw.split('-').next().unwrap_or(raw);
+    let mut it = core.split('.');
+    let major = it.next()?.parse::<u64>().ok()?;
+    let minor = it.next()?.parse::<u64>().ok()?;
+    let patch = it.next().unwrap_or("0").parse::<u64>().ok()?;
+    Some((major, minor, patch))
+}
+
+fn version_gte(version: &str, min: (u64, u64, u64)) -> bool {
+    parse_semver_triplet(version)
+        .map(|v| v >= min)
+        .unwrap_or(false)
 }
 
 #[tauri::command]
@@ -117,6 +169,48 @@ pub async fn kernel_get_local_version(app: AppHandle) -> Result<Option<KernelVer
     }
     
     Ok(None)
+}
+
+#[tauri::command]
+pub async fn kernel_get_capabilities(app: AppHandle) -> Result<KernelCapabilities, String> {
+    let kernel_path = get_kernel_path(&app)?;
+    if !kernel_path.exists() {
+        return Ok(KernelCapabilities::default());
+    }
+
+    #[cfg(windows)]
+    let output = tokio::process::Command::new(&kernel_path)
+        .arg("version")
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    #[cfg(not(windows))]
+    let output = tokio::process::Command::new(&kernel_path)
+        .arg("version")
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let version = if output.status.success() {
+        let version_str = String::from_utf8_lossy(&output.stdout);
+        version_str
+            .lines()
+            .find(|line| line.contains("version"))
+            .and_then(|line| line.split_whitespace().last())
+            .unwrap_or("unknown")
+            .to_string()
+    } else {
+        "unknown".to_string()
+    };
+
+    Ok(KernelCapabilities {
+        version: version.clone(),
+        supports_naive: version_gte(&version, (1, 13, 0)),
+        supports_icmp_proxy: version_gte(&version, (1, 13, 0)),
+        supports_bypass_action: version_gte(&version, (1, 13, 0)),
+    })
 }
 
 #[tauri::command]
@@ -274,7 +368,7 @@ pub async fn kernel_download(app: AppHandle, release: RemoteRelease) -> Result<s
     }
     
     // Extract zip
-    let kernel_dir = get_kernel_dir(&app)?;
+    let kernel_dir = get_kernel_dir_for_install(&app)?;
     fs::create_dir_all(&kernel_dir).map_err(|e| e.to_string())?;
     
     let cursor = std::io::Cursor::new(bytes);
@@ -284,11 +378,10 @@ pub async fn kernel_download(app: AppHandle, release: RemoteRelease) -> Result<s
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
         let name = file.name().to_string();
-        
+
         if name.ends_with("sing-box.exe") {
             let kernel_path = kernel_dir.join(KERNEL_FILENAME);
-            
-            // Backup existing
+
             if kernel_path.exists() {
                 let backup_path = kernel_dir.join("sing-box.exe.bak");
                 if backup_path.exists() {
@@ -296,13 +389,20 @@ pub async fn kernel_download(app: AppHandle, release: RemoteRelease) -> Result<s
                 }
                 let _ = fs::rename(&kernel_path, &backup_path);
             }
-            
+
             let mut outfile = fs::File::create(&kernel_path).map_err(|e| e.to_string())?;
             std::io::copy(&mut file, &mut outfile).map_err(|e| e.to_string())?;
-            
+
             log::info!("Kernel installed to {:?}", kernel_path);
             found = true;
-            break;
+            continue;
+        }
+
+        if name.ends_with("libcronet.dll") {
+            let dll_path = kernel_dir.join("libcronet.dll");
+            let mut outfile = fs::File::create(&dll_path).map_err(|e| e.to_string())?;
+            std::io::copy(&mut file, &mut outfile).map_err(|e| e.to_string())?;
+            log::info!("Naive runtime installed to {:?}", dll_path);
         }
     }
     
@@ -319,7 +419,7 @@ pub async fn kernel_download(app: AppHandle, release: RemoteRelease) -> Result<s
 
 #[tauri::command]
 pub async fn kernel_rollback(app: AppHandle) -> Result<serde_json::Value, String> {
-    let kernel_dir = get_kernel_dir(&app)?;
+    let kernel_dir = get_kernel_dir_for_install(&app)?;
     let kernel_path = kernel_dir.join(KERNEL_FILENAME);
     let backup_path = kernel_dir.join("sing-box.exe.bak");
     
@@ -345,9 +445,9 @@ pub async fn kernel_rollback(app: AppHandle) -> Result<serde_json::Value, String
 
 #[tauri::command]
 pub async fn kernel_can_rollback(app: AppHandle) -> Result<bool, String> {
-    let kernel_dir = get_kernel_dir(&app)?;
+    let kernel_dir = get_kernel_dir_for_install(&app)?;
     let backup_path = kernel_dir.join("sing-box.exe.bak");
-    Ok(backup_path.exists())
+    Ok(path_exists(&backup_path))
 }
 
 #[tauri::command]
@@ -385,9 +485,21 @@ pub async fn kernel_open_releases_page() -> Result<(), String> {
 
 #[tauri::command]
 pub async fn kernel_open_directory(app: AppHandle) -> Result<(), String> {
-    let kernel_dir = get_kernel_dir(&app)?;
-    fs::create_dir_all(&kernel_dir).ok();
-    open::that(&kernel_dir).map_err(|e| e.to_string())
+    let data_dir = get_data_kernel_dir(&app)?;
+    let bundle_dir = get_bundle_kernel_dir(&app)?;
+    let data_has_kernel = path_exists(&data_dir.join(KERNEL_FILENAME));
+    let bundle_has_kernel = path_exists(&bundle_dir.join(KERNEL_FILENAME));
+
+    let target_dir = if data_has_kernel {
+        data_dir
+    } else if bundle_has_kernel {
+        bundle_dir
+    } else {
+        fs::create_dir_all(&data_dir).ok();
+        data_dir
+    };
+
+    open::that(&target_dir).map_err(|e| e.to_string())
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
@@ -401,25 +513,30 @@ pub struct InstalledKernel {
 
 #[tauri::command]
 pub async fn kernel_get_installed_versions(app: AppHandle) -> Result<Vec<InstalledKernel>, String> {
-    let kernel_dir = get_kernel_dir(&app)?;
     let mut installed = Vec::new();
 
-    // Check main kernel
-    let kernel_path = kernel_dir.join(KERNEL_FILENAME);
-    if kernel_path.exists() {
-        if let Some(version_info) = get_kernel_version_info(&kernel_path).await {
+    let data_dir = get_data_kernel_dir(&app)?;
+    let bundle_dir = get_bundle_kernel_dir(&app)?;
+
+    let primary_kernel_path = if path_exists(&data_dir.join(KERNEL_FILENAME)) {
+        data_dir.join(KERNEL_FILENAME)
+    } else {
+        bundle_dir.join(KERNEL_FILENAME)
+    };
+
+    if path_exists(&primary_kernel_path) {
+        if let Some(version_info) = get_kernel_version_info(&primary_kernel_path).await {
             installed.push(InstalledKernel {
                 version: version_info.0,
                 version_detail: version_info.1,
                 is_backup: false,
-                path: kernel_path.to_string_lossy().to_string(),
+                path: primary_kernel_path.to_string_lossy().to_string(),
             });
         }
     }
 
-    // Check backup kernel
-    let backup_path = kernel_dir.join("sing-box.exe.bak");
-    if backup_path.exists() {
+    let backup_path = data_dir.join("sing-box.exe.bak");
+    if path_exists(&backup_path) {
         if let Some(version_info) = get_kernel_version_info(&backup_path).await {
             installed.push(InstalledKernel {
                 version: version_info.0,

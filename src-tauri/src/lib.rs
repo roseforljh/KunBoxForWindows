@@ -76,6 +76,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_log::Builder::default()
                 .level(log::LevelFilter::Info)
@@ -105,9 +106,14 @@ pub fn run() {
 
             app.manage(state);
 
-            // Show window after setup
+            // Show window after setup (silent start: tray only)
             if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
+                let settings = read_settings_sync(&data_dir);
+                if settings.silent_start {
+                    let _ = window.hide();
+                } else {
+                    let _ = window.show();
+                }
             }
 
             // Setup tray icon
@@ -183,6 +189,7 @@ pub fn run() {
             commands::get_run_as_admin,
             // Kernel
             commands::kernel_get_local_version,
+            commands::kernel_get_capabilities,
             commands::kernel_get_remote_releases,
             commands::kernel_download,
             commands::kernel_rollback,
@@ -191,6 +198,9 @@ pub fn run() {
             commands::kernel_open_releases_page,
             commands::kernel_open_directory,
             commands::kernel_get_installed_versions,
+            // Updater
+            commands::updater_check,
+            commands::updater_download_and_install,
             // Custom rules
             commands::custom_rules_get,
             commands::custom_rules_save,

@@ -294,8 +294,11 @@ export default function Settings() {
                   <SettingRow label="最小化到托盘">
                     <Toggle checked={settings.minimizeToTray} onChange={(v) => updateSetting('minimizeToTray', v)} />
                   </SettingRow>
-                  <SettingRow label="开机自启" isLast>
+                  <SettingRow label="开机自启">
                     <Toggle checked={settings.startWithWindows} onChange={(v) => updateSetting('startWithWindows', v)} />
+                  </SettingRow>
+                  <SettingRow label="静默启动（仅托盘）" isLast>
+                    <Toggle checked={settings.silentStart} onChange={(v) => updateSetting('silentStart', v)} />
                   </SettingRow>
                 </SettingCard>
 

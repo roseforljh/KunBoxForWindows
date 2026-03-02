@@ -28,8 +28,17 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDlCRjA0MkU4RTkwMDJBOTUKUldTVktnRHA2RUx3bTRRQ1JiSlN6MGsvckgxdjN1U0h5a2ZUMXFYS0NQNE5CTzBmMGJXbi85VlAK",
+      "endpoints": [
+        "https://github.com/roseforljh/KunBoxForWindows/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": ["msi", "nsis"],
     "icon": [
       "icons/32x32.png",

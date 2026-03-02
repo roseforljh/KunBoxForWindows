@@ -20,6 +20,13 @@ interface RemoteRelease {
   assetName: string
 }
 
+interface KernelCapabilities {
+  version: string
+  supportsNaive: boolean
+  supportsIcmpProxy: boolean
+  supportsBypassAction: boolean
+}
+
 interface ToastMessage {
   id: number
   message: string
@@ -35,6 +42,7 @@ export function KernelSettings() {
   const [localStable, setLocalStable] = useState<KernelVersion | null>(null)
   const [localAlpha, setLocalAlpha] = useState<KernelVersion | null>(null)
   const [remoteReleases, setRemoteReleases] = useState<RemoteRelease[]>([])
+  const [capabilities, setCapabilities] = useState<KernelCapabilities | null>(null)
   const [loading, setLoading] = useState(true)
   const [downloading, setDownloading] = useState(false)
   const [canRollback, setCanRollback] = useState(false)
@@ -52,16 +60,18 @@ export function KernelSettings() {
   const loadVersions = useCallback(async () => {
     setLoading(true)
     try {
-      const [stable, alpha, releases, rollbackStable, rollbackAlpha] = await Promise.all([
+      const [stable, alpha, releases, rollbackStable, rollbackAlpha, kernelCaps] = await Promise.all([
         window.api.kernel.getLocalVersion(false),
         window.api.kernel.getLocalVersion(true),
         window.api.kernel.getRemoteReleases(true),
         window.api.kernel.canRollback(false),
-        window.api.kernel.canRollback(true)
+        window.api.kernel.canRollback(true),
+        window.api.kernel.getCapabilities()
       ])
       setLocalStable(stable)
       setLocalAlpha(alpha)
       setRemoteReleases(releases)
+      setCapabilities(kernelCaps)
       setCanRollback(activeBranch === 'stable' ? rollbackStable : rollbackAlpha)
     } catch (err) {
       showToast('加载版本信息失败', 'error')
@@ -253,6 +263,32 @@ export function KernelSettings() {
                   </div>
                 </div>
               </div>
+
+              {currentLocal && capabilities && (
+                <div className="mb-6 p-4 rounded-xl bg-[var(--bg-tertiary)]/40 border border-[var(--glass-border)]">
+                  <div className="text-xs text-[var(--text-muted)] mb-2">1.13+ 能力探测</div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs">
+                    <div className="flex items-center justify-between rounded-lg px-3 py-2 bg-[var(--bg-tertiary)]/40">
+                      <span>NaiveProxy</span>
+                      <span className={capabilities.supportsNaive ? 'text-emerald-400' : 'text-amber-400'}>
+                        {capabilities.supportsNaive ? '支持' : '不支持'}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between rounded-lg px-3 py-2 bg-[var(--bg-tertiary)]/40">
+                      <span>ICMP 代理/分流</span>
+                      <span className={capabilities.supportsIcmpProxy ? 'text-emerald-400' : 'text-amber-400'}>
+                        {capabilities.supportsIcmpProxy ? '支持' : '不支持'}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between rounded-lg px-3 py-2 bg-[var(--bg-tertiary)]/40">
+                      <span>bypass action</span>
+                      <span className={capabilities.supportsBypassAction ? 'text-emerald-400' : 'text-amber-400'}>
+                        {capabilities.supportsBypassAction ? '支持' : '不支持'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Update Button - Only show when kernel is installed and update available */}
               {currentLocal && isUpdatable && currentRemote && (

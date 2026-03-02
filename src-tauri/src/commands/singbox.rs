@@ -1,5 +1,6 @@
 use tauri::{AppHandle, Emitter, Manager, State};
 use std::fs;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use futures_util::stream::{FuturesUnordered, StreamExt};
@@ -62,7 +63,7 @@ pub async fn singbox_start(app: AppHandle, state: State<'_, AppState>) -> Result
     let singbox_path = get_singbox_path(&app)?;
     
     if !singbox_path.exists() {
-        return Ok(CommandResult::err("sing-box.exe not found. Please install kernel first."));
+        return Ok(CommandResult::err("未检测到 sing-box 内核，请先到【设置 → 内核】下载并安装后再启动 VPN。"));
     }
 
     // Check if TUN mode is enabled and admin rights are required
@@ -87,14 +88,45 @@ pub async fn singbox_start(app: AppHandle, state: State<'_, AppState>) -> Result
     }
 
     let config_path = state.config_dir.join("config.json");
-    
+
+    let config_path_str = config_path.to_str()
+        .ok_or_else(|| "Config path contains invalid UTF-8 characters".to_string())?;
+
+    // Preflight check: show clear error to UI before trying to run
+    #[cfg(windows)]
+    let check_output = Command::new(&singbox_path)
+        .args(["check", "-c", config_path_str])
+        .current_dir(&state.config_dir)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    #[cfg(not(windows))]
+    let check_output = Command::new(&singbox_path)
+        .args(["check", "-c", config_path_str])
+        .current_dir(&state.config_dir)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !check_output.status.success() {
+        let stderr = String::from_utf8_lossy(&check_output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&check_output.stdout).trim().to_string();
+        let detail = if !stderr.is_empty() { stderr } else { stdout };
+        let message = if detail.is_empty() {
+            "内核配置检查失败，请检查节点与DNS设置".to_string()
+        } else {
+            format!("内核配置检查失败: {}", detail)
+        };
+        return Ok(CommandResult::err(message));
+    }
+
     // Update state
     *state.proxy_state.lock().await = ProxyState::Connecting;
     let _ = app.emit("singbox:state", "connecting");
 
     // Start sing-box process
-    let config_path_str = config_path.to_str()
-        .ok_or_else(|| "Config path contains invalid UTF-8 characters".to_string())?;
 
     #[cfg(windows)]
     let mut child = Command::new(&singbox_path)
@@ -258,10 +290,11 @@ pub async fn singbox_disable_system_proxy() -> Result<CommandResult, String> {
 
 /// 判断节点类型是否是代理类型
 fn is_proxy_type(node_type: &str) -> bool {
-    matches!(node_type, 
-        "shadowsocks" | "vmess" | "vless" | "trojan" | 
+    matches!(node_type,
+        "shadowsocks" | "vmess" | "vless" | "trojan" |
         "hysteria" | "hysteria2" | "tuic" | "anytls" |
-        "http" | "socks" | "wireguard" | "ssh" | "shadowtls"
+        "http" | "socks" | "wireguard" | "ssh" | "shadowtls" |
+        "naive"
     )
 }
 
@@ -272,16 +305,14 @@ fn process_node(node: &serde_json::Value) -> serde_json::Value {
         let node_type = obj.get("type").and_then(|t| t.as_str()).unwrap_or("").to_string();
         let server = obj.get("server").and_then(|s| s.as_str()).unwrap_or("").to_string();
         let port = obj.get("server_port").and_then(|p| p.as_u64()).unwrap_or(0);
-        
-        // vless/vmess/trojan 不需要 method 字段
+
         if node_type != "shadowsocks" && node_type != "shadowsocksr" {
             obj.remove("method");
         }
-        
-        // 为需要 TLS 的节点添加配置（如果没有的话）
+
         if !obj.contains_key("tls") {
             match node_type.as_str() {
-                "hysteria2" | "hysteria" | "tuic" => {
+                "hysteria2" | "hysteria" | "tuic" | "naive" => {
                     obj.insert("tls".to_string(), serde_json::json!({
                         "enabled": true,
                         "server_name": server,
@@ -300,13 +331,54 @@ fn process_node(node: &serde_json::Value) -> serde_json::Value {
                 _ => {}
             }
         }
-        
-        // vless 需要 packet_encoding
+
         if node_type == "vless" && !obj.contains_key("packet_encoding") {
             obj.insert("packet_encoding".to_string(), serde_json::Value::String("xudp".to_string()));
         }
     }
     node
+}
+
+fn build_dns_server(address: &str, tag: &str, detour: &str) -> serde_json::Value {
+    let value = address.trim();
+    if value.eq_ignore_ascii_case("local") {
+        return serde_json::json!({ "tag": tag, "type": "local" });
+    }
+    if value.eq_ignore_ascii_case("fakeip") {
+        return serde_json::json!({ "tag": tag, "type": "fakeip" });
+    }
+
+    let (server_type, server) = if let Some(v) = value.strip_prefix("udp://") {
+        ("udp", v.to_string())
+    } else if let Some(v) = value.strip_prefix("tcp://") {
+        ("tcp", v.to_string())
+    } else if let Some(v) = value.strip_prefix("tls://") {
+        ("tls", v.to_string())
+    } else if let Some(v) = value.strip_prefix("https://") {
+        ("https", v.trim_start_matches("https://").trim_end_matches("/dns-query").to_string())
+    } else if let Some(v) = value.strip_prefix("h3://") {
+        ("h3", v.trim_start_matches("h3://").trim_end_matches("/dns-query").to_string())
+    } else if let Some(v) = value.strip_prefix("quic://") {
+        ("quic", v.to_string())
+    } else if value.contains("://") {
+        ("udp", value.to_string())
+    } else if value.contains("/dns-query") {
+        ("https", value.trim_start_matches("https://").trim_end_matches("/dns-query").to_string())
+    } else {
+        ("udp", value.to_string())
+    };
+
+    let mut server_obj = serde_json::json!({
+        "tag": tag,
+        "type": server_type,
+        "server": server
+    });
+
+    if detour != "direct" {
+        server_obj["detour"] = serde_json::Value::String(detour.to_string());
+    }
+
+    server_obj
 }
 
 /// 配置文件信息（用于跨配置分流）
@@ -433,38 +505,23 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
     // Build config - 使用 sing-box 1.11+ 新格式
     let listen_addr = if settings.allow_lan { "0.0.0.0" } else { "127.0.0.1" };
     
-    // 构建 DNS 服务器列表
+    // 构建 DNS 服务器列表（sing-box 1.12+ 新格式）
     let mut dns_servers = vec![
-        serde_json::json!({
-            "tag": "dns-local",
-            "address": settings.local_dns,
-            "detour": "direct"
-        }),
-        serde_json::json!({
-            "tag": "dns-remote",
-            "address": settings.remote_dns,
-            "detour": "PROXY"
-        })
+        build_dns_server(&settings.local_dns, "dns-local", "direct"),
+        build_dns_server(&settings.remote_dns, "dns-remote", "PROXY"),
     ];
-    
-    // 如果启用 FakeDNS，添加 fakeip 服务器
+
+    // 构建 DNS 规则
+    let mut dns_rules: Vec<serde_json::Value> = Vec::new();
+
+    // FakeDNS 规则
     if settings.fake_dns {
         dns_servers.push(serde_json::json!({
             "tag": "dns-fakeip",
-            "address": "fakeip"
+            "type": "fakeip",
+            "inet4_range": "198.18.0.0/15",
+            "inet6_range": "fc00::/18"
         }));
-    }
-    
-    // 构建 DNS 规则
-    let mut dns_rules: Vec<serde_json::Value> = vec![
-        serde_json::json!({
-            "outbound": "any",
-            "server": "dns-local"
-        })
-    ];
-    
-    // FakeDNS 规则：非中国域名使用 fakeip
-    if settings.fake_dns {
         dns_rules.push(serde_json::json!({
             "query_type": ["A", "AAAA"],
             "server": "dns-fakeip"
@@ -505,21 +562,15 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
         }));
     }
     
-    let mut dns_config = serde_json::json!({
+    let dns_final = if settings.fake_dns { "dns-fakeip" } else { "dns-remote" };
+    let dns_config = serde_json::json!({
         "servers": dns_servers,
         "rules": dns_rules,
-        "final": if settings.fake_dns { "dns-fakeip" } else { "dns-remote" },
+        "final": dns_final,
         "independent_cache": true
     });
-    
-    // 如果启用 FakeDNS，添加 fakeip 配置
-    if settings.fake_dns {
-        dns_config["fakeip"] = serde_json::json!({
-            "enabled": true,
-            "inet4_range": "198.18.0.0/15",
-            "inet6_range": "fc00::/18"
-        });
-    }
+
+    // 避免 1.13+ 硬错误，始终不生成已弃用 outbound DNS rule item
     
     let mut config = serde_json::json!({
         "log": {
@@ -541,6 +592,7 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
         "inbounds": inbounds,
         "route": {
             "auto_detect_interface": true,
+            "default_domain_resolver": "dns-local",
             "final": if settings.default_rule == "proxy" { "PROXY" } else { &settings.default_rule }
         }
     });
@@ -903,7 +955,13 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
     Ok(CommandResult::ok())
 }
 
-fn get_singbox_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+fn get_singbox_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let data_kernel = app_data_dir.join("libs").join("sing-box.exe");
+    if data_kernel.exists() {
+        return Ok(data_kernel);
+    }
+
     let resource_path = app.path().resource_dir().map_err(|e| e.to_string())?;
     Ok(resource_path.join("resources/libs/sing-box.exe"))
 }

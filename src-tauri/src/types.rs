@@ -105,6 +105,8 @@ pub struct AppSettings {
     pub start_with_windows: bool,
     #[serde(rename = "startMinimized")]
     pub start_minimized: bool,
+    #[serde(rename = "silentStart", default)]
+    pub silent_start: bool,
     #[serde(rename = "exitOnClose")]
     pub exit_on_close: bool,
     pub theme: String,
@@ -135,6 +137,7 @@ impl Default for AppSettings {
             minimize_to_tray: true,
             start_with_windows: false,
             start_minimized: false,
+            silent_start: false,
             exit_on_close: false,
             theme: "dark".to_string(),
             require_admin: false,

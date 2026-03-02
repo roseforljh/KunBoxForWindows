@@ -11,9 +11,10 @@ import Logs from './components/Logs'
 import RuleSets from './components/RuleSets'
 import DomainRules from './components/DomainRules'
 import ProcessRules from './components/ProcessRules'
-import logoImg from './assets/logo.png'
+import About from './components/About'
+import { Logo } from './components/Logo'
 
-type Page = 'dashboard' | 'nodes' | 'profiles' | 'settings' | 'logs' | 'rulesets' | 'domainrules' | 'processrules'
+type Page = 'dashboard' | 'nodes' | 'profiles' | 'settings' | 'logs' | 'rulesets' | 'domainrules' | 'processrules' | 'about'
 type Theme = 'dark' | 'light' | 'system'
 
 interface IconHandle {
@@ -301,7 +302,8 @@ const navItems = [
 
 const footerItems = [
   { id: 'settings' as Page, Icon: SettingsIcon, label: '设置' },
-  { id: 'logs' as Page, Icon: FileTextIcon, label: '日志' }
+  { id: 'logs' as Page, Icon: FileTextIcon, label: '日志' },
+  { id: 'about' as Page, Icon: FileTextIcon, label: '关于' }
 ]
 
 function BokehBackground() {
@@ -573,6 +575,7 @@ export default function App() {
       case 'rulesets': return <RuleSets />
       case 'domainrules': return <DomainRules />
       case 'processrules': return <ProcessRules onNavigate={handleNavigate} />
+      case 'about': return <About />
     }
   }
 
@@ -590,11 +593,7 @@ export default function App() {
           className={`glass-sidebar flex-shrink-0 flex flex-col overflow-hidden transition-[width] duration-300 ease-in-out ${sidebarCollapsed ? 'w-[72px]' : 'w-64'}`}
         >
           <div className="flex items-center gap-3 p-4 min-h-[68px] overflow-hidden">
-            <img 
-              src={logoImg} 
-              alt="KunBox" 
-              className="w-8 h-8 flex-shrink-0"
-            />
+            <div className="flex-shrink-0"><Logo size={32} animated={false} /></div>
             <div className={`transition-all duration-300 overflow-hidden ${sidebarCollapsed ? 'w-0 opacity-0' : 'w-auto opacity-100'}`}>
               <div className="text-lg font-bold whitespace-nowrap" style={{ color: 'var(--text-primary)' }}>KunBox</div>
               <div className="text-xs whitespace-nowrap" style={{ color: 'var(--text-muted)' }}>Proxy Client</div>
