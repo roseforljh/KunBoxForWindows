@@ -1,5 +1,7 @@
 type API = import('@shared/tauri-api').API
 
+declare const __APP_VERSION__: string
+
 interface Window {
   api: API
 }

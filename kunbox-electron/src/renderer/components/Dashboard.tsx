@@ -1,19 +1,30 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Download, Upload, Wifi, Server, Play, Square, RotateCw, Zap, Loader2, AlertTriangle } from 'lucide-react'
 import { useConnectionStore } from '../stores/connectionStore'
+import { useShallow } from 'zustand/react/shallow'
 import { useNodesStore } from '../stores/nodesStore'
 import { formatBytes, formatDuration, cn } from '../lib/utils'
 import { useToast } from './ui/Toast'
 import type { Profile } from '@shared/types'
 
 export default function Dashboard() {
-  const { state, traffic, connect, disconnect, needsRestart } = useConnectionStore()
+  const { state, traffic, connect, disconnect, needsRestart, lastError } = useConnectionStore(
+    useShallow((s) => ({
+      state: s.state,
+      traffic: s.traffic,
+      connect: s.connect,
+      disconnect: s.disconnect,
+      needsRestart: s.needsRestart,
+      lastError: s.lastError,
+    }))
+  )
   const { nodes, activeNodeTag, loadNodes, testNodeLatency } = useNodesStore()
   const [isAnimating, setIsAnimating] = useState(false)
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [isTesting, setIsTesting] = useState(false)
   const [trafficHistory, setTrafficHistory] = useState<{ download: number; upload: number }[]>([])
+  const errorToastGuardRef = useRef(false)
   const toast = useToast()
 
   const isOn = state === 'connected'
@@ -145,12 +156,17 @@ export default function Dashboard() {
     }
   }, [isConnected, activeNodeTag, currentLatency, isTesting, testLatency])
 
-  // Show error toast when state changes to error
+  // Show backend error details once when state changes to error
   useEffect(() => {
     if (state === 'error') {
-      toast.error('连接出错，请检查配置')
+      if (!errorToastGuardRef.current) {
+        errorToastGuardRef.current = true
+        toast.error(lastError || '连接出错，请检查配置')
+      }
+      return
     }
-  }, [state, toast])
+    errorToastGuardRef.current = false
+  }, [state, lastError, toast])
 
   // Calculate health score based on latency
   const getHealthScore = () => {

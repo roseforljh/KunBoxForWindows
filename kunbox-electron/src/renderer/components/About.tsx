@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Download, Info, RefreshCw } from 'lucide-react'
 import { useToast } from './ui/Toast'
 
@@ -16,25 +16,34 @@ export default function About() {
   const [updating, setUpdating] = useState(false)
   const [progress, setProgress] = useState(0)
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
+  const checkingRef = useRef(false)
 
   const hasUpdate = updateInfo?.hasUpdate ?? false
 
-  const checkUpdate = useCallback(async () => {
+  const checkUpdate = useCallback(async (silent = false) => {
+    if (checkingRef.current || updating) return
+
+    checkingRef.current = true
     setChecking(true)
     try {
       const info = await window.api.updater.check()
       setUpdateInfo(info)
-      if (!info.hasUpdate) {
-        toast.success('当前已是最新版本')
-      } else {
-        toast.info(`检测到新版本 ${info.version}`)
+      if (!silent) {
+        if (!info.hasUpdate) {
+          toast.success('当前已是最新版本')
+        } else {
+          toast.info(`检测到新版本 ${info.version}`)
+        }
       }
     } catch (e) {
-      toast.error(`检查更新失败: ${String(e)}`)
+      if (!silent) {
+        toast.error(`检查更新失败: ${String(e)}`)
+      }
     } finally {
+      checkingRef.current = false
       setChecking(false)
     }
-  }, [toast])
+  }, [toast, updating])
 
   const installUpdate = useCallback(async () => {
     if (updating) return
@@ -62,13 +71,11 @@ export default function About() {
       setProgress(100)
     })
 
-    checkUpdate()
-
     return () => {
       offProgress()
       offFinished()
     }
-  }, [checkUpdate])
+  }, [])
 
   const latestLabel = useMemo(() => {
     if (!updateInfo) return '-'
@@ -109,7 +116,9 @@ export default function About() {
         <div className="glass-card rounded-2xl p-6 space-y-4">
           <div className="flex items-center gap-3">
             <button
-              onClick={checkUpdate}
+              onClick={() => {
+                void checkUpdate(false)
+              }}
               disabled={checking || updating}
               className="glass-btn h-11 px-5 rounded-xl text-sm font-medium flex items-center gap-2 disabled:opacity-50"
             >

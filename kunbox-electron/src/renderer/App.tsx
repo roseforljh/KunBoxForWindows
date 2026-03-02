@@ -288,7 +288,7 @@ function TopBar() {
           className="text-xs px-2 py-0.5 rounded"
           style={{ color: 'var(--text-muted)', background: 'var(--bg-hover)' }}
         >
-          v1.0.0
+          v{__APP_VERSION__}
         </span>
       </div>
 

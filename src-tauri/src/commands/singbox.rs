@@ -547,7 +547,7 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
         }));
     }
     
-    let dns_final = if settings.fake_dns { "dns-fakeip" } else { "dns-remote" };
+    let dns_final = "dns-remote";
     let dns_config = serde_json::json!({
         "servers": dns_servers,
         "rules": dns_rules,
