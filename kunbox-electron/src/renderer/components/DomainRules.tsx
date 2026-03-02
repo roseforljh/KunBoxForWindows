@@ -12,23 +12,15 @@ import {
   Server,
   FileText,
   Check,
-  XCircle,
-  AlertCircle,
   Loader2,
   Search,
   ChevronDown
 } from 'lucide-react'
 import { Modal, ModalButton } from './ui/Modal'
 import { useNodesStore } from '../stores/nodesStore'
-import type { Profile, DomainRule, DomainRuleType, OutboundMode } from '@shared/types'
-
-const fastTransition = { duration: 0.15, ease: [0.4, 0, 0.2, 1] as const }
-
-interface ToastMessage {
-  id: number
-  message: string
-  type: 'success' | 'error' | 'info'
-}
+import type { DomainRule, DomainRuleType, OutboundMode } from '@shared/types'
+import { useProfiles } from '../lib/useProfiles'
+import { useToast } from './ui/Toast'
 
 // Searchable Select Component
 interface SearchableSelectProps {
@@ -145,10 +137,10 @@ export default function DomainRules() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null)
   const [editingRule, setEditingRule] = useState<DomainRule | null>(null)
-  const [toasts, setToasts] = useState<ToastMessage[]>([])
 
-  const [profiles, setProfiles] = useState<Profile[]>([])
+  const { profiles, loadProfiles } = useProfiles()
   const [isLoadingData, setIsLoadingData] = useState(false)
+  const toast = useToast()
 
   const { allNodes, loadAllNodes } = useNodesStore()
 
@@ -182,39 +174,27 @@ export default function DomainRules() {
     loadRules()
   }, [loadRules])
 
-  const loadProfiles = async () => {
+  const loadProfilesSafe = useCallback(async () => {
     try {
-      const list = await window.api.profile.list()
-      setProfiles(list)
+      await loadProfiles()
     } catch (error) {
       console.error('Failed to load profiles:', error)
     }
-  }
+  }, [loadProfiles])
 
   const loadAllData = useCallback(async () => {
     setIsLoadingData(true)
     try {
-      await Promise.all([loadAllNodes(), loadProfiles()])
+      await Promise.all([loadAllNodes(), loadProfilesSafe()])
     } finally {
       setIsLoadingData(false)
     }
-  }, [loadAllNodes])
+  }, [loadAllNodes, loadProfilesSafe])
 
   useEffect(() => {
     loadAllData()
   }, [loadAllData])
 
-  const showToast = useCallback(
-    (message: string, type: 'success' | 'error' | 'info' = 'info') => {
-      const id = Date.now()
-      // Only keep the latest toast
-      setToasts([{ id, message, type }])
-      setTimeout(() => {
-        setToasts((prev) => prev.filter((t) => t.id !== id))
-      }, 3000)
-    },
-    []
-  )
 
   const parseSmartDomainType = (input: string): DomainRuleType => {
     const trimmed = input.trim()
@@ -330,7 +310,7 @@ export default function DomainRules() {
       const target = rules.find((r) => r.id === deleteTargetId)
       const newRules = rules.filter((r) => r.id !== deleteTargetId)
       saveRules(newRules)
-      showToast(`已删除规则「${target?.name || target?.value}」`, 'success')
+      toast.success(`已删除规则「${target?.name || target?.value}」`)
       setDeleteTargetId(null)
     }
     setShowDeleteConfirm(false)
@@ -365,10 +345,7 @@ export default function DomainRules() {
         dialogData.outboundMode === 'profile') &&
       !dialogData.outboundValue
     ) {
-      showToast(
-        dialogData.outboundMode === 'node' ? '请选择节点' : '请选择配置',
-        'error'
-      )
+      toast.error(dialogData.outboundMode === 'node' ? '请选择节点' : '请选择配置')
       return
     }
 
@@ -390,7 +367,7 @@ export default function DomainRules() {
           : r
       )
       saveRules(newRules)
-      showToast(`规则「${finalName}」已更新`, 'success')
+      toast.success(`规则「${finalName}」已更新`)
     } else {
       const newRule: DomainRule = {
         id: Date.now().toString(),
@@ -402,7 +379,7 @@ export default function DomainRules() {
         enabled: true
       }
       saveRules([...rules, newRule])
-      showToast(`规则「${finalName}」已添加`, 'success')
+      toast.success(`规则「${finalName}」已添加`)
     }
     setShowAddDialog(false)
   }
@@ -809,39 +786,6 @@ export default function DomainRules() {
         </p>
       </Modal>
 
-      {/* Toast Notifications */}
-      <AnimatePresence>
-        {toasts.map((toast, index) => (
-          <motion.div
-            key={toast.id}
-            initial={{ opacity: 0, y: 30 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 10 }}
-            transition={fastTransition}
-            style={{ bottom: `${32 + index * 60}px` }}
-            className="fixed left-1/2 -translate-x-1/2 z-[200] px-4 py-3 glass-card rounded-xl border border-[var(--glass-border)] shadow-xl flex items-center gap-3"
-          >
-            {toast.type === 'success' && (
-              <div className="w-6 h-6 rounded-full bg-emerald-500/20 flex items-center justify-center">
-                <Check className="w-4 h-4 text-emerald-400" />
-              </div>
-            )}
-            {toast.type === 'error' && (
-              <div className="w-6 h-6 rounded-full bg-red-500/20 flex items-center justify-center">
-                <XCircle className="w-4 h-4 text-red-400" />
-              </div>
-            )}
-            {toast.type === 'info' && (
-              <div className="w-6 h-6 rounded-full bg-blue-500/20 flex items-center justify-center">
-                <AlertCircle className="w-4 h-4 text-blue-400" />
-              </div>
-            )}
-            <p className="text-sm font-medium text-[var(--text-primary)]">
-              {toast.message}
-            </p>
-          </motion.div>
-        ))}
-      </AnimatePresence>
     </div>
   )
 }

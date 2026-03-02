@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Search, RefreshCw, Check, Loader2, Zap, MoreVertical, Edit3, Share2, Trash2, Filter, Plus, X } from 'lucide-react'
 import { useNodesStore } from '../stores/nodesStore'
@@ -8,7 +8,8 @@ import { NodeDetailModal } from './ui/NodeDetailModal'
 import { NodeFilterModal } from './ui/NodeFilterModal'
 import { AddNodeModal } from './ui/AddNodeModal'
 import { useToast } from './ui/Toast'
-import type { SingBoxOutbound, Profile } from '@shared/types'
+import type { SingBoxOutbound } from '@shared/types'
+import { useProfiles } from '../lib/useProfiles'
 
 interface NodeItem extends SingBoxOutbound {
   latencyMs?: number | null
@@ -56,27 +57,26 @@ export default function Nodes() {
 
   const [addNodeModalOpen, setAddNodeModalOpen] = useState(false)
 
-  const [profiles, setProfiles] = useState<Profile[]>([])
+  const { profiles, loadProfiles } = useProfiles()
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null)
   const toast = useToast()
 
-  useEffect(() => {
-    loadNodes()
-    loadProfiles()
-  }, [loadNodes])
-
-  const loadProfiles = async () => {
+  const loadProfilesSafe = useCallback(async () => {
     try {
-      const list = await window.api.profile.list()
-      setProfiles(list)
+      const list = await loadProfiles()
       if (list.length > 0) {
-        const active = list.find((p: Profile) => p.enabled) || list[0]
+        const active = list.find((p) => p.enabled) || list[0]
         setActiveProfileId(active?.id || null)
       }
     } catch (error) {
       console.error('Failed to load profiles:', error)
     }
-  }
+  }, [loadProfiles])
+
+  useEffect(() => {
+    loadNodes()
+    void loadProfilesSafe()
+  }, [loadNodes, loadProfilesSafe])
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -205,7 +205,7 @@ export default function Nodes() {
     try {
       await window.api.node.add(link, target)
       await loadNodes()
-      await loadProfiles()
+      await loadProfilesSafe()
       toast.showRestartToast('节点添加成功')
     } catch (err) {
       toast.error(`添加失败: ${err}`)

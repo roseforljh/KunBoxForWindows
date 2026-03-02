@@ -113,6 +113,12 @@ pub struct AppSettings {
     /// If true, the app will auto-restart as admin on startup when not elevated
     #[serde(rename = "requireAdmin", default)]
     pub require_admin: bool,
+    #[serde(rename = "enableRuntimeLogs", default = "default_enable_runtime_logs")]
+    pub enable_runtime_logs: bool,
+}
+
+fn default_enable_runtime_logs() -> bool {
+    true
 }
 
 impl Default for AppSettings {
@@ -141,6 +147,7 @@ impl Default for AppSettings {
             exit_on_close: false,
             theme: "dark".to_string(),
             require_admin: false,
+            enable_runtime_logs: true,
         }
     }
 }

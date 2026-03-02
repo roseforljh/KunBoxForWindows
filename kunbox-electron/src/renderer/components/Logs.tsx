@@ -4,15 +4,61 @@ import type { LogEntry } from '@shared/types'
 
 export default function Logs() {
   const [logs, setLogs] = useState<LogEntry[]>([])
+  const [logsEnabled, setLogsEnabled] = useState(true)
   const containerRef = useRef<HTMLDivElement>(null)
+  const pendingLogsRef = useRef<LogEntry[]>([])
 
   useEffect(() => {
-    const unsubscribe = window.api.singbox.onLog((entry: LogEntry) => {
-      setLogs((prev) => [...prev.slice(-499), entry])
+    let mounted = true
+
+    window.api.settings.get().then((settings) => {
+      if (mounted) {
+        setLogsEnabled(settings.enableRuntimeLogs)
+      }
+    }).catch((err) => {
+      console.error('Failed to load runtime log setting:', err)
     })
 
-    return () => unsubscribe()
+    const onRuntimeLogsChange = (event: Event) => {
+      const enabled = (event as CustomEvent<{ enabled: boolean }>).detail?.enabled
+      if (typeof enabled === 'boolean') {
+        setLogsEnabled(enabled)
+        if (!enabled) {
+          setLogs([])
+        }
+      }
+    }
+
+    window.addEventListener('runtime-logs-change', onRuntimeLogsChange as EventListener)
+
+    return () => {
+      mounted = false
+      window.removeEventListener('runtime-logs-change', onRuntimeLogsChange as EventListener)
+    }
   }, [])
+
+  useEffect(() => {
+    if (!logsEnabled) {
+      pendingLogsRef.current = []
+      return
+    }
+
+    const unsubscribe = window.api.singbox.onLog((entry: LogEntry) => {
+      pendingLogsRef.current.push(entry)
+    })
+
+    const flushTimer = window.setInterval(() => {
+      if (pendingLogsRef.current.length === 0) return
+      const chunk = pendingLogsRef.current.splice(0, pendingLogsRef.current.length)
+      setLogs((prev) => [...prev, ...chunk].slice(-500))
+    }, 150)
+
+    return () => {
+      unsubscribe()
+      clearInterval(flushTimer)
+      pendingLogsRef.current = []
+    }
+  }, [logsEnabled])
 
   useEffect(() => {
     if (containerRef.current) {
@@ -57,7 +103,14 @@ export default function Logs() {
         ref={containerRef}
         className="flex-1 glass-card p-5 rounded-2xl overflow-auto font-mono text-xs"
       >
-        {logs.length === 0 ? (
+        {!logsEnabled ? (
+          <div className="h-full flex flex-col items-center justify-center">
+            <div className="w-16 h-16 rounded-2xl bg-[var(--bg-elevated)] flex items-center justify-center mb-3">
+              <FileText className="w-7 h-7 text-[var(--text-faint)]" />
+            </div>
+            <p className="text-[var(--text-faint)] font-sans text-sm">日志记录已关闭（可在设置 {'>'} 系统中开启）</p>
+          </div>
+        ) : logs.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center">
             <div className="w-16 h-16 rounded-2xl bg-[var(--bg-elevated)] flex items-center justify-center mb-3">
               <FileText className="w-7 h-7 text-[var(--text-faint)]" />

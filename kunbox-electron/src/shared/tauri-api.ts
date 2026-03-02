@@ -3,6 +3,29 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, emit } from '@tauri-apps/api/event';
 import type { AppSettings, Profile, SingBoxOutbound, ProxyState, TrafficStats, LogEntry, DomainRule, CustomRules, NodeWithProfile } from './types';
 
+function bindUnlisten(unlistenPromise: Promise<() => void>) {
+  let cancelled = false;
+  let unlistenFn: (() => void) | null = null;
+
+  void unlistenPromise
+    .then((fn) => {
+      if (cancelled) {
+        fn();
+      } else {
+        unlistenFn = fn;
+      }
+    })
+    .catch(() => {});
+
+  return () => {
+    cancelled = true;
+    if (unlistenFn) {
+      unlistenFn();
+      unlistenFn = null;
+    }
+  };
+}
+
 export const api = {
   singbox: {
     start: () => invoke<{ success: boolean; error?: string }>('singbox_start'),
@@ -15,19 +38,19 @@ export const api = {
       const unlisten = listen<string>('singbox:state', (event) => {
         callback(event.payload as ProxyState);
       });
-      return () => { unlisten.then(fn => fn()); };
+      return bindUnlisten(unlisten);
     },
     onTraffic: (callback: (stats: TrafficStats) => void) => {
       const unlisten = listen<TrafficStats>('singbox:traffic', (event) => {
         callback(event.payload);
       });
-      return () => { unlisten.then(fn => fn()); };
+      return bindUnlisten(unlisten);
     },
     onLog: (callback: (entry: LogEntry) => void) => {
       const unlisten = listen<LogEntry>('singbox:log', (event) => {
         callback(event.payload);
       });
-      return () => { unlisten.then(fn => fn()); };
+      return bindUnlisten(unlisten);
     },
     testSelectorLatency: (selectorTag: string, testUrl?: string): Promise<{
       success: boolean;
@@ -42,7 +65,7 @@ export const api = {
       const unlisten = listen<{ selector: string; node: string; delay: number; stage: 'first' | 'final' }>('singbox:selector-switch', (event) => {
         callback(event.payload);
       });
-      return () => { unlisten.then(fn => fn()); };
+      return bindUnlisten(unlisten);
     }
   },
 
@@ -53,35 +76,35 @@ export const api = {
     },
     onVpnStart: (callback: () => void) => {
       const unlisten = listen('tray-vpn-start', () => callback());
-      return () => { unlisten.then(fn => fn()); };
+      return bindUnlisten(unlisten);
     },
     onVpnStop: (callback: () => void) => {
       const unlisten = listen('tray-vpn-stop', () => callback());
-      return () => { unlisten.then(fn => fn()); };
+      return bindUnlisten(unlisten);
     },
     onVpnRestart: (callback: () => void) => {
       const unlisten = listen('tray-vpn-restart', () => callback());
-      return () => { unlisten.then(fn => fn()); };
+      return bindUnlisten(unlisten);
     },
     onProxyEnable: (callback: () => void) => {
       const unlisten = listen('tray-proxy-enable', () => callback());
-      return () => { unlisten.then(fn => fn()); };
+      return bindUnlisten(unlisten);
     },
     onProxyDisable: (callback: () => void) => {
       const unlisten = listen('tray-proxy-disable', () => callback());
-      return () => { unlisten.then(fn => fn()); };
+      return bindUnlisten(unlisten);
     },
     onTunEnable: (callback: () => void) => {
       const unlisten = listen('tray-tun-enable', () => callback());
-      return () => { unlisten.then(fn => fn()); };
+      return bindUnlisten(unlisten);
     },
     onTunDisable: (callback: () => void) => {
       const unlisten = listen('tray-tun-disable', () => callback());
-      return () => { unlisten.then(fn => fn()); };
+      return bindUnlisten(unlisten);
     },
     onQuit: (callback: () => void) => {
       const unlisten = listen('tray-quit', () => callback());
-      return () => { unlisten.then(fn => fn()); };
+      return bindUnlisten(unlisten);
     }
   },
 
@@ -179,17 +202,17 @@ export const api = {
       const unlisten = listen<{ downloaded: number; total: number; percent: number }>('kernel:download-progress', (event) => {
         callback(event.payload);
       });
-      return () => { unlisten.then(fn => fn()); };
+      return bindUnlisten(unlisten);
     },
     onDownloadComplete: (callback: () => void) => {
       const unlisten = listen('kernel:download-complete', () => callback());
-      return () => { unlisten.then(fn => fn()); };
+      return bindUnlisten(unlisten);
     },
     onDownloadError: (callback: (error: string) => void) => {
       const unlisten = listen<string>('kernel:download-error', (event) => {
         callback(event.payload);
       });
-      return () => { unlisten.then(fn => fn()); };
+      return bindUnlisten(unlisten);
     }
   },
 
@@ -209,17 +232,18 @@ export const api = {
   },
 
   updater: {
+    getCurrentVersion: (): Promise<string> => invoke('updater_get_current_version'),
     check: (): Promise<{ currentVersion: string; hasUpdate: boolean; version?: string; date?: string; body?: string }> => invoke('updater_check'),
     downloadAndInstall: (): Promise<{ currentVersion: string; hasUpdate: boolean; version?: string; date?: string; body?: string }> => invoke('updater_download_and_install'),
     onDownloadProgress: (callback: (progress: { chunkLength: number; contentLength: number }) => void) => {
       const unlisten = listen<{ chunkLength: number; contentLength: number }>('updater:download-progress', (event) => {
         callback(event.payload);
       });
-      return () => { unlisten.then(fn => fn()); };
+      return bindUnlisten(unlisten);
     },
     onDownloadFinished: (callback: () => void) => {
       const unlisten = listen('updater:download-finished', () => callback());
-      return () => { unlisten.then(fn => fn()); };
+      return bindUnlisten(unlisten);
     }
   },
 

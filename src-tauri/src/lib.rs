@@ -200,6 +200,7 @@ pub fn run() {
             commands::kernel_open_directory,
             commands::kernel_get_installed_versions,
             // Updater
+            commands::updater_get_current_version,
             commands::updater_check,
             commands::updater_download_and_install,
             // Custom rules

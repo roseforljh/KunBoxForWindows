@@ -2,6 +2,7 @@ import { createContext, useContext, useState, useCallback, ReactNode } from 'rea
 import { motion, AnimatePresence } from 'framer-motion'
 import { Check, XCircle, AlertCircle, Info, RefreshCw } from 'lucide-react'
 import { useConnectionStore } from '../../stores/connectionStore'
+import { useManagedTimeouts } from '../../lib/useManagedTimeouts'
 
 type ToastType = 'success' | 'error' | 'warning' | 'info'
 
@@ -39,15 +40,16 @@ export function useToast() {
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<ToastMessage[]>([])
   const [isRestarting, setIsRestarting] = useState(false)
+  const { setManagedTimeout } = useManagedTimeouts()
 
   const showToast = useCallback((message: string, type: ToastType = 'info', action?: ToastAction) => {
     const id = Date.now()
     // Only keep the latest toast
     setToasts([{ id, message, type, action }])
-    setTimeout(() => {
+    setManagedTimeout(() => {
       setToasts(prev => prev.filter(t => t.id !== id))
     }, action ? 8000 : 3000)
-  }, [])
+  }, [setManagedTimeout])
 
   const removeToast = useCallback((id: number) => {
     setToasts(prev => prev.filter(t => t.id !== id))

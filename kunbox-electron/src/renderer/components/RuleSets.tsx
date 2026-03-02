@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
-import { motion, AnimatePresence, Reorder } from 'framer-motion'
+import { Reorder } from 'framer-motion'
 import * as Switch from '@radix-ui/react-switch'
 import {
   Shield,
@@ -20,25 +20,14 @@ import {
   CheckCircle,
   AlertCircle,
   ExternalLink,
-  Check,
-  XCircle
+  Check
 } from 'lucide-react'
 import { Modal, ModalButton } from './ui/Modal'
 import { useNodesStore } from '../stores/nodesStore'
-import { useConnectionStore } from '../stores/connectionStore'
-import type { Profile } from '@shared/types'
+import { useToast } from './ui/Toast'
+import { useProfiles } from '../lib/useProfiles'
 
 const fastTransition = { duration: 0.15, ease: [0.4, 0, 0.2, 1] as const }
-
-interface ToastMessage {
-  id: number
-  message: string
-  type: 'success' | 'error' | 'info'
-  action?: {
-    label: string
-    onClick: () => void
-  }
-}
 
 interface RuleSetItem {
   id: string
@@ -313,16 +302,14 @@ export default function RuleSets() {
     format: 'binary' | 'source'
   } | null>(null)
 
-  const [toasts, setToasts] = useState<ToastMessage[]>([])
-  
+  const toast = useToast()
+
   // Track which rulesets are currently downloading
   const [downloadingTags, setDownloadingTags] = useState<Set<string>>(new Set())
 
-  const [profiles, setProfiles] = useState<Profile[]>([])
+  const { profiles, loadProfiles } = useProfiles()
   const [isLoadingData, setIsLoadingData] = useState(false)
-  const [isRestarting, setIsRestarting] = useState(false)
   const { nodes, loadNodes } = useNodesStore()
-  const { state: vpnState, setNeedsRestart } = useConnectionStore()
 
   const [dialogData, setDialogData] = useState({
     tag: '',
@@ -334,48 +321,6 @@ export default function RuleSets() {
     outboundValue: ''
   })
 
-  const showToast = useCallback(
-    (message: string, type: 'success' | 'error' | 'info' = 'info', action?: { label: string; onClick: () => void }) => {
-      const id = Date.now()
-      // Only keep the latest toast
-      setToasts([{ id, message, type, action }])
-      setTimeout(() => {
-        setToasts((prev) => prev.filter((t) => t.id !== id))
-      }, action ? 8000 : 3000)
-    },
-    []
-  )
-
-  // Restart VPN function
-  const restartVpn = useCallback(async () => {
-    if (isRestarting) return
-    setIsRestarting(true)
-    try {
-      const result = await window.api.singbox.restart()
-      if (result.success) {
-        setNeedsRestart(false)
-        showToast('VPN 已重启', 'success')
-      } else {
-        showToast(`重启失败: ${result.error}`, 'error')
-      }
-    } catch {
-      showToast('重启失败', 'error')
-    } finally {
-      setIsRestarting(false)
-    }
-  }, [isRestarting, setNeedsRestart, showToast])
-
-  // Show toast with restart button when VPN needs restart
-  const showRestartToast = useCallback((message: string) => {
-    if (vpnState === 'connected') {
-      showToast(message, 'info', {
-        label: '重启',
-        onClick: restartVpn
-      })
-    } else {
-      showToast(message, 'success')
-    }
-  }, [vpnState, showToast, restartVpn])
 
   // Load rulesets from main process on mount
   useEffect(() => {
@@ -396,23 +341,22 @@ export default function RuleSets() {
     }
   }, [ruleSets, isRuleSetsLoaded])
 
-  const loadProfiles = async () => {
+  const loadProfilesSafe = useCallback(async () => {
     try {
-      const list = await window.api.profile.list()
-      setProfiles(list)
+      await loadProfiles()
     } catch (error) {
       console.error('Failed to load profiles:', error)
     }
-  }
+  }, [loadProfiles])
 
   const loadAllData = useCallback(async () => {
     setIsLoadingData(true)
     try {
-      await Promise.all([loadNodes(), loadProfiles()])
+      await Promise.all([loadNodes(), loadProfilesSafe()])
     } finally {
       setIsLoadingData(false)
     }
-  }, [loadNodes])
+  }, [loadNodes, loadProfilesSafe])
 
   useEffect(() => {
     loadAllData()
@@ -495,20 +439,20 @@ export default function RuleSets() {
       if (!isCached) {
         // Start download
         setDownloadingTags(prev => new Set(prev).add(ruleSet.tag))
-        showToast(`正在下载规则集「${ruleSet.name}」...`, 'info')
+        toast.info(`正在下载规则集「${ruleSet.name}」...`)
         
         try {
           const result = await window.api.ruleset.download(ruleSet)
           if (result.success) {
-            showRestartToast(`规则集「${ruleSet.name}」下载成功`)
+            toast.showRestartToast(`规则集「${ruleSet.name}」下载成功`)
             // Now enable it
             setRuleSets(prev => prev.map(rs => rs.id === id ? { ...rs, enabled: true } : rs))
           } else {
-            showToast(`规则集「${ruleSet.name}」下载失败`, 'error')
+            toast.error(`规则集「${ruleSet.name}」下载失败`)
             // Don't enable if download failed
           }
         } catch {
-          showToast(`规则集「${ruleSet.name}」下载失败`, 'error')
+          toast.error(`规则集「${ruleSet.name}」下载失败`)
         } finally {
           setDownloadingTags(prev => {
             const next = new Set(prev)
@@ -519,10 +463,10 @@ export default function RuleSets() {
         return
       } else {
         // Already cached, show toast
-        showRestartToast(`规则集「${ruleSet.name}」已启用（本地缓存）`)
+        toast.showRestartToast(`规则集「${ruleSet.name}」已启用（本地缓存）`)
       }
     } else if (!newEnabled) {
-      showRestartToast(`规则集「${ruleSet.name}」已禁用`)
+      toast.showRestartToast(`规则集「${ruleSet.name}」已禁用`)
     }
     
     // Toggle enabled state
@@ -544,7 +488,7 @@ export default function RuleSets() {
     if (deleteTargetId) {
       const target = ruleSets.find((rs) => rs.id === deleteTargetId)
       setRuleSets((prev) => prev.filter((rs) => rs.id !== deleteTargetId))
-      showRestartToast(`已删除规则集「${target?.name || target?.tag}」`)
+      toast.showRestartToast(`已删除规则集「${target?.name || target?.tag}」`)
       setDeleteTargetId(null)
     }
     setShowDeleteConfirm(false)
@@ -586,10 +530,7 @@ export default function RuleSets() {
       (dialogData.outboundMode === 'node' || dialogData.outboundMode === 'profile') &&
       !dialogData.outboundValue
     ) {
-      showToast(
-        dialogData.outboundMode === 'node' ? '请选择节点' : '请选择配置',
-        'error'
-      )
+      toast.error(dialogData.outboundMode === 'node' ? '请选择节点' : '请选择配置')
       return
     }
 
@@ -610,7 +551,7 @@ export default function RuleSets() {
             : rs
         )
       )
-      showRestartToast(`规则集「${dialogData.name || dialogData.tag}」已更新`)
+      toast.showRestartToast(`规则集「${dialogData.name || dialogData.tag}」已更新`)
     } else {
       const newRuleSet: RuleSetItem = {
         id: Date.now().toString(),
@@ -625,7 +566,7 @@ export default function RuleSets() {
         isBuiltIn: false
       }
       setRuleSets((prev) => [...prev, newRuleSet])
-      showRestartToast(`规则集「${dialogData.name || dialogData.tag}」已添加`)
+      toast.showRestartToast(`规则集「${dialogData.name || dialogData.tag}」已添加`)
     }
     setShowAddDialog(false)
   }
@@ -658,7 +599,7 @@ export default function RuleSets() {
     
     // Start download with loading indicator
     setDownloadingTags(prev => new Set(prev).add(hub.name))
-    showToast(`正在下载规则集「${hub.name}」...`, 'info')
+    toast.info(`正在下载规则集「${hub.name}」...`)
     
     try {
       const result = await window.api.ruleset.download(newRuleSet)
@@ -668,15 +609,15 @@ export default function RuleSets() {
           rs.tag === hub.name ? { ...rs, enabled: true } : rs
         ))
         if (result.cached) {
-          showRestartToast(`规则集「${hub.name}」已缓存`)
+          toast.showRestartToast(`规则集「${hub.name}」已缓存`)
         } else {
-          showRestartToast(`规则集「${hub.name}」下载成功`)
+          toast.showRestartToast(`规则集「${hub.name}」下载成功`)
         }
       } else {
-        showToast(`规则集「${hub.name}」下载失败: ${result.error}`, 'error')
+        toast.error(`规则集「${hub.name}」下载失败: ${result.error}`)
       }
     } catch {
-      showToast(`规则集「${hub.name}」下载失败`, 'error')
+      toast.error(`规则集「${hub.name}」下载失败`)
     } finally {
       setDownloadingTags(prev => {
         const next = new Set(prev)
@@ -688,7 +629,7 @@ export default function RuleSets() {
 
   const resetToDefaults = () => {
     setRuleSets(defaultRuleSets)
-    showRestartToast('已重置为默认规则集')
+    toast.showRestartToast('已重置为默认规则集')
   }
 
   const getModeIcon = (mode: RuleSetItem['outboundMode']) => {
@@ -1326,51 +1267,6 @@ export default function RuleSets() {
         )}
       </Modal>
 
-      {/* Toast Notifications */}
-      <AnimatePresence>
-        {toasts.map((toast, index) => (
-          <motion.div
-            key={toast.id}
-            initial={{ opacity: 0, y: 30 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 10 }}
-            transition={fastTransition}
-            style={{ bottom: `${32 + index * 60}px` }}
-            className="fixed left-1/2 -translate-x-1/2 z-[200] px-4 py-3 glass-card rounded-xl border border-[var(--glass-border)] shadow-xl flex items-center gap-3"
-          >
-            {toast.type === 'success' && (
-              <div className="w-6 h-6 rounded-full bg-emerald-500/20 flex items-center justify-center">
-                <Check className="w-4 h-4 text-emerald-400" />
-              </div>
-            )}
-            {toast.type === 'error' && (
-              <div className="w-6 h-6 rounded-full bg-red-500/20 flex items-center justify-center">
-                <XCircle className="w-4 h-4 text-red-400" />
-              </div>
-            )}
-            {toast.type === 'info' && (
-              <div className="w-6 h-6 rounded-full bg-blue-500/20 flex items-center justify-center">
-                <AlertCircle className="w-4 h-4 text-blue-400" />
-              </div>
-            )}
-            <p className="text-sm font-medium text-[var(--text-primary)]">
-              {toast.message}
-            </p>
-            {toast.action && (
-              <button
-                onClick={() => {
-                  toast.action?.onClick()
-                  setToasts((prev) => prev.filter((t) => t.id !== toast.id))
-                }}
-                className="ml-2 px-3 py-1.5 text-xs font-medium rounded-lg bg-[var(--accent-primary)] text-white hover:bg-[var(--accent-primary)]/90 transition-colors flex items-center gap-1"
-              >
-                <RefreshCw className="w-3 h-3" />
-                {toast.action.label}
-              </button>
-            )}
-          </motion.div>
-        ))}
-      </AnimatePresence>
     </div>
   )
 }

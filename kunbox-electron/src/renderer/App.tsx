@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, forwardRef, useImperativeHandle, useRef } from 'react'
+import { useState, useEffect, useCallback, forwardRef, useImperativeHandle, useRef, memo } from 'react'
 import { motion, AnimatePresence, useAnimation } from 'framer-motion'
 import { Minus, Square, X, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { useConnectionStore } from './stores/connectionStore'
@@ -274,7 +274,25 @@ function BokehBackground() {
   )
 }
 
-function TopBar() {
+const TopBar = memo(function TopBar() {
+  const [appVersion, setAppVersion] = useState(__APP_VERSION__)
+
+  useEffect(() => {
+    let mounted = true
+
+    window.api.updater.getCurrentVersion()
+      .then((version) => {
+        if (mounted && version) setAppVersion(version)
+      })
+      .catch((error) => {
+        console.error('Failed to get app version:', error)
+      })
+
+    return () => {
+      mounted = false
+    }
+  }, [])
+
   return (
     <div
       className="glass-topbar h-12 flex items-center justify-between px-4"
@@ -288,7 +306,7 @@ function TopBar() {
           className="text-xs px-2 py-0.5 rounded"
           style={{ color: 'var(--text-muted)', background: 'var(--bg-hover)' }}
         >
-          v{__APP_VERSION__}
+          v{appVersion}
         </span>
       </div>
 
@@ -317,7 +335,7 @@ function TopBar() {
       </div>
     </div>
   )
-}
+})
 
 function useTheme() {
   const [theme, setTheme] = useState<Theme>(() => {
@@ -383,7 +401,19 @@ export default function App() {
   const [currentPage, setCurrentPage] = useState<Page>('dashboard')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const { state, setState, setTraffic, connect, disconnect } = useConnectionStore()
+  const stateRef = useRef(state)
+  const connectRef = useRef(connect)
+  const disconnectRef = useRef(disconnect)
   useTheme()
+
+  useEffect(() => {
+    stateRef.current = state
+  }, [state])
+
+  useEffect(() => {
+    connectRef.current = connect
+    disconnectRef.current = disconnect
+  }, [connect, disconnect])
 
   // Set sidebar width CSS variable on :root for fixed positioned elements
   useEffect(() => {
@@ -431,24 +461,30 @@ export default function App() {
 
   // Listen for tray menu events
   useEffect(() => {
+    const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+    const restartIfConnected = async () => {
+      if (stateRef.current === 'connected') {
+        await disconnectRef.current()
+        await sleep(500)
+        await connectRef.current()
+      }
+    }
+
     const unsubVpnStart = window.api.tray.onVpnStart(async () => {
-      if (state === 'idle' || state === 'error') {
-        await connect()
+      if (stateRef.current === 'idle' || stateRef.current === 'error') {
+        await connectRef.current()
       }
     })
 
     const unsubVpnStop = window.api.tray.onVpnStop(async () => {
-      if (state === 'connected') {
-        await disconnect()
+      if (stateRef.current === 'connected') {
+        await disconnectRef.current()
       }
     })
 
     const unsubVpnRestart = window.api.tray.onVpnRestart(async () => {
-      if (state === 'connected') {
-        await disconnect()
-        await new Promise(resolve => setTimeout(resolve, 500))
-        await connect()
-      }
+      await restartIfConnected()
     })
 
     const unsubProxyEnable = window.api.tray.onProxyEnable(async () => {
@@ -470,14 +506,9 @@ export default function App() {
     const unsubTunEnable = window.api.tray.onTunEnable(async () => {
       try {
         const settings = await window.api.settings.get()
-        if (settings.tunEnabled) return // Already enabled
+        if (settings.tunEnabled) return
         await window.api.settings.set({ ...settings, tunEnabled: true })
-        // Restart VPN if connected to apply TUN mode change
-        if (state === 'connected') {
-          await disconnect()
-          await new Promise(resolve => setTimeout(resolve, 500))
-          await connect()
-        }
+        await restartIfConnected()
       } catch (e) {
         console.error('Failed to enable TUN:', e)
       }
@@ -486,22 +517,17 @@ export default function App() {
     const unsubTunDisable = window.api.tray.onTunDisable(async () => {
       try {
         const settings = await window.api.settings.get()
-        if (!settings.tunEnabled) return // Already disabled
+        if (!settings.tunEnabled) return
         await window.api.settings.set({ ...settings, tunEnabled: false })
-        // Restart VPN if connected to apply TUN mode change
-        if (state === 'connected') {
-          await disconnect()
-          await new Promise(resolve => setTimeout(resolve, 500))
-          await connect()
-        }
+        await restartIfConnected()
       } catch (e) {
         console.error('Failed to disable TUN:', e)
       }
     })
 
     const unsubQuit = window.api.tray.onQuit(async () => {
-      if (state === 'connected') {
-        await disconnect()
+      if (stateRef.current === 'connected') {
+        await disconnectRef.current()
       }
     })
 
@@ -515,7 +541,7 @@ export default function App() {
       unsubTunDisable()
       unsubQuit()
     }
-  }, [state, connect, disconnect])
+  }, [])
 
   const renderPage = () => {
     switch (currentPage) {

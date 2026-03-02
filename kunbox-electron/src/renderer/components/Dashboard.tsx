@@ -6,7 +6,8 @@ import { useShallow } from 'zustand/react/shallow'
 import { useNodesStore } from '../stores/nodesStore'
 import { formatBytes, formatDuration, cn } from '../lib/utils'
 import { useToast } from './ui/Toast'
-import type { Profile } from '@shared/types'
+import { useManagedTimeouts } from '../lib/useManagedTimeouts'
+import { useProfiles } from '../lib/useProfiles'
 
 export default function Dashboard() {
   const { state, traffic, connect, disconnect, needsRestart, lastError } = useConnectionStore(
@@ -21,22 +22,17 @@ export default function Dashboard() {
   )
   const { nodes, activeNodeTag, loadNodes, testNodeLatency } = useNodesStore()
   const [isAnimating, setIsAnimating] = useState(false)
-  const [profiles, setProfiles] = useState<Profile[]>([])
+  const { profiles, loadProfiles } = useProfiles()
   const [isTesting, setIsTesting] = useState(false)
   const [trafficHistory, setTrafficHistory] = useState<{ download: number; upload: number }[]>([])
   const errorToastGuardRef = useRef(false)
   const toast = useToast()
+  const { setManagedTimeout } = useManagedTimeouts()
 
   const isOn = state === 'connected'
   const isConnecting = state === 'connecting'
   const isDisconnecting = state === 'disconnecting'
   const isConnected = isOn
-
-  // Load profiles and nodes on mount
-  useEffect(() => {
-    loadProfiles()
-    loadNodes()
-  }, [loadNodes])
 
   // Listen for selector switch events
   useEffect(() => {
@@ -64,14 +60,19 @@ export default function Dashboard() {
     }
   }, [isConnected, traffic, traffic?.downloadSpeed, traffic?.uploadSpeed])
 
-  const loadProfiles = async () => {
+  const loadProfilesSafe = useCallback(async () => {
     try {
-      const list = await window.api.profile.list()
-      setProfiles(list)
+      await loadProfiles()
     } catch (error) {
       console.error('Failed to load profiles:', error)
     }
-  }
+  }, [loadProfiles])
+
+  // Load profiles and nodes on mount
+  useEffect(() => {
+    void loadProfilesSafe()
+    loadNodes()
+  }, [loadNodes, loadProfilesSafe])
 
   // Get active node info
   const activeNode = nodes.find(n => n.tag === activeNodeTag)
@@ -98,7 +99,9 @@ export default function Dashboard() {
         if (result.success) {
           toast.success('已连接')
           // Auto test latency after connect
-          setTimeout(() => testLatency(), 1000)
+          setManagedTimeout(() => {
+            void testLatency()
+          }, 1000)
         } else {
           toast.error(result.error || '连接失败')
         }

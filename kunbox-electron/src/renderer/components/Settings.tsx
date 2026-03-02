@@ -55,6 +55,10 @@ export default function Settings() {
         window.dispatchEvent(new CustomEvent('theme-change'))
       }
 
+      if (key === 'enableRuntimeLogs') {
+        window.dispatchEvent(new CustomEvent('runtime-logs-change', { detail: { enabled: value } }))
+      }
+
       if (key === 'requireAdmin' && value === true && !isAdmin) {
         try {
           await window.api.window.restartAsAdmin()
@@ -302,8 +306,11 @@ export default function Settings() {
                   <SettingRow label="开机自启">
                     <Toggle checked={settings.startWithWindows} onChange={(v) => updateSetting('startWithWindows', v)} />
                   </SettingRow>
-                  <SettingRow label="静默启动（仅托盘）" isLast>
+                  <SettingRow label="静默启动（仅托盘）">
                     <Toggle checked={settings.silentStart} onChange={(v) => updateSetting('silentStart', v)} />
+                  </SettingRow>
+                  <SettingRow label="记录运行日志" isLast>
+                    <Toggle checked={settings.enableRuntimeLogs} onChange={(v) => updateSetting('enableRuntimeLogs', v)} />
                   </SettingRow>
                 </SettingCard>
 

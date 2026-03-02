@@ -42,6 +42,11 @@ pub async fn updater_check(app: AppHandle) -> Result<UpdateInfo, String> {
 }
 
 #[tauri::command]
+pub fn updater_get_current_version(app: AppHandle) -> Result<String, String> {
+    Ok(app.package_info().version.to_string())
+}
+
+#[tauri::command]
 pub async fn updater_download_and_install(app: AppHandle) -> Result<UpdateInfo, String> {
     let current_version = app.package_info().version.to_string();
 

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { Modal, ModalButton } from './Modal'
 import { Loader2, Copy, Check } from 'lucide-react'
 import type { SingBoxOutbound } from '@shared/types'
+import { useManagedTimeouts } from '../../lib/useManagedTimeouts'
 
 interface NodeDetailModalProps {
   isOpen: boolean
@@ -30,6 +31,7 @@ export function NodeDetailModal({
 }: NodeDetailModalProps) {
   const [copied, setCopied] = useState(false)
   const [isExporting, setIsExporting] = useState(false)
+  const { setManagedTimeout } = useManagedTimeouts()
 
   useEffect(() => {
     if (!isOpen) {
@@ -43,7 +45,7 @@ export function NodeDetailModal({
     try {
       await onExport(node.tag)
       setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
+      setManagedTimeout(() => setCopied(false), 2000)
     } finally {
       setIsExporting(false)
     }

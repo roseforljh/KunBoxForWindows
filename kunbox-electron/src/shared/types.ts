@@ -97,6 +97,7 @@ export interface AppSettings {
   exitOnClose: boolean
   theme: 'dark' | 'light' | 'system'
   requireAdmin: boolean
+  enableRuntimeLogs: boolean
 }
 
 export interface RuleSet {

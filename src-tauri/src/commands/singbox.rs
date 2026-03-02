@@ -154,16 +154,20 @@ pub async fn singbox_start(app: AppHandle, state: State<'_, AppState>) -> Result
     // Capture stderr for logging
     if let Some(stderr) = child.stderr.take() {
         let app_clone = app.clone();
+        let settings_ref = state.settings.clone();
         tokio::spawn(async move {
             let reader = BufReader::new(stderr);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                let _ = app_clone.emit("singbox:log", serde_json::json!({
-                    "timestamp": chrono::Utc::now().timestamp_millis(),
-                    "level": "info",
-                    "tag": "sing-box",
-                    "message": line
-                }));
+                let enable_runtime_logs = settings_ref.lock().await.enable_runtime_logs;
+                if enable_runtime_logs {
+                    let _ = app_clone.emit("singbox:log", serde_json::json!({
+                        "timestamp": chrono::Utc::now().timestamp_millis(),
+                        "level": "info",
+                        "tag": "sing-box",
+                        "message": line
+                    }));
+                }
             }
         });
     }
@@ -952,37 +956,45 @@ async fn start_traffic_polling(
     let client = reqwest::Client::new();
     let mut last_upload: u64 = 0;
     let mut last_download: u64 = 0;
-    
+    let mut error_streak: u32 = 0;
+
     // Wait a bit for sing-box to be ready
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    
+
     loop {
+        let poll_interval = if error_streak >= 3 {
+            std::time::Duration::from_secs(2)
+        } else {
+            std::time::Duration::from_secs(1)
+        };
+
         tokio::select! {
             _ = cancel.cancelled() => {
                 log::info!("Traffic polling cancelled");
                 break;
             }
-            _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+            _ = tokio::time::sleep(poll_interval) => {
                 // Fetch connections from Clash API to get total traffic
                 match client.get("http://127.0.0.1:9090/connections")
                     .timeout(std::time::Duration::from_secs(2))
                     .send()
-                    .await 
+                    .await
                 {
                     Ok(resp) => {
                         if let Ok(data) = resp.json::<serde_json::Value>().await {
                             let upload_total = data.get("uploadTotal").and_then(|v| v.as_u64()).unwrap_or(0);
                             let download_total = data.get("downloadTotal").and_then(|v| v.as_u64()).unwrap_or(0);
-                            
+
                             // Calculate speed from difference
                             let upload_speed = if upload_total > last_upload { upload_total - last_upload } else { 0 };
                             let download_speed = if download_total > last_download { download_total - last_download } else { 0 };
-                            
+
                             last_upload = upload_total;
                             last_download = download_total;
-                            
+                            error_streak = 0;
+
                             let duration = chrono::Utc::now().timestamp_millis() as u64 - start_time;
-                            
+
                             let stats = TrafficStats {
                                 upload_speed,
                                 download_speed,
@@ -990,13 +1002,16 @@ async fn start_traffic_polling(
                                 download_total,
                                 duration,
                             };
-                            
+
                             *traffic_stats.lock().await = stats.clone();
                             let _ = app.emit("singbox:traffic", &stats);
                         }
                     }
                     Err(e) => {
-                        log::warn!("Traffic polling error: {}", e);
+                        error_streak = error_streak.saturating_add(1);
+                        if error_streak == 1 || error_streak % 10 == 0 {
+                            log::warn!("Traffic polling error (streak={}): {}", error_streak, e);
+                        }
                     }
                 }
             }

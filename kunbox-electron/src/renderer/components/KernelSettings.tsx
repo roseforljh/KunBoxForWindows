@@ -2,8 +2,9 @@ import { useState, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { 
   Download, RotateCcw, Trash2, ExternalLink, FolderOpen, RefreshCw, 
-  Check, XCircle, AlertCircle, Loader2, CheckCircle2
+  Loader2, CheckCircle2, Check, AlertCircle
 } from 'lucide-react'
+import { useToast } from './ui/Toast'
 
 interface KernelVersion {
   version: string
@@ -27,12 +28,6 @@ interface KernelCapabilities {
   supportsBypassAction: boolean
 }
 
-interface ToastMessage {
-  id: number
-  message: string
-  type: 'success' | 'error' | 'info'
-}
-
 type KernelBranch = 'stable' | 'alpha'
 
 export function KernelSettings() {
@@ -46,16 +41,7 @@ export function KernelSettings() {
   const [loading, setLoading] = useState(true)
   const [downloading, setDownloading] = useState(false)
   const [canRollback, setCanRollback] = useState(false)
-  const [toasts, setToasts] = useState<ToastMessage[]>([])
-
-  const showToast = useCallback((message: string, type: 'success' | 'error' | 'info' = 'info') => {
-    const id = Date.now()
-    // Only keep the latest toast
-    setToasts([{ id, message, type }])
-    setTimeout(() => {
-      setToasts(prev => prev.filter(t => t.id !== id))
-    }, 3000)
-  }, [])
+  const toast = useToast()
 
   const loadVersions = useCallback(async () => {
     setLoading(true)
@@ -74,30 +60,30 @@ export function KernelSettings() {
       setCapabilities(kernelCaps)
       setCanRollback(activeBranch === 'stable' ? rollbackStable : rollbackAlpha)
     } catch {
-      showToast('加载版本信息失败', 'error')
+      toast.error('加载版本信息失败')
     } finally {
       setLoading(false)
     }
-  }, [showToast, activeBranch])
+  }, [toast, activeBranch])
 
   useEffect(() => {
     loadVersions()
 
     const unsubComplete = window.api.kernel.onDownloadComplete(() => {
       setDownloading(false)
-      showToast('内核更新完成', 'success')
+      toast.success('内核更新完成')
       loadVersions()
     })
     const unsubError = window.api.kernel.onDownloadError((err: string) => {
       setDownloading(false)
-      showToast(`下载失败: ${err}`, 'error')
+      toast.error(`下载失败: ${err}`)
     })
 
     return () => {
       unsubComplete()
       unsubError()
     }
-  }, [loadVersions, showToast])
+  }, [loadVersions, toast])
 
   useEffect(() => {
     // Update canRollback when branch changes
@@ -111,7 +97,7 @@ export function KernelSettings() {
   const handleBranchChange = (branch: KernelBranch) => {
     setActiveBranch(branch)
     localStorage.setItem('kunbox-kernel-branch', branch)
-    showToast(`已切换到${branch === 'stable' ? '正式版' : '测试版'}内核`, 'info')
+    toast.info(`已切换到${branch === 'stable' ? '正式版' : '测试版'}内核`)
   }
 
   const currentLocal = activeBranch === 'stable' ? localStable : localAlpha
@@ -126,7 +112,7 @@ export function KernelSettings() {
     try {
       await window.api.kernel.download(currentRemote, activeBranch === 'alpha')
     } catch (err) {
-      showToast(String(err), 'error')
+      toast.error(String(err))
       setDownloading(false)
     }
   }
@@ -135,13 +121,13 @@ export function KernelSettings() {
     try {
       const result = await window.api.kernel.rollback(activeBranch === 'alpha')
       if (result.success) {
-        showToast('已回退到上一版本', 'success')
+        toast.success('已回退到上一版本')
         loadVersions()
       } else {
-        showToast('回退失败', 'error')
+        toast.error('回退失败')
       }
     } catch (err) {
-      showToast(String(err), 'error')
+      toast.error(String(err))
     }
   }
 
@@ -150,10 +136,10 @@ export function KernelSettings() {
       const result = await window.api.kernel.clearCache()
       if (result.success) {
         const freedMB = (result.freedBytes / 1024 / 1024).toFixed(2)
-        showToast(`缓存已清理，释放 ${freedMB} MB`, 'success')
+        toast.success(`缓存已清理，释放 ${freedMB} MB`)
       }
     } catch (err) {
-      showToast(String(err), 'error')
+      toast.error(String(err))
     }
   }
 
@@ -382,39 +368,6 @@ export function KernelSettings() {
         <p>更新前会自动备份当前版本，支持一键回退。</p>
       </div>
 
-      {/* Toast Notifications */}
-      <AnimatePresence>
-        {toasts.map((toast, index) => (
-          <motion.div
-            key={toast.id}
-            initial={{ opacity: 0, y: 50, scale: 0.9 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 20, scale: 0.9 }}
-            transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-            style={{ bottom: 24 + index * 60 }}
-            className="fixed left-1/2 -translate-x-1/2 z-[200] px-4 py-3 glass-card rounded-xl border border-[var(--glass-border)] shadow-xl flex items-center gap-3"
-          >
-            {toast.type === 'success' && (
-              <div className="w-6 h-6 rounded-full bg-emerald-500/20 flex items-center justify-center">
-                <Check className="w-4 h-4 text-emerald-400" />
-              </div>
-            )}
-            {toast.type === 'error' && (
-              <div className="w-6 h-6 rounded-full bg-red-500/20 flex items-center justify-center">
-                <XCircle className="w-4 h-4 text-red-400" />
-              </div>
-            )}
-            {toast.type === 'info' && (
-              <div className="w-6 h-6 rounded-full bg-blue-500/20 flex items-center justify-center">
-                <AlertCircle className="w-4 h-4 text-blue-400" />
-              </div>
-            )}
-            <p className="text-sm font-medium text-[var(--text-primary)]">
-              {toast.message}
-            </p>
-          </motion.div>
-        ))}
-      </AnimatePresence>
     </div>
   )
 }
