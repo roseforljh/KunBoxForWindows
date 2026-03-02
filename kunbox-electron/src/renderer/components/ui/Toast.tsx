@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, ReactNode } from 'react'
+import { createContext, useContext, useState, useCallback, useMemo, ReactNode } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Check, XCircle, AlertCircle, Info, RefreshCw } from 'lucide-react'
 import { useConnectionStore } from '../../stores/connectionStore'
@@ -60,6 +60,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const warning = useCallback((message: string) => showToast(message, 'warning'), [showToast])
   const info = useCallback((message: string) => showToast(message, 'info'), [showToast])
 
+  const contextValue = useMemo(() => ({ showToast, showRestartToast: () => {}, success, error, warning, info }), [showToast, success, error, warning, info])
+
   const getIcon = (type: ToastType) => {
     switch (type) {
       case 'success':
@@ -87,7 +89,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   }
 
   return (
-    <ToastContext.Provider value={{ showToast, showRestartToast: () => {}, success, error, warning, info }}>
+    <ToastContext.Provider value={contextValue}>
       <ToastProviderInner 
         showToast={showToast} 
         isRestarting={isRestarting}
