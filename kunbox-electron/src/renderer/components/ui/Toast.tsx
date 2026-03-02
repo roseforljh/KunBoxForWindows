@@ -176,8 +176,18 @@ function ToastProviderInner({
     }
   }, [vpnState, showToast, restartVpn])
 
+  const success = useCallback((message: string) => showToast(message, 'success'), [showToast])
+  const error = useCallback((message: string) => showToast(message, 'error'), [showToast])
+  const warning = useCallback((message: string) => showToast(message, 'warning'), [showToast])
+  const info = useCallback((message: string) => showToast(message, 'info'), [showToast])
+
+  const contextValue = useMemo(
+    () => ({ showToast, showRestartToast, success, error, warning, info }),
+    [showToast, showRestartToast, success, error, warning, info]
+  )
+
   return (
-    <ToastContext.Provider value={{ showToast, showRestartToast, success: (m) => showToast(m, 'success'), error: (m) => showToast(m, 'error'), warning: (m) => showToast(m, 'warning'), info: (m) => showToast(m, 'info') }}>
+    <ToastContext.Provider value={contextValue}>
       {children}
     </ToastContext.Provider>
   )

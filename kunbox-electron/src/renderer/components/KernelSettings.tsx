@@ -41,7 +41,7 @@ export function KernelSettings() {
   const [loading, setLoading] = useState(true)
   const [downloading, setDownloading] = useState(false)
   const [canRollback, setCanRollback] = useState(false)
-  const toast = useToast()
+  const { success: toastSuccess, error: toastError, info: toastInfo } = useToast()
 
   const loadVersions = useCallback(async () => {
     setLoading(true)
@@ -60,30 +60,30 @@ export function KernelSettings() {
       setCapabilities(kernelCaps)
       setCanRollback(activeBranch === 'stable' ? rollbackStable : rollbackAlpha)
     } catch {
-      toast.error('加载版本信息失败')
+      toastError('加载版本信息失败')
     } finally {
       setLoading(false)
     }
-  }, [toast, activeBranch])
+  }, [toastError, activeBranch])
 
   useEffect(() => {
     loadVersions()
 
     const unsubComplete = window.api.kernel.onDownloadComplete(() => {
       setDownloading(false)
-      toast.success('内核更新完成')
+      toastSuccess('内核更新完成')
       loadVersions()
     })
     const unsubError = window.api.kernel.onDownloadError((err: string) => {
       setDownloading(false)
-      toast.error(`下载失败: ${err}`)
+      toastError(`下载失败: ${err}`)
     })
 
     return () => {
       unsubComplete()
       unsubError()
     }
-  }, [loadVersions, toast])
+  }, [loadVersions, toastSuccess, toastError])
 
   useEffect(() => {
     // Update canRollback when branch changes
@@ -97,7 +97,7 @@ export function KernelSettings() {
   const handleBranchChange = (branch: KernelBranch) => {
     setActiveBranch(branch)
     localStorage.setItem('kunbox-kernel-branch', branch)
-    toast.info(`已切换到${branch === 'stable' ? '正式版' : '测试版'}内核`)
+    toastInfo(`已切换到${branch === 'stable' ? '正式版' : '测试版'}内核`)
   }
 
   const currentLocal = activeBranch === 'stable' ? localStable : localAlpha
@@ -112,7 +112,7 @@ export function KernelSettings() {
     try {
       await window.api.kernel.download(currentRemote, activeBranch === 'alpha')
     } catch (err) {
-      toast.error(String(err))
+      toastError(String(err))
       setDownloading(false)
     }
   }
@@ -121,13 +121,13 @@ export function KernelSettings() {
     try {
       const result = await window.api.kernel.rollback(activeBranch === 'alpha')
       if (result.success) {
-        toast.success('已回退到上一版本')
+        toastSuccess('已回退到上一版本')
         loadVersions()
       } else {
-        toast.error('回退失败')
+        toastError('回退失败')
       }
     } catch (err) {
-      toast.error(String(err))
+      toastError(String(err))
     }
   }
 
@@ -136,10 +136,10 @@ export function KernelSettings() {
       const result = await window.api.kernel.clearCache()
       if (result.success) {
         const freedMB = (result.freedBytes / 1024 / 1024).toFixed(2)
-        toast.success(`缓存已清理，释放 ${freedMB} MB`)
+        toastSuccess(`缓存已清理，释放 ${freedMB} MB`)
       }
     } catch (err) {
-      toast.error(String(err))
+      toastError(String(err))
     }
   }
 
