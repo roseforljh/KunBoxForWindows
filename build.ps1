@@ -36,6 +36,31 @@ if ($isDebug) {
 
 Write-Host ""
 
+# Load signing environment (for updater artifacts)
+if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
+    $localSigningScript = Join-Path $PSScriptRoot "tauri-signing.local.ps1"
+    if (Test-Path $localSigningScript) {
+        . $localSigningScript
+    }
+}
+
+if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
+    $defaultKeyFile = Join-Path $PSScriptRoot "tauri-private.key"
+    if (Test-Path $defaultKeyFile) {
+        $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content $defaultKeyFile -Raw
+        Write-Host "Loaded TAURI_SIGNING_PRIVATE_KEY from tauri-private.key" -ForegroundColor Green
+    }
+}
+
+if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
+    Write-Host "Missing TAURI_SIGNING_PRIVATE_KEY. Please run: . .\tauri-signing.local.ps1" -ForegroundColor Red
+    exit 1
+}
+
+if (-not $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) {
+    Write-Host "TAURI_SIGNING_PRIVATE_KEY_PASSWORD not set; continuing (works only if key has no password)." -ForegroundColor Yellow
+}
+
 # Step 1: Build frontend
 Write-Host "[1/2] Building frontend..." -ForegroundColor Cyan
 Set-Location "$PSScriptRoot\kunbox-electron"
