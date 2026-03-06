@@ -60,8 +60,7 @@ fn kill_existing_singbox_processes() {
     std::thread::sleep(std::time::Duration::from_millis(300));
 }
 
-#[tauri::command]
-pub async fn singbox_start(app: AppHandle, state: State<'_, AppState>) -> Result<CommandResult, String> {
+pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Result<CommandResult, String> {
     let singbox_path = get_singbox_path(&app)?;
     
     if !singbox_path.exists() {
@@ -213,8 +212,7 @@ pub async fn singbox_start(app: AppHandle, state: State<'_, AppState>) -> Result
     Ok(CommandResult::ok())
 }
 
-#[tauri::command]
-pub async fn singbox_stop(app: AppHandle, state: State<'_, AppState>) -> Result<CommandResult, String> {
+pub(crate) async fn singbox_stop_impl(app: AppHandle, state: &AppState) -> Result<CommandResult, String> {
     // Cancel traffic polling
     if let Some(cancel) = state.traffic_cancel.lock().await.take() {
         cancel.cancel();
@@ -239,6 +237,16 @@ pub async fn singbox_stop(app: AppHandle, state: State<'_, AppState>) -> Result<
     let _ = app.emit("singbox:state", "idle");
 
     Ok(CommandResult::ok())
+}
+
+#[tauri::command]
+pub async fn singbox_start(app: AppHandle, state: State<'_, AppState>) -> Result<CommandResult, String> {
+    singbox_start_impl(app, &state).await
+}
+
+#[tauri::command]
+pub async fn singbox_stop(app: AppHandle, state: State<'_, AppState>) -> Result<CommandResult, String> {
+    singbox_stop_impl(app, &state).await
 }
 
 #[tauri::command]
@@ -387,6 +395,18 @@ fn build_dns_server(address: &str, tag: &str, detour: &str) -> serde_json::Value
     server_obj
 }
 
+fn apply_route_target(mut rule: serde_json::Value, target: &str) -> serde_json::Value {
+    if let Some(obj) = rule.as_object_mut() {
+        if target == "block" {
+            obj.insert("action".to_string(), serde_json::Value::String("reject".to_string()));
+        } else {
+            obj.insert("outbound".to_string(), serde_json::Value::String(target.to_string()));
+        }
+    }
+
+    rule
+}
+
 /// 配置文件信息（用于跨配置分流）
 struct ProfileInfo {
     id: String,
@@ -523,9 +543,7 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
             "type": "mixed",
             "tag": "mixed-in",
             "listen": listen_addr,
-            "listen_port": settings.local_port,
-            "sniff": true,
-            "sniff_override_destination": true
+            "listen_port": settings.local_port
         }),
         serde_json::json!({
             "type": "socks",
@@ -545,9 +563,7 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
             "mtu": 9000,
             "auto_route": true,
             "strict_route": true,
-            "stack": settings.tun_stack,
-            "sniff": true,
-            "sniff_override_destination": true
+            "stack": settings.tun_stack
         }));
     }
     
@@ -565,7 +581,11 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
     let route_final = match routing_mode {
         "global-proxy" => "PROXY",
         "global-direct" => "direct",
-        _ => if settings.default_rule == "proxy" { "PROXY" } else { &settings.default_rule },
+        _ => match settings.default_rule.as_str() {
+            "proxy" => "PROXY",
+            "block" => "direct",
+            other => other,
+        },
     };
 
     let mut config = serde_json::json!({
@@ -701,8 +721,6 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
 
     // 6. 添加基础出站
     outbounds.push(serde_json::json!({ "type": "direct", "tag": "direct" }));
-    outbounds.push(serde_json::json!({ "type": "block", "tag": "block" }));
-
     config["outbounds"] = serde_json::Value::Array(outbounds.clone());
 
     // 收集所有可用的 outbound tags
@@ -712,8 +730,13 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
 
     // ========== 构建路由规则 ==========
     let mut rules: Vec<serde_json::Value> = vec![
+        serde_json::json!({ "inbound": "mixed-in", "action": "sniff" }),
         serde_json::json!({ "protocol": "dns", "action": "hijack-dns" }),
     ];
+
+    if settings.tun_enabled {
+        rules.insert(1, serde_json::json!({ "inbound": "tun-in", "action": "sniff" }));
+    }
 
     if settings.bypass_lan {
         rules.push(serde_json::json!({ "ip_is_private": true, "outbound": "direct" }));
@@ -724,7 +747,7 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
         // 使用内置的广告域名规则
         rules.push(serde_json::json!({
             "domain_keyword": ["ad", "ads", "advert", "tracking", "tracker", "analytics"],
-            "outbound": "block"
+            "action": "reject"
         }));
         rules.push(serde_json::json!({
             "domain_suffix": [
@@ -740,7 +763,7 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
                 "taboola.com",
                 "outbrain.com"
             ],
-            "outbound": "block"
+            "action": "reject"
         }));
     }
 
@@ -790,22 +813,18 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
             };
 
             let rule_json = match rule.rule_type.as_str() {
-                "domain" => serde_json::json!({
-                    "domain": [&rule.value],
-                    "outbound": outbound
-                }),
-                "domain_suffix" => serde_json::json!({
-                    "domain_suffix": [&rule.value],
-                    "outbound": outbound
-                }),
-                "domain_keyword" => serde_json::json!({
-                    "domain_keyword": [&rule.value],
-                    "outbound": outbound
-                }),
-                _ => serde_json::json!({
-                    "domain_suffix": [&rule.value],
-                    "outbound": outbound
-                })
+                "domain" => apply_route_target(serde_json::json!({
+                    "domain": [&rule.value]
+                }), &outbound),
+                "domain_suffix" => apply_route_target(serde_json::json!({
+                    "domain_suffix": [&rule.value]
+                }), &outbound),
+                "domain_keyword" => apply_route_target(serde_json::json!({
+                    "domain_keyword": [&rule.value]
+                }), &outbound),
+                _ => apply_route_target(serde_json::json!({
+                    "domain_suffix": [&rule.value]
+                }), &outbound)
             };
             rules.push(rule_json);
             log::info!("Added domain rule: {} ({}) -> {}", rule.value, rule.rule_type, outbound);
@@ -873,12 +892,15 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
             other => other.to_string()
         };
 
-        let rule_json = serde_json::json!({
-            "rule_set": [rs.tag],
-            "outbound": outbound
-        });
+        let rule_json = apply_route_target(serde_json::json!({
+            "rule_set": [rs.tag]
+        }), &outbound);
         rules.push(rule_json);
         }
+    }
+
+    if routing_mode == "rule" && settings.default_rule == "block" {
+        rules.push(serde_json::json!({ "action": "reject" }));
     }
 
     if !rule_set_refs.is_empty() {

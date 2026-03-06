@@ -2,6 +2,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use std::fs;
 use std::path::{Path, PathBuf};
 use crate::state::AppState;
+use crate::types::ProxyState;
+use super::singbox::{singbox_start_impl, singbox_stop_impl};
 
 #[cfg(windows)]
 #[allow(unused_imports)]
@@ -111,6 +113,71 @@ fn get_kernel_path(app: &AppHandle) -> Result<PathBuf, String> {
 
 fn path_exists(path: &Path) -> bool {
     fs::metadata(path).is_ok()
+}
+
+#[cfg(windows)]
+fn kill_existing_singbox_processes() {
+    use std::process::Command as StdCommand;
+    use std::os::windows::process::CommandExt;
+
+    let _ = StdCommand::new("taskkill")
+        .args(["/F", "/IM", "sing-box.exe"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+
+    std::thread::sleep(std::time::Duration::from_millis(600));
+}
+
+#[cfg(not(windows))]
+fn kill_existing_singbox_processes() {
+    let _ = std::process::Command::new("pkill").args(["-9", "sing-box"]).output();
+    std::thread::sleep(std::time::Duration::from_millis(600));
+}
+
+fn replace_kernel_file(kernel_dir: &Path, bytes: &[u8]) -> Result<(), String> {
+    let kernel_path = kernel_dir.join(KERNEL_FILENAME);
+    let backup_path = kernel_dir.join("sing-box.exe.bak");
+
+    let mut last_error: Option<String> = None;
+
+    for _ in 0..6 {
+        if backup_path.exists() {
+            let _ = fs::remove_file(&backup_path);
+        }
+
+        if kernel_path.exists() {
+            match fs::rename(&kernel_path, &backup_path) {
+                Ok(_) => {}
+                Err(err) => {
+                    last_error = Some(err.to_string());
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    continue;
+                }
+            }
+        }
+
+        match fs::write(&kernel_path, bytes) {
+            Ok(_) => return Ok(()),
+            Err(err) => {
+                last_error = Some(err.to_string());
+
+                if kernel_path.exists() {
+                    let _ = fs::remove_file(&kernel_path);
+                }
+
+                if !kernel_path.exists() && backup_path.exists() {
+                    let _ = fs::rename(&backup_path, &kernel_path);
+                }
+
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        }
+    }
+
+    Err(format!(
+        "无法替换 sing-box.exe，请先停止代理后重试：{}",
+        last_error.unwrap_or_else(|| "文件被占用".to_string())
+    ))
 }
 
 fn find_windows_asset<'a>(assets: &'a [GithubAsset], tag_name: &str) -> Option<&'a GithubAsset> {
@@ -374,7 +441,7 @@ pub async fn kernel_get_remote_releases(include_prerelease: Option<bool>) -> Res
 }
 
 #[tauri::command]
-pub async fn kernel_download(app: AppHandle, release: RemoteRelease) -> Result<serde_json::Value, String> {
+pub async fn kernel_download(app: AppHandle, state: State<'_, AppState>, release: RemoteRelease) -> Result<serde_json::Value, String> {
     let _ = app.emit("kernel:download-start", ());
 
     let client = reqwest::Client::builder()
@@ -449,34 +516,24 @@ pub async fn kernel_download(app: AppHandle, release: RemoteRelease) -> Result<s
     let mut archive = zip::ZipArchive::new(cursor).map_err(|e| e.to_string())?;
     
     let mut found = false;
+    let mut exe_bytes: Option<Vec<u8>> = None;
+    let mut cronet_bytes: Option<Vec<u8>> = None;
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
         let name = file.name().to_string();
 
         if name.ends_with("sing-box.exe") {
-            let kernel_path = kernel_dir.join(KERNEL_FILENAME);
-
-            if kernel_path.exists() {
-                let backup_path = kernel_dir.join("sing-box.exe.bak");
-                if backup_path.exists() {
-                    let _ = fs::remove_file(&backup_path);
-                }
-                let _ = fs::rename(&kernel_path, &backup_path);
-            }
-
-            let mut outfile = fs::File::create(&kernel_path).map_err(|e| e.to_string())?;
-            std::io::copy(&mut file, &mut outfile).map_err(|e| e.to_string())?;
-
-            log::info!("Kernel installed to {:?}", kernel_path);
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut file, &mut bytes).map_err(|e| e.to_string())?;
+            exe_bytes = Some(bytes);
             found = true;
             continue;
         }
 
         if name.ends_with("libcronet.dll") {
-            let dll_path = kernel_dir.join("libcronet.dll");
-            let mut outfile = fs::File::create(&dll_path).map_err(|e| e.to_string())?;
-            std::io::copy(&mut file, &mut outfile).map_err(|e| e.to_string())?;
-            log::info!("Naive runtime installed to {:?}", dll_path);
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut file, &mut bytes).map_err(|e| e.to_string())?;
+            cronet_bytes = Some(bytes);
         }
     }
     
@@ -484,6 +541,32 @@ pub async fn kernel_download(app: AppHandle, release: RemoteRelease) -> Result<s
         let err = "sing-box.exe not found in archive";
         let _ = app.emit("kernel:download-error", err);
         return Err(err.to_string());
+    }
+
+    let was_running = matches!(*state.proxy_state.lock().await, ProxyState::Connected | ProxyState::Connecting);
+
+    if was_running {
+        let stop_result = singbox_stop_impl(app.clone(), &state).await?;
+        if !stop_result.success {
+            return Err(stop_result.error.unwrap_or_else(|| "停止内核失败".to_string()));
+        }
+    } else {
+        kill_existing_singbox_processes();
+    }
+
+    replace_kernel_file(&kernel_dir, exe_bytes.as_deref().ok_or_else(|| "sing-box.exe not found in archive".to_string())?)?;
+    log::info!("Kernel installed to {:?}", kernel_dir.join(KERNEL_FILENAME));
+
+    if let Some(bytes) = cronet_bytes {
+        fs::write(kernel_dir.join("libcronet.dll"), bytes).map_err(|e| e.to_string())?;
+        log::info!("Naive runtime installed to {:?}", kernel_dir.join("libcronet.dll"));
+    }
+
+    if was_running {
+        let start_result = singbox_start_impl(app.clone(), &state).await?;
+        if !start_result.success {
+            return Err(start_result.error.unwrap_or_else(|| "内核已更新，但重新启动失败".to_string()));
+        }
     }
     
     let _ = app.emit("kernel:download-complete", ());
