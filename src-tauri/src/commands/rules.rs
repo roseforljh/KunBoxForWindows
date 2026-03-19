@@ -7,14 +7,24 @@ pub(crate) fn load_custom_rules(state: &AppState) -> CustomRules {
     let file = state.custom_rules_file();
     if file.exists() {
         match fs::read_to_string(&file) {
-            Ok(content) => match serde_json::from_str(&content) {
-                Ok(rules) => return rules,
+            Ok(content) => match serde_json::from_str::<CustomRules>(&content) {
+                Ok(rules) => {
+                    if !rules.domain_rules.is_empty() {
+                        return rules;
+                    }
+                    // File exists but domainRules is empty, fall through to default
+                },
                 Err(e) => log::warn!("Failed to parse custom rules file {:?}: {}", file, e),
             },
             Err(e) => log::warn!("Failed to read custom rules file {:?}: {}", file, e),
         }
     }
-    CustomRules::default()
+    let defaults = CustomRules::default();
+    // Persist defaults so they show up immediately
+    if let Err(e) = save_custom_rules(state, &defaults) {
+        log::warn!("Failed to save default custom rules: {}", e);
+    }
+    defaults
 }
 
 fn save_custom_rules(state: &AppState, rules: &CustomRules) -> Result<(), String> {

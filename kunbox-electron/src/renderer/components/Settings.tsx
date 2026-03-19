@@ -163,11 +163,8 @@ export default function Settings() {
                       onChange={(v) => updateSetting('routingMode', v as AppSettings['routingMode'])}
                     />
                   </SettingRow>
-                  <SettingRow label="绕过局域网">
+                  <SettingRow label="绕过局域网" isLast>
                     <Toggle checked={settings.bypassLan} onChange={(v) => updateSetting('bypassLan', v)} />
-                  </SettingRow>
-                  <SettingRow label="广告屏蔽" isLast>
-                    <Toggle checked={settings.blockAds} onChange={(v) => updateSetting('blockAds', v)} />
                   </SettingRow>
                 </SettingCard>
 

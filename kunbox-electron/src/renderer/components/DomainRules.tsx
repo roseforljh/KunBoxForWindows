@@ -289,8 +289,10 @@ export default function DomainRules() {
   }
 
   const toggleRule = (id: string) => {
+    const rule = rules.find(r => r.id === id)
     const newRules = rules.map((r) => (r.id === id ? { ...r, enabled: !r.enabled } : r))
     saveRules(newRules)
+    toast.showRestartToast(`规则「${rule?.name || rule?.value}」已${rule?.enabled ? '禁用' : '启用'}`)
   }
 
   const changeOutboundMode = (id: string, mode: OutboundMode) => {
@@ -298,6 +300,7 @@ export default function DomainRules() {
       r.id === id ? { ...r, outboundMode: mode, outboundValue: undefined } : r
     )
     saveRules(newRules)
+    toast.showRestartToast('出站模式已更新')
   }
 
   const confirmDelete = (id: string) => {
@@ -310,7 +313,7 @@ export default function DomainRules() {
       const target = rules.find((r) => r.id === deleteTargetId)
       const newRules = rules.filter((r) => r.id !== deleteTargetId)
       saveRules(newRules)
-      toast.success(`已删除规则「${target?.name || target?.value}」`)
+      toast.showRestartToast(`已删除规则「${target?.name || target?.value}」`)
       setDeleteTargetId(null)
     }
     setShowDeleteConfirm(false)
@@ -367,7 +370,7 @@ export default function DomainRules() {
           : r
       )
       saveRules(newRules)
-      toast.success(`规则「${finalName}」已更新`)
+      toast.showRestartToast(`规则「${finalName}」已更新`)
     } else {
       const newRule: DomainRule = {
         id: Date.now().toString(),
@@ -379,7 +382,7 @@ export default function DomainRules() {
         enabled: true
       }
       saveRules([...rules, newRule])
-      toast.success(`规则「${finalName}」已添加`)
+      toast.showRestartToast(`规则「${finalName}」已添加`)
     }
     setShowAddDialog(false)
   }

@@ -83,7 +83,6 @@ export interface AppSettings {
   localDns: string
   remoteDns: string
   fakeDns: boolean
-  blockAds: boolean
   bypassLan: boolean
   routingMode: 'rule' | 'global-proxy' | 'global-direct'
   defaultRule: 'direct' | 'proxy' | 'block'

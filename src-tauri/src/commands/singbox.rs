@@ -734,37 +734,16 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
         serde_json::json!({ "protocol": "dns", "action": "hijack-dns" }),
     ];
 
+    // 预先声明规则集引用和缓存目录（广告屏蔽和用户规则集都需要）
+    let mut rule_set_refs = Vec::new();
+    let rulesets_cache_dir = state.rulesets_cache_dir();
+
     if settings.tun_enabled {
         rules.insert(1, serde_json::json!({ "inbound": "tun-in", "action": "sniff" }));
     }
 
     if settings.bypass_lan {
         rules.push(serde_json::json!({ "ip_is_private": true, "outbound": "direct" }));
-    }
-
-    // 如果启用广告屏蔽，添加广告屏蔽规则
-    if settings.block_ads {
-        // 使用内置的广告域名规则
-        rules.push(serde_json::json!({
-            "domain_keyword": ["ad", "ads", "advert", "tracking", "tracker", "analytics"],
-            "action": "reject"
-        }));
-        rules.push(serde_json::json!({
-            "domain_suffix": [
-                "doubleclick.net",
-                "googlesyndication.com",
-                "googleadservices.com",
-                "google-analytics.com",
-                "adnxs.com",
-                "adsrvr.org",
-                "adcolony.com",
-                "facebook.com/tr",
-                "advertising.com",
-                "taboola.com",
-                "outbrain.com"
-            ],
-            "action": "reject"
-        }));
     }
 
     // ========== 添加自定义域名分流规则 ==========
@@ -832,8 +811,6 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
     }
 
     // 添加规则集路由规则
-    let mut rule_set_refs = Vec::new();
-    let rulesets_cache_dir = state.rulesets_cache_dir();
 
     if routing_mode == "rule" {
         for rs in &enabled_rulesets {

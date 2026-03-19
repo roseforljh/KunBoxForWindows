@@ -85,8 +85,6 @@ pub struct AppSettings {
     pub remote_dns: String,
     #[serde(rename = "fakeDns")]
     pub fake_dns: bool,
-    #[serde(rename = "blockAds")]
-    pub block_ads: bool,
     #[serde(rename = "bypassLan")]
     pub bypass_lan: bool,
     #[serde(rename = "routingMode")]
@@ -133,7 +131,6 @@ impl Default for AppSettings {
             local_dns: "223.5.5.5".to_string(),
             remote_dns: "https://dns.google/dns-query".to_string(),
             fake_dns: false,
-            block_ads: false,
             bypass_lan: true,
             routing_mode: "rule".to_string(),
             default_rule: "proxy".to_string(),
@@ -212,8 +209,53 @@ pub struct DomainRule {
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomRules {
     #[serde(rename = "domainRules")]
     pub domain_rules: Vec<DomainRule>,
+}
+
+impl Default for CustomRules {
+    fn default() -> Self {
+        Self {
+            domain_rules: vec![
+                DomainRule {
+                    id: "default-localhost".to_string(),
+                    name: "localhost".to_string(),
+                    rule_type: "domain".to_string(),
+                    value: "localhost".to_string(),
+                    outbound_mode: "direct".to_string(),
+                    outbound_value: None,
+                    enabled: true,
+                },
+                DomainRule {
+                    id: "default-localhost-v4".to_string(),
+                    name: "127.0.0.1".to_string(),
+                    rule_type: "domain".to_string(),
+                    value: "127.0.0.1".to_string(),
+                    outbound_mode: "direct".to_string(),
+                    outbound_value: None,
+                    enabled: true,
+                },
+                DomainRule {
+                    id: "default-localhost-v6".to_string(),
+                    name: "::1".to_string(),
+                    rule_type: "domain".to_string(),
+                    value: "::1".to_string(),
+                    outbound_mode: "direct".to_string(),
+                    outbound_value: None,
+                    enabled: true,
+                },
+                DomainRule {
+                    id: "default-local-suffix".to_string(),
+                    name: ".local".to_string(),
+                    rule_type: "domain_suffix".to_string(),
+                    value: "local".to_string(),
+                    outbound_mode: "direct".to_string(),
+                    outbound_value: None,
+                    enabled: true,
+                },
+            ],
+        }
+    }
 }
