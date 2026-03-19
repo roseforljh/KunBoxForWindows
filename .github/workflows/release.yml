@@ -96,6 +96,10 @@ jobs:
         working-directory: kunbox-electron
         run: npm run typecheck
 
+      - name: Build frontend
+        working-directory: kunbox-electron
+        run: npm run build
+
       - name: Run Rust checks
         working-directory: src-tauri
         run: cargo check
@@ -103,10 +107,6 @@ jobs:
       - name: Run Rust tests
         working-directory: src-tauri
         run: cargo test
-
-      - name: Build frontend
-        working-directory: kunbox-electron
-        run: npm run build
 
       - name: Update version in config files
         shell: pwsh
