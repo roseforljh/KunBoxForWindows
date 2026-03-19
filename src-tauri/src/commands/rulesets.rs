@@ -99,6 +99,20 @@ pub async fn ruleset_save(state: State<'_, AppState>, rulesets: Vec<RuleSet>) ->
     Ok(())
 }
 
+fn is_valid_ruleset_tag(tag: &str) -> bool {
+    !tag.is_empty()
+        && tag.len() <= 128
+        && tag.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+}
+
+fn ruleset_cache_path(state: &AppState, tag: &str) -> Result<std::path::PathBuf, String> {
+    if !is_valid_ruleset_tag(tag) {
+        return Err("Invalid ruleset tag".to_string());
+    }
+
+    Ok(state.rulesets_cache_dir().join(format!("{}.srs", tag)))
+}
+
 #[tauri::command]
 pub async fn ruleset_download(state: State<'_, AppState>, ruleset: RuleSet) -> Result<serde_json::Value, String> {
     if ruleset.rule_type != "remote" {
@@ -108,7 +122,7 @@ pub async fn ruleset_download(state: State<'_, AppState>, ruleset: RuleSet) -> R
     let cache_dir = state.rulesets_cache_dir();
     fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
     
-    let cache_file = cache_dir.join(format!("{}.srs", ruleset.tag));
+    let cache_file = ruleset_cache_path(&state, &ruleset.tag)?;
     
     if cache_file.exists() {
         return Ok(serde_json::json!({ "success": true, "cached": true }));
@@ -208,6 +222,8 @@ fn extract_github_path(url: &str) -> Option<String> {
     None
 }
 
+const MAX_RULESET_SIZE_BYTES: usize = 10 * 1024 * 1024;
+
 /// 下载并验证文件
 async fn download_and_verify(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
     let response = client.get(url)
@@ -219,10 +235,20 @@ async fn download_and_verify(client: &reqwest::Client, url: &str) -> Result<Vec<
         return Err(format!("HTTP {}", response.status()));
     }
     
+    if let Some(content_length) = response.content_length() {
+        if content_length as usize > MAX_RULESET_SIZE_BYTES {
+            return Err("Ruleset too large".to_string());
+        }
+    }
+
     let bytes = response.bytes()
         .await
         .map_err(|e| format!("Read body failed: {}", e))?
         .to_vec();
+
+    if bytes.len() > MAX_RULESET_SIZE_BYTES {
+        return Err("Ruleset too large".to_string());
+    }
     
     // 验证文件内容
     if bytes.len() < 10 {
@@ -247,16 +273,39 @@ async fn download_and_verify(client: &reqwest::Client, url: &str) -> Result<Vec<
 
 #[tauri::command]
 pub async fn ruleset_is_cached(state: State<'_, AppState>, tag: String) -> Result<bool, String> {
-    let cache_file = state.rulesets_cache_dir().join(format!("{}.srs", tag));
+    let cache_file = ruleset_cache_path(&state, &tag)?;
     Ok(cache_file.exists())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_invalid_ruleset_tags() {
+        assert!(ruleset_cache_path(&AppState::new(std::path::PathBuf::from("/tmp/test")), "geosite-cn").is_ok());
+        assert!(ruleset_cache_path(&AppState::new(std::path::PathBuf::from("/tmp/test")), "../evil").is_err());
+    }
+
+    #[test]
+    fn extracts_github_paths() {
+        assert_eq!(
+            extract_github_path("https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs"),
+            Some("SagerNet/sing-geosite/rule-set/geosite-cn.srs".to_string())
+        );
+        assert_eq!(
+            extract_github_path("https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-cn.srs"),
+            Some("SagerNet/sing-geosite/rule-set/geosite-cn.srs".to_string())
+        );
+        assert_eq!(extract_github_path("https://example.com/file.srs"), None);
+    }
 }
 
 /// 从 GitHub API 获取规则集仓库列表（代理优先 + 直连回退）
 #[tauri::command]
 pub async fn ruleset_fetch_hub() -> Result<serde_json::Value, String> {
     let url = "https://api.github.com/repos/SagerNet/sing-geosite/git/trees/rule-set?recursive=1";
-    
-    // 创建代理客户端
+
     let proxy_client = reqwest::Proxy::all("http://127.0.0.1:7890")
         .ok()
         .and_then(|proxy| {
@@ -266,19 +315,17 @@ pub async fn ruleset_fetch_hub() -> Result<serde_json::Value, String> {
                 .build()
                 .ok()
         });
-    
-    // 创建直连客户端
+
     let direct_client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|e| e.to_string())?;
-    
-    // 1. 先尝试代理
+
     if let Some(client) = &proxy_client {
         match client.get(url)
             .header("User-Agent", "KunBox-Windows-App")
             .send()
-            .await 
+            .await
         {
             Ok(resp) if resp.status().is_success() => {
                 if let Ok(data) = resp.json::<serde_json::Value>().await {
@@ -294,22 +341,21 @@ pub async fn ruleset_fetch_hub() -> Result<serde_json::Value, String> {
             }
         }
     }
-    
-    // 2. 回退到直连
+
     let resp = direct_client.get(url)
         .header("User-Agent", "KunBox-Windows-App")
         .send()
         .await
         .map_err(|e| format!("Request failed: {}", e))?;
-    
+
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));
     }
-    
+
     let data = resp.json::<serde_json::Value>()
         .await
         .map_err(|e| format!("Parse error: {}", e))?;
-    
+
     log::info!("Fetched hub via direct");
     Ok(data)
 }

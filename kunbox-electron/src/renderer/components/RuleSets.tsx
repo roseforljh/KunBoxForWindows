@@ -325,7 +325,7 @@ export default function RuleSets() {
   // Load rulesets from main process on mount
   useEffect(() => {
     window.api.ruleset.list().then((data) => {
-      if (data && data.length > 0) {
+      if (data) {
         setRuleSets(data)
       } else {
         setRuleSets(defaultRuleSets)
@@ -336,7 +336,7 @@ export default function RuleSets() {
 
   // Save rulesets to main process when changed (only after initial load)
   useEffect(() => {
-    if (isRuleSetsLoaded && ruleSets.length > 0) {
+    if (isRuleSetsLoaded) {
       window.api.ruleset.save(ruleSets)
     }
   }, [ruleSets, isRuleSetsLoaded])

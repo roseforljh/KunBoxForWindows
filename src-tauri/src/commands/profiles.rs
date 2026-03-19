@@ -25,6 +25,7 @@ fn load_profiles_data(state: &AppState) -> ProfilesData {
             if let Ok(data) = serde_json::from_str(&content) {
                 return data;
             }
+            log::warn!("Failed to parse profiles file {:?}", file);
         }
     }
     ProfilesData::default()
@@ -37,8 +38,25 @@ fn save_profiles_data(state: &AppState, data: &ProfilesData) -> Result<(), Strin
     Ok(())
 }
 
+fn is_valid_profile_id(profile_id: &str) -> bool {
+    !profile_id.is_empty()
+        && profile_id.len() <= 64
+        && profile_id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+}
+
+fn profile_nodes_path(state: &AppState, profile_id: &str) -> Result<std::path::PathBuf, String> {
+    if !is_valid_profile_id(profile_id) {
+        return Err("Invalid profile id".to_string());
+    }
+
+    Ok(state.configs_dir().join(format!("{}.json", profile_id)))
+}
+
 fn load_profile_nodes(state: &AppState, profile_id: &str) -> Vec<SingBoxOutbound> {
-    let file = state.configs_dir().join(format!("{}.json", profile_id));
+    let file = match profile_nodes_path(state, profile_id) {
+        Ok(path) => path,
+        Err(_) => return Vec::new(),
+    };
     if file.exists() {
         if let Ok(content) = fs::read_to_string(&file) {
             if let Ok(nodes) = serde_json::from_str(&content) {
@@ -50,7 +68,10 @@ fn load_profile_nodes(state: &AppState, profile_id: &str) -> Vec<SingBoxOutbound
 }
 
 fn load_profile_nodes_raw(state: &AppState, profile_id: &str) -> Vec<serde_json::Value> {
-    let file = state.configs_dir().join(format!("{}.json", profile_id));
+    let file = match profile_nodes_path(state, profile_id) {
+        Ok(path) => path,
+        Err(_) => return Vec::new(),
+    };
     if file.exists() {
         if let Ok(content) = fs::read_to_string(&file) {
             if let Ok(nodes) = serde_json::from_str(&content) {
@@ -63,7 +84,7 @@ fn load_profile_nodes_raw(state: &AppState, profile_id: &str) -> Vec<serde_json:
 
 fn save_profile_nodes(state: &AppState, profile_id: &str, nodes: &[SingBoxOutbound]) -> Result<(), String> {
     fs::create_dir_all(state.configs_dir()).map_err(|e| e.to_string())?;
-    let file = state.configs_dir().join(format!("{}.json", profile_id));
+    let file = profile_nodes_path(state, profile_id)?;
     let content = serde_json::to_string_pretty(nodes).map_err(|e| e.to_string())?;
     fs::write(file, content).map_err(|e| e.to_string())?;
     Ok(())
@@ -138,7 +159,7 @@ pub async fn profile_delete(state: State<'_, AppState>, id: String) -> Result<()
     let mut data = load_profiles_data(&state);
     data.profiles.retain(|p| p.id != id);
     
-    let config_file = state.configs_dir().join(format!("{}.json", id));
+    let config_file = profile_nodes_path(&state, &id)?;
     let _ = fs::remove_file(config_file);
 
     if data.active_profile_id.as_ref() == Some(&id) {
@@ -319,8 +340,21 @@ async fn fetch_subscription(url: &str) -> Result<Vec<SingBoxOutbound>, String> {
         .map_err(|e| e.to_string())?;
 
     let response = client.get(url).send().await.map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("订阅请求失败: HTTP {}", response.status()));
+    }
+
+    if let Some(content_length) = response.content_length() {
+        if content_length > 10 * 1024 * 1024 {
+            return Err("订阅内容过大，已拒绝加载".to_string());
+        }
+    }
+
     let content = response.text().await.map_err(|e| e.to_string())?;
-    
+    if content.len() > 10 * 1024 * 1024 {
+        return Err("订阅内容过大，已拒绝加载".to_string());
+    }
+
     parse_subscription_content(&content)
 }
 
@@ -654,7 +688,8 @@ fn parse_vless_link(link: &str) -> Option<SingBoxOutbound> {
         }
         
         if let Some(insecure) = params.get("insecure") {
-            tls.insert("insecure".to_string(), serde_json::Value::Bool(insecure == "1"));
+            let allow_insecure = insecure == "1" || insecure.eq_ignore_ascii_case("true");
+            tls.insert("insecure".to_string(), serde_json::Value::Bool(allow_insecure));
         }
         
         if let Some(alpn) = params.get("alpn") {
@@ -839,7 +874,7 @@ fn parse_trojan_link(link: &str) -> Option<SingBoxOutbound> {
     } else {
         tls.insert("server_name".to_string(), serde_json::Value::String(server.to_string()));
     }
-    if params.get("allowInsecure").map(|s| s == "1").unwrap_or(false) {
+    if params.get("allowInsecure").map(|s| s == "1" || s.eq_ignore_ascii_case("true")).unwrap_or(false) {
         tls.insert("insecure".to_string(), serde_json::Value::Bool(true));
     }
     extra.insert("tls".to_string(), serde_json::Value::Object(tls));
@@ -904,7 +939,7 @@ fn parse_hysteria2_link(link: &str) -> Option<SingBoxOutbound> {
     } else {
         tls.insert("server_name".to_string(), serde_json::Value::String(server.to_string()));
     }
-    if params.get("insecure").map(|s| s == "1").unwrap_or(false) {
+    if params.get("insecure").map(|s| s == "1" || s.eq_ignore_ascii_case("true")).unwrap_or(false) {
         tls.insert("insecure".to_string(), serde_json::Value::Bool(true));
     }
     if let Some(alpn) = params.get("alpn") {
@@ -963,7 +998,7 @@ fn parse_hysteria_link(link: &str) -> Option<SingBoxOutbound> {
     } else {
         tls.insert("server_name".to_string(), serde_json::Value::String(server.to_string()));
     }
-    if params.get("insecure").map(|s| s == "1").unwrap_or(false) {
+    if params.get("insecure").map(|s| s == "1" || s.eq_ignore_ascii_case("true")).unwrap_or(false) {
         tls.insert("insecure".to_string(), serde_json::Value::Bool(true));
     }
     if let Some(alpn) = params.get("alpn") {
@@ -1369,7 +1404,7 @@ fn generate_temp_config_raw(nodes: &[serde_json::Value], api_port: u16) -> serde
                             obj.insert("tls".to_string(), serde_json::json!({
                                 "enabled": true,
                                 "server_name": server,
-                                "insecure": true
+                                "insecure": false
                             }));
                         }
                         "vless" | "vmess" | "trojan" => {
@@ -1378,7 +1413,7 @@ fn generate_temp_config_raw(nodes: &[serde_json::Value], api_port: u16) -> serde
                                 obj.insert("tls".to_string(), serde_json::json!({
                                     "enabled": true,
                                     "server_name": server,
-                                    "insecure": true
+                                    "insecure": false
                                 }));
                             }
                         }
@@ -1420,31 +1455,98 @@ fn generate_temp_config_raw(nodes: &[serde_json::Value], api_port: u16) -> serde
 }
 
 #[tauri::command]
+pub async fn profile_import_content(
+    state: State<'_, AppState>,
+    name: String,
+    content: String,
+    auto_update_interval: Option<u32>,
+    dns_pre_resolve: Option<bool>,
+    dns_server: Option<String>,
+) -> Result<Profile, String> {
+    let nodes = parse_subscription_content(&content)?;
+
+    if nodes.is_empty() {
+        return Err("No valid nodes found in content".to_string());
+    }
+
+    let profile = Profile {
+        id: uuid::Uuid::new_v4().to_string(),
+        name,
+        url: String::new(),
+        last_update: Some(chrono::Utc::now().timestamp_millis() as u64),
+        node_count: nodes.len() as u32,
+        enabled: true,
+        auto_update_interval: auto_update_interval.unwrap_or(0),
+        dns_pre_resolve: dns_pre_resolve.unwrap_or(false),
+        dns_server,
+    };
+
+    save_profile_nodes(&state, &profile.id, &nodes)?;
+
+    let mut data = load_profiles_data(&state);
+    if data.active_profile_id.is_none() {
+        data.active_profile_id = Some(profile.id.clone());
+        data.active_node_tag = nodes.first().and_then(|n| n.tag.clone());
+    }
+    data.profiles.push(profile.clone());
+    save_profiles_data(&state, &data)?;
+    *state.profiles_data.lock().await = data;
+
+    Ok(profile)
+}
+
+#[tauri::command]
 pub async fn node_add(
     state: State<'_, AppState>,
     link: String,
     profile_id: Option<String>,
+    profile_name: Option<String>,
 ) -> Result<SingBoxOutbound, String> {
     let node = parse_node_link(&link).ok_or("Invalid node link")?;
-    
+
     let mut data = load_profiles_data(&state);
-    let target_id = profile_id.or(data.active_profile_id.clone()).ok_or("No target profile")?;
-    
+    let target_id = if let Some(profile_id) = profile_id {
+        profile_id
+    } else if let Some(profile_name) = profile_name {
+        let trimmed_name = profile_name.trim();
+        if trimmed_name.is_empty() {
+            return Err("Profile name cannot be empty".to_string());
+        }
+
+        let profile = Profile {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: trimmed_name.to_string(),
+            url: String::new(),
+            last_update: Some(chrono::Utc::now().timestamp_millis() as u64),
+            node_count: 0,
+            enabled: true,
+            auto_update_interval: 0,
+            dns_pre_resolve: false,
+            dns_server: None,
+        };
+
+        let new_profile_id = profile.id.clone();
+        data.profiles.push(profile);
+        new_profile_id
+    } else {
+        data.active_profile_id.clone().ok_or("No target profile")?
+    };
+
     if !data.profiles.iter().any(|p| p.id == target_id) {
         return Err("Profile not found".to_string());
     }
-    
+
     let mut nodes = load_profile_nodes(&state, &target_id);
     nodes.push(node.clone());
     save_profile_nodes(&state, &target_id, &nodes)?;
-    
+
     if let Some(profile) = data.profiles.iter_mut().find(|p| p.id == target_id) {
         profile.node_count = nodes.len() as u32;
     }
-    
+
     save_profiles_data(&state, &data)?;
     *state.profiles_data.lock().await = data;
-    
+
     Ok(node)
 }
 
@@ -1522,43 +1624,20 @@ fn export_node_to_link(node: &SingBoxOutbound) -> Result<String, String> {
     }
 }
 
-#[tauri::command]
-pub async fn profile_import_content(
-    state: State<'_, AppState>,
-    name: String,
-    content: String,
-    auto_update_interval: Option<u32>,
-    dns_pre_resolve: Option<bool>,
-    dns_server: Option<String>,
-) -> Result<Profile, String> {
-    let nodes = parse_subscription_content(&content)?;
-    
-    if nodes.is_empty() {
-        return Err("No valid nodes found in content".to_string());
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[test]
+    fn parses_insecure_flags_from_links() {
+        let trojan = parse_trojan_link("trojan://pwd@example.com:443?allowInsecure=true#demo").unwrap();
+        let trojan_tls = trojan.extra.get("tls").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(trojan_tls.get("insecure").and_then(|v| v.as_bool()), Some(true));
+
+        let hysteria2 = parse_hysteria2_link("hysteria2://pwd@example.com:443?insecure=true#demo").unwrap();
+        let hysteria2_tls = hysteria2.extra.get("tls").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(hysteria2_tls.get("insecure").and_then(|v| v.as_bool()), Some(true));
     }
-    
-    let profile = Profile {
-        id: uuid::Uuid::new_v4().to_string(),
-        name,
-        url: String::new(),
-        last_update: Some(chrono::Utc::now().timestamp_millis() as u64),
-        node_count: nodes.len() as u32,
-        enabled: true,
-        auto_update_interval: auto_update_interval.unwrap_or(0),
-        dns_pre_resolve: dns_pre_resolve.unwrap_or(false),
-        dns_server,
-    };
-
-    save_profile_nodes(&state, &profile.id, &nodes)?;
-
-    let mut data = load_profiles_data(&state);
-    if data.active_profile_id.is_none() {
-        data.active_profile_id = Some(profile.id.clone());
-        data.active_node_tag = nodes.first().and_then(|n| n.tag.clone());
-    }
-    data.profiles.push(profile.clone());
-    save_profiles_data(&state, &data)?;
-    *state.profiles_data.lock().await = data;
-
-    Ok(profile)
 }

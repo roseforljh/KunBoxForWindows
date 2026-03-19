@@ -88,6 +88,22 @@ jobs:
         working-directory: kunbox-electron
         run: npm ci
 
+      - name: Run frontend lint
+        working-directory: kunbox-electron
+        run: npm run lint
+
+      - name: Run frontend typecheck
+        working-directory: kunbox-electron
+        run: npm run typecheck
+
+      - name: Run Rust checks
+        working-directory: src-tauri
+        run: cargo check
+
+      - name: Run Rust tests
+        working-directory: src-tauri
+        run: cargo test
+
       - name: Build frontend
         working-directory: kunbox-electron
         run: npm run build

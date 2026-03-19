@@ -9,7 +9,7 @@
     "beforeBuildCommand": ""
   },
   "app": {
-    "withGlobalTauri": true,
+    "withGlobalTauri": false,
     "windows": [
       {
         "title": "KunBox",
@@ -25,7 +25,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data: blob:; font-src 'self' asset: data:; connect-src 'self' https://api.github.com https://gh-api.p3terx.com https://api.github.moeyy.xyz https://github.api.99988866.xyz https://data.jsdelivr.com https://github.com https://mirror.ghproxy.com https://ghproxy.net https://gh-proxy.com https://raw.githubusercontent.com https://raw.gitmirror.com https://raw.fastgit.org http://127.0.0.1:9090; media-src 'self' blob: data:; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
     }
   },
   "plugins": {

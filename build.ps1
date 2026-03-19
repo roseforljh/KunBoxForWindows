@@ -45,15 +45,8 @@ if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
 }
 
 if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
-    $defaultKeyFile = Join-Path $PSScriptRoot "tauri-private.key"
-    if (Test-Path $defaultKeyFile) {
-        $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content $defaultKeyFile -Raw
-        Write-Host "Loaded TAURI_SIGNING_PRIVATE_KEY from tauri-private.key" -ForegroundColor Green
-    }
-}
-
-if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
-    Write-Host "Missing TAURI_SIGNING_PRIVATE_KEY. Please run: . .\tauri-signing.local.ps1" -ForegroundColor Red
+    Write-Host "Missing TAURI_SIGNING_PRIVATE_KEY. Please load it from a secure external location before building." -ForegroundColor Red
+    Write-Host "Example: set TAURI_SIGNING_PRIVATE_KEY_FILE and run . .\\tauri-signing.local.ps1" -ForegroundColor Yellow
     exit 1
 }
 

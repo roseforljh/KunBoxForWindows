@@ -59,16 +59,15 @@ export default function About() {
   }, [toast, updating])
 
   useEffect(() => {
-    const offProgress = window.api.updater.onDownloadProgress(({ chunkLength, contentLength }) => {
+    const offProgress = window.api.updater.onDownloadProgress(({ downloaded, contentLength }: { downloaded: number; contentLength: number }) => {
       if (!contentLength || contentLength <= 0) return
-      setProgress((prev) => {
-        const next = Math.min(100, prev + (chunkLength / contentLength) * 100)
-        return Number.isFinite(next) ? next : prev
-      })
+      const next = Math.min(100, (downloaded / contentLength) * 100)
+      setProgress(Number.isFinite(next) ? next : 0)
     })
 
     const offFinished = window.api.updater.onDownloadFinished(() => {
       setProgress(100)
+      setUpdating(false)
     })
 
     return () => {

@@ -31,6 +31,7 @@ const GITHUB_API_MIRRORS: &[&str] = &[
 ];
 
 const VERSION_FALLBACK_API: &str = "https://data.jsdelivr.com/v1/package/gh/SagerNet/sing-box";
+const MAX_KERNEL_DOWNLOAD_SIZE_BYTES: u64 = 100 * 1024 * 1024;
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -113,25 +114,6 @@ fn get_kernel_path(app: &AppHandle) -> Result<PathBuf, String> {
 
 fn path_exists(path: &Path) -> bool {
     fs::metadata(path).is_ok()
-}
-
-#[cfg(windows)]
-fn kill_existing_singbox_processes() {
-    use std::process::Command as StdCommand;
-    use std::os::windows::process::CommandExt;
-
-    let _ = StdCommand::new("taskkill")
-        .args(["/F", "/IM", "sing-box.exe"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output();
-
-    std::thread::sleep(std::time::Duration::from_millis(600));
-}
-
-#[cfg(not(windows))]
-fn kill_existing_singbox_processes() {
-    let _ = std::process::Command::new("pkill").args(["-9", "sing-box"]).output();
-    std::thread::sleep(std::time::Duration::from_millis(600));
 }
 
 fn replace_kernel_file(kernel_dir: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -339,8 +321,7 @@ pub async fn kernel_get_capabilities(app: AppHandle) -> Result<KernelCapabilitie
     })
 }
 
-#[tauri::command]
-pub async fn kernel_get_remote_releases(include_prerelease: Option<bool>) -> Result<Vec<RemoteRelease>, String> {
+async fn fetch_trusted_remote_releases(include_prerelease: bool) -> Result<Vec<RemoteRelease>, String> {
     let client = reqwest::Client::builder()
         .user_agent("KunBox/1.0")
         .timeout(std::time::Duration::from_secs(15))
@@ -349,7 +330,6 @@ pub async fn kernel_get_remote_releases(include_prerelease: Option<bool>) -> Res
 
     let mut releases = Vec::new();
 
-    // 尝试不同的 API 镜像源
     let mut stable_result: Option<GithubRelease> = None;
     for api_base in GITHUB_API_MIRRORS {
         let api_url = format!("{}/repos/SagerNet/sing-box/releases/latest", api_base);
@@ -368,7 +348,6 @@ pub async fn kernel_get_remote_releases(include_prerelease: Option<bool>) -> Res
         }
     }
 
-    // 处理 stable release
     if let Some(stable) = stable_result {
         if let Some(asset) = find_windows_asset(&stable.assets, &stable.tag_name) {
             releases.push(RemoteRelease {
@@ -382,9 +361,7 @@ pub async fn kernel_get_remote_releases(include_prerelease: Option<bool>) -> Res
         }
     }
 
-    // Get prerelease if requested
-    let include_pre = include_prerelease.unwrap_or(true);
-    if include_pre {
+    if include_prerelease {
         let mut all_releases_result: Option<Vec<GithubRelease>> = None;
         for api_base in GITHUB_API_MIRRORS {
             let api_url = format!("{}/repos/SagerNet/sing-box/releases?per_page=10", api_base);
@@ -415,7 +392,7 @@ pub async fn kernel_get_remote_releases(include_prerelease: Option<bool>) -> Res
                             download_url: asset.browser_download_url.clone(),
                             asset_name: asset.name.clone(),
                         });
-                        break; // Only get latest prerelease
+                        break;
                     }
                 }
             }
@@ -423,7 +400,7 @@ pub async fn kernel_get_remote_releases(include_prerelease: Option<bool>) -> Res
     }
 
     if releases.is_empty() {
-        match fetch_release_fallback_from_jsdelivr(&client, include_pre).await {
+        match fetch_release_fallback_from_jsdelivr(&client, include_prerelease).await {
             Ok(mut fallback) => {
                 releases.append(&mut fallback);
             }
@@ -440,9 +417,66 @@ pub async fn kernel_get_remote_releases(include_prerelease: Option<bool>) -> Res
     Ok(releases)
 }
 
+fn is_valid_release_tag(tag_name: &str) -> bool {
+    if !tag_name.starts_with('v') || tag_name.len() < 3 {
+        return false;
+    }
+
+    let version = &tag_name[1..];
+    let mut chars = version.chars().peekable();
+    let mut has_digit = false;
+
+    while let Some(ch) = chars.next() {
+        if ch.is_ascii_digit() {
+            has_digit = true;
+            continue;
+        }
+
+        if matches!(ch, '.' | '-') {
+            continue;
+        }
+
+        if ch.is_ascii_alphabetic() {
+            continue;
+        }
+
+        return false;
+    }
+
+    has_digit
+}
+
 #[tauri::command]
-pub async fn kernel_download(app: AppHandle, state: State<'_, AppState>, release: RemoteRelease) -> Result<serde_json::Value, String> {
+pub async fn kernel_get_remote_releases(include_prerelease: Option<bool>) -> Result<Vec<RemoteRelease>, String> {
+    fetch_trusted_remote_releases(include_prerelease.unwrap_or(true)).await
+}
+
+#[tauri::command]
+pub async fn kernel_download(app: AppHandle, state: State<'_, AppState>, tag_name: String) -> Result<serde_json::Value, String> {
     let _ = app.emit("kernel:download-start", ());
+
+    let normalized_tag = tag_name.trim().to_string();
+    if !is_valid_release_tag(&normalized_tag) {
+        let err = "无效的内核版本标识";
+        let _ = app.emit("kernel:download-error", err);
+        return Err(err.to_string());
+    }
+
+    let trusted_release = fetch_trusted_remote_releases(true)
+        .await?
+        .into_iter()
+        .find(|release| release.tag_name == normalized_tag)
+        .ok_or_else(|| {
+            let err = format!("未找到可信的内核版本: {}", normalized_tag);
+            let _ = app.emit("kernel:download-error", &err);
+            err
+        })?;
+
+    if trusted_release.download_url.trim().is_empty() || trusted_release.asset_name.trim().is_empty() {
+        let err = "内核版本缺少可用的下载资源";
+        let _ = app.emit("kernel:download-error", err);
+        return Err(err.to_string());
+    }
 
     let client = reqwest::Client::builder()
         .user_agent("KunBox/1.0")
@@ -450,15 +484,14 @@ pub async fn kernel_download(app: AppHandle, state: State<'_, AppState>, release
         .build()
         .map_err(|e| e.to_string())?;
 
-    // 尝试不同的镜像源下载
     let mut download_response = None;
     let mut last_error = String::new();
 
     for mirror in GITHUB_MIRRORS {
         let download_url = if mirror.is_empty() {
-            release.download_url.clone()
+            trusted_release.download_url.clone()
         } else {
-            format!("{}{}", mirror, release.download_url)
+            format!("{}{}", mirror, trusted_release.download_url)
         };
 
         log::info!("Trying to download from: {}", download_url);
@@ -485,19 +518,30 @@ pub async fn kernel_download(app: AppHandle, state: State<'_, AppState>, release
         let _ = app.emit("kernel:download-error", &err);
         err
     })?;
-    
+
     let total_size = response.content_length().unwrap_or(0);
+    if total_size > MAX_KERNEL_DOWNLOAD_SIZE_BYTES {
+        let err = "内核安装包过大，已拒绝下载";
+        let _ = app.emit("kernel:download-error", err);
+        return Err(err.to_string());
+    }
     let mut downloaded: u64 = 0;
-    
+
     let mut bytes = Vec::new();
     let mut stream = response.bytes_stream();
-    
+
     use futures_util::StreamExt;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| e.to_string())?;
         bytes.extend_from_slice(&chunk);
         downloaded += chunk.len() as u64;
-        
+
+        if downloaded > MAX_KERNEL_DOWNLOAD_SIZE_BYTES {
+            let err = "内核安装包过大，已拒绝下载";
+            let _ = app.emit("kernel:download-error", err);
+            return Err(err.to_string());
+        }
+
         if total_size > 0 {
             let progress = serde_json::json!({
                 "downloaded": downloaded,
@@ -507,14 +551,13 @@ pub async fn kernel_download(app: AppHandle, state: State<'_, AppState>, release
             let _ = app.emit("kernel:download-progress", progress);
         }
     }
-    
-    // Extract zip
+
     let kernel_dir = get_kernel_dir_for_install(&app)?;
     fs::create_dir_all(&kernel_dir).map_err(|e| e.to_string())?;
-    
+
     let cursor = std::io::Cursor::new(bytes);
     let mut archive = zip::ZipArchive::new(cursor).map_err(|e| e.to_string())?;
-    
+
     let mut found = false;
     let mut exe_bytes: Option<Vec<u8>> = None;
     let mut cronet_bytes: Option<Vec<u8>> = None;
@@ -536,7 +579,7 @@ pub async fn kernel_download(app: AppHandle, state: State<'_, AppState>, release
             cronet_bytes = Some(bytes);
         }
     }
-    
+
     if !found {
         let err = "sing-box.exe not found in archive";
         let _ = app.emit("kernel:download-error", err);
@@ -550,8 +593,6 @@ pub async fn kernel_download(app: AppHandle, state: State<'_, AppState>, release
         if !stop_result.success {
             return Err(stop_result.error.unwrap_or_else(|| "停止内核失败".to_string()));
         }
-    } else {
-        kill_existing_singbox_processes();
     }
 
     replace_kernel_file(&kernel_dir, exe_bytes.as_deref().ok_or_else(|| "sing-box.exe not found in archive".to_string())?)?;
@@ -568,9 +609,9 @@ pub async fn kernel_download(app: AppHandle, state: State<'_, AppState>, release
             return Err(start_result.error.unwrap_or_else(|| "内核已更新，但重新启动失败".to_string()));
         }
     }
-    
+
     let _ = app.emit("kernel:download-complete", ());
-    
+
     Ok(serde_json::json!({ "success": true }))
 }
 
@@ -738,4 +779,26 @@ async fn get_kernel_version_info(kernel_path: &std::path::Path) -> Option<(Strin
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validates_release_tags() {
+        assert!(is_valid_release_tag("v1.13.0"));
+        assert!(is_valid_release_tag("v1.13.0-beta.1"));
+        assert!(!is_valid_release_tag("1.13.0"));
+        assert!(!is_valid_release_tag("v../evil"));
+        assert!(!is_valid_release_tag(""));
+    }
+
+    #[test]
+    fn builds_release_from_version() {
+        let release = build_release_from_version("1.13.0", false);
+        assert_eq!(release.tag_name, "v1.13.0");
+        assert_eq!(release.asset_name, "sing-box-1.13.0-windows-amd64.zip");
+        assert!(release.download_url.contains("/v1.13.0/sing-box-1.13.0-windows-amd64.zip"));
+    }
 }

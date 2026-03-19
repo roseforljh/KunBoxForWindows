@@ -68,7 +68,7 @@ pub async fn updater_download_and_install(app: AppHandle) -> Result<UpdateInfo, 
                 let _ = app.emit(
                     "updater:download-progress",
                     serde_json::json!({
-                        "chunkLength": chunk_length,
+                        "downloaded": chunk_length,
                         "contentLength": total
                     }),
                 );

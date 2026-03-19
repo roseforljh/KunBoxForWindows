@@ -55,13 +55,6 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     setToasts(prev => prev.filter(t => t.id !== id))
   }, [])
 
-  const success = useCallback((message: string) => showToast(message, 'success'), [showToast])
-  const error = useCallback((message: string) => showToast(message, 'error'), [showToast])
-  const warning = useCallback((message: string) => showToast(message, 'warning'), [showToast])
-  const info = useCallback((message: string) => showToast(message, 'info'), [showToast])
-
-  const contextValue = useMemo(() => ({ showToast, showRestartToast: () => {}, success, error, warning, info }), [showToast, success, error, warning, info])
-
   const getIcon = (type: ToastType) => {
     switch (type) {
       case 'success':
@@ -89,14 +82,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   }
 
   return (
-    <ToastContext.Provider value={contextValue}>
-      <ToastProviderInner 
-        showToast={showToast} 
-        isRestarting={isRestarting}
-        setIsRestarting={setIsRestarting}
-      >
-        {children}
-      </ToastProviderInner>
+    <ToastProviderInner
+      showToast={showToast}
+      isRestarting={isRestarting}
+      setIsRestarting={setIsRestarting}
+    >
+      {children}
       <div className="fixed bottom-6 left-[calc(50%+var(--sidebar-width,160px)/2)] -translate-x-1/2 z-[9999] flex flex-col-reverse gap-2 pointer-events-none">
         <AnimatePresence>
           {toasts.map((toast) => (
@@ -130,7 +121,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           ))}
         </AnimatePresence>
       </div>
-    </ToastContext.Provider>
+    </ToastProviderInner>
   )
 }
 

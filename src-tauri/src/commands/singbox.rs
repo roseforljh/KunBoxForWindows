@@ -38,28 +38,6 @@ fn is_running_as_admin() -> bool {
     false
 }
 
-/// Kill all existing sing-box processes to avoid conflicts
-#[cfg(windows)]
-fn kill_existing_singbox_processes() {
-    use std::process::Command as StdCommand;
-    use std::os::windows::process::CommandExt;
-    
-    let _ = StdCommand::new("taskkill")
-        .args(["/F", "/IM", "sing-box.exe"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output();
-    
-    // Wait a bit for processes to terminate
-    std::thread::sleep(std::time::Duration::from_millis(300));
-}
-
-#[cfg(not(windows))]
-fn kill_existing_singbox_processes() {
-    use std::process::Command as StdCommand;
-    let _ = StdCommand::new("pkill").args(["-9", "sing-box"]).output();
-    std::thread::sleep(std::time::Duration::from_millis(300));
-}
-
 pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Result<CommandResult, String> {
     let singbox_path = get_singbox_path(&app)?;
     
@@ -74,10 +52,7 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
     }
     drop(settings);
 
-    // Kill any existing sing-box processes before starting
-    kill_existing_singbox_processes();
-
-    // Stop any existing process in our state
+    // Stop any existing managed process in our state before starting a new one
     if let Some(mut child) = state.singbox_process.lock().await.take() {
         let _ = child.kill().await;
     }
@@ -171,10 +146,87 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
         });
     }
 
-    *state.singbox_process.lock().await = Some(child);
-    *state.proxy_state.lock().await = ProxyState::Connected;
     let start_time_val = chrono::Utc::now().timestamp_millis() as u64;
     *state.start_time.lock().await = Some(start_time_val);
+
+    // Store child process handle in state so it persists beyond this function
+    // (kill_on_drop(true) would kill the process when `child` is dropped otherwise)
+    *state.singbox_process.lock().await = Some(child);
+
+    // Spawn a background task that polls the process exit status without taking
+    // the handle out of state.  This way singbox_stop_impl can still .take()
+    // and .kill() the child at any time.
+    let wait_app = app.clone();
+    let proxy_state = state.proxy_state.clone();
+    let start_time_state = state.start_time.clone();
+    let process_slot = state.singbox_process.clone();
+    let traffic_cancel = state.traffic_cancel.clone();
+    tokio::spawn(async move {
+        // Poll the child process by periodically checking if it has exited.
+        // We cannot call child.wait() because that requires &mut ownership,
+        // and taking the child out of the slot would break singbox_stop_impl.
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+            let mut guard = process_slot.lock().await;
+            match guard.as_mut() {
+                None => {
+                    // Process handle was taken by singbox_stop_impl — normal shutdown
+                    break;
+                }
+                Some(child) => {
+                    // try_wait returns Ok(Some(status)) if exited, Ok(None) if still running
+                    match child.try_wait() {
+                        Ok(Some(status)) => {
+                            // Process exited on its own — take handle out and react
+                            let _ = guard.take();
+                            drop(guard);
+
+                            let current_state = proxy_state.lock().await.clone();
+                            if !matches!(current_state, ProxyState::Idle | ProxyState::Disconnecting) {
+                                *proxy_state.lock().await = ProxyState::Error;
+                                *start_time_state.lock().await = None;
+                                if let Some(cancel) = traffic_cancel.lock().await.take() {
+                                    cancel.cancel();
+                                }
+                                let _ = disable_system_proxy_internal().await;
+                                let _ = wait_app.emit("singbox:state", "error");
+                                let _ = wait_app.emit("singbox:log", serde_json::json!({
+                                    "timestamp": chrono::Utc::now().timestamp_millis(),
+                                    "level": "error",
+                                    "tag": "sing-box",
+                                    "message": format!("sing-box exited unexpectedly: {}", status)
+                                }));
+                            }
+                            break;
+                        }
+                        Ok(None) => {
+                            // Still running, continue polling
+                        }
+                        Err(_) => {
+                            // Error checking status, assume crashed
+                            let _ = guard.take();
+                            drop(guard);
+
+                            let current_state = proxy_state.lock().await.clone();
+                            if !matches!(current_state, ProxyState::Idle | ProxyState::Disconnecting) {
+                                *proxy_state.lock().await = ProxyState::Error;
+                                *start_time_state.lock().await = None;
+                                if let Some(cancel) = traffic_cancel.lock().await.take() {
+                                    cancel.cancel();
+                                }
+                                let _ = disable_system_proxy_internal().await;
+                                let _ = wait_app.emit("singbox:state", "error");
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    *state.proxy_state.lock().await = ProxyState::Connected;
     
     let _ = app.emit("singbox:state", "connected");
 
@@ -226,8 +278,7 @@ pub(crate) async fn singbox_stop_impl(app: AppHandle, state: &AppState) -> Resul
         let _ = child.kill().await;
     }
 
-    // Also kill any orphan sing-box processes
-    kill_existing_singbox_processes();
+    // Managed process has already been stopped above if present
 
     // Disable system proxy
     let _ = disable_system_proxy_internal().await;
@@ -330,7 +381,7 @@ fn process_node(node: &serde_json::Value) -> serde_json::Value {
                     obj.insert("tls".to_string(), serde_json::json!({
                         "enabled": true,
                         "server_name": server,
-                        "insecure": true
+                        "insecure": false
                     }));
                 }
                 "vless" | "vmess" | "trojan" => {
@@ -338,7 +389,7 @@ fn process_node(node: &serde_json::Value) -> serde_json::Value {
                         obj.insert("tls".to_string(), serde_json::json!({
                             "enabled": true,
                             "server_name": server,
-                            "insecure": true
+                            "insecure": false
                         }));
                     }
                 }
@@ -362,31 +413,75 @@ fn build_dns_server(address: &str, tag: &str, detour: &str) -> serde_json::Value
         return serde_json::json!({ "tag": tag, "type": "fakeip" });
     }
 
-    let (server_type, server) = if let Some(v) = value.strip_prefix("udp://") {
-        ("udp", v.to_string())
+    // 解析协议类型、服务器地址（可能含路径）、默认端口、可选路径
+    let (server_type, server_with_path, default_port) = if let Some(v) = value.strip_prefix("udp://") {
+        ("udp", v.to_string(), 53u16)
     } else if let Some(v) = value.strip_prefix("tcp://") {
-        ("tcp", v.to_string())
+        ("tcp", v.to_string(), 53)
     } else if let Some(v) = value.strip_prefix("tls://") {
-        ("tls", v.to_string())
+        ("tls", v.to_string(), 853)
     } else if let Some(v) = value.strip_prefix("https://") {
-        ("https", v.trim_start_matches("https://").trim_end_matches("/dns-query").to_string())
+        ("https", v.to_string(), 443)
     } else if let Some(v) = value.strip_prefix("h3://") {
-        ("h3", v.trim_start_matches("h3://").trim_end_matches("/dns-query").to_string())
+        ("h3", v.to_string(), 443)
     } else if let Some(v) = value.strip_prefix("quic://") {
-        ("quic", v.to_string())
+        ("quic", v.to_string(), 853)
     } else if value.contains("://") {
-        ("udp", value.to_string())
-    } else if value.contains("/dns-query") {
-        ("https", value.trim_start_matches("https://").trim_end_matches("/dns-query").to_string())
+        ("udp", value.to_string(), 53)
+    } else if value.contains("/dns-query") || value.contains("/resolve") {
+        ("https", value.to_string(), 443)
     } else {
-        ("udp", value.to_string())
+        ("udp", value.to_string(), 53)
+    };
+
+    // 从 server_with_path 中分离 host:port 和路径（如 /dns-query）
+    // 例如 "1.1.1.1/dns-query" → host="1.1.1.1", path="/dns-query"
+    // 例如 "dns.google:443/dns-query" → host="dns.google", port=443, path="/dns-query"
+    let (server_no_path, path) = if let Some(slash_pos) = server_with_path.find('/') {
+        let path_str = &server_with_path[slash_pos..];
+        let host_part = &server_with_path[..slash_pos];
+        (host_part.to_string(), Some(path_str.to_string()))
+    } else {
+        (server_with_path.clone(), None)
+    };
+
+    // 从 server_no_path 中提取 host 和可选端口
+    let (host, port) = if let Some(bracket_end) = server_no_path.find(']') {
+        // IPv6 地址 [::1]:port
+        if let Some(colon_pos) = server_no_path[bracket_end..].find(':') {
+            let port_str = &server_no_path[bracket_end + colon_pos + 1..];
+            let port = port_str.parse::<u16>().unwrap_or(default_port);
+            (server_no_path[..bracket_end + 1].to_string(), port)
+        } else {
+            (server_no_path.clone(), default_port)
+        }
+    } else if let Some(colon_pos) = server_no_path.rfind(':') {
+        // host:port（排除纯 IPv6 地址如 ::1）
+        let after_colon = &server_no_path[colon_pos + 1..];
+        if let Ok(port) = after_colon.parse::<u16>() {
+            (server_no_path[..colon_pos].to_string(), port)
+        } else {
+            (server_no_path.clone(), default_port)
+        }
+    } else {
+        (server_no_path.clone(), default_port)
     };
 
     let mut server_obj = serde_json::json!({
         "tag": tag,
         "type": server_type,
-        "server": server
+        "server": host,
+        "server_port": port
     });
+
+    // DoH/H3 需要 path 字段（sing-box 1.12+ 新格式）
+    // server 字段只含主机名/IP，路径通过 path 字段传递
+    if matches!(server_type, "https" | "h3") {
+        if let Some(ref p) = path {
+            server_obj["path"] = serde_json::Value::String(p.clone());
+        }
+        // 不设 path 时 sing-box 默认用 /dns-query
+    }
 
     if detour != "direct" {
         server_obj["detour"] = serde_json::Value::String(detour.to_string());
@@ -407,6 +502,34 @@ fn apply_route_target(mut rule: serde_json::Value, target: &str) -> serde_json::
     rule
 }
 
+fn is_valid_profile_id(profile_id: &str) -> bool {
+    !profile_id.is_empty()
+        && profile_id.len() <= 64
+        && profile_id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+}
+
+fn is_valid_ruleset_tag(tag: &str) -> bool {
+    !tag.is_empty()
+        && tag.len() <= 128
+        && tag.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+}
+
+fn profile_nodes_path(state: &AppState, profile_id: &str) -> Result<PathBuf, String> {
+    if !is_valid_profile_id(profile_id) {
+        return Err("Invalid profile id".to_string());
+    }
+
+    Ok(state.configs_dir().join(format!("{}.json", profile_id)))
+}
+
+fn ruleset_cache_path(state: &AppState, tag: &str) -> Result<PathBuf, String> {
+    if !is_valid_ruleset_tag(tag) {
+        return Err("Invalid ruleset tag".to_string());
+    }
+
+    Ok(state.rulesets_cache_dir().join(format!("{}.srs", tag)))
+}
+
 /// 配置文件信息（用于跨配置分流）
 struct ProfileInfo {
     id: String,
@@ -416,11 +539,13 @@ struct ProfileInfo {
 
 /// 加载所有配置文件的节点信息
 fn load_all_profiles(state: &AppState, profiles_data: &crate::types::ProfilesData) -> Vec<ProfileInfo> {
-    let configs_dir = state.configs_dir();
     let mut result = Vec::new();
     
     for profile in &profiles_data.profiles {
-        let nodes_file = configs_dir.join(format!("{}.json", profile.id));
+        let nodes_file = match profile_nodes_path(state, &profile.id) {
+            Ok(path) => path,
+            Err(_) => continue,
+        };
         if nodes_file.exists() {
             if let Ok(content) = fs::read_to_string(&nodes_file) {
                 if let Ok(nodes) = serde_json::from_str::<Vec<serde_json::Value>>(&content) {
@@ -456,7 +581,7 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
         None => return Ok(CommandResult::err("No active profile")),
     };
 
-    let nodes_file = state.configs_dir().join(format!("{}.json", active_profile_id));
+    let nodes_file = profile_nodes_path(state, &active_profile_id)?;
     if !nodes_file.exists() {
         return Ok(CommandResult::err("No nodes in active profile"));
     }
@@ -514,6 +639,8 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
     // Build config - 使用 sing-box 1.11+ 新格式
     let listen_addr = if settings.allow_lan { "0.0.0.0" } else { "127.0.0.1" };
     
+    let routing_mode = settings.routing_mode.as_str();
+
     // 构建 DNS 服务器列表（sing-box 1.12+ 新格式）
     let mut dns_servers = vec![
         build_dns_server(&settings.local_dns, "dns-local", "direct"),
@@ -523,7 +650,123 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
     // 构建 DNS 规则
     let mut dns_rules: Vec<serde_json::Value> = Vec::new();
 
-    // FakeDNS 规则
+    // ========== 根据域名分流规则生成对应的 DNS 规则 ==========
+    // 核心原理：sing-box 中 DNS 查询和路由是分开处理的。
+    // 如果一个域名的路由规则设为 "direct"，但 DNS 查询走的是远程代理 DNS，
+    // 就会导致 DNS 解析失败或返回错误的 IP，直连规则就不会生效。
+    // 因此必须为每个域名路由规则生成对应的 DNS 规则：
+    //   - direct 出站 → 使用 dns-local（本地 DNS 解析）
+    //   - proxy/其他出站 → 使用 dns-remote（远程代理 DNS 解析）
+    //   - block 出站 → 不需要 DNS 规则（直接拒绝）
+    if routing_mode == "rule" {
+        // 收集 direct 域名和 proxy 域名，按类型分组后批量添加 DNS 规则
+        let mut direct_domains: Vec<String> = Vec::new();
+        let mut direct_domain_suffixes: Vec<String> = Vec::new();
+        let mut direct_domain_keywords: Vec<String> = Vec::new();
+        let mut proxy_domains: Vec<String> = Vec::new();
+        let mut proxy_domain_suffixes: Vec<String> = Vec::new();
+        let mut proxy_domain_keywords: Vec<String> = Vec::new();
+
+        for rule in custom_rules.domain_rules.iter().filter(|r| r.enabled) {
+            let is_direct = rule.outbound_mode == "direct";
+            let is_proxy = matches!(rule.outbound_mode.as_str(), "proxy" | "node" | "profile");
+            // block 规则不需要 DNS 规则
+
+            if is_direct {
+                match rule.rule_type.as_str() {
+                    "domain" => direct_domains.push(rule.value.clone()),
+                    "domain_suffix" => direct_domain_suffixes.push(rule.value.clone()),
+                    "domain_keyword" => direct_domain_keywords.push(rule.value.clone()),
+                    _ => direct_domain_suffixes.push(rule.value.clone()),
+                }
+            } else if is_proxy {
+                match rule.rule_type.as_str() {
+                    "domain" => proxy_domains.push(rule.value.clone()),
+                    "domain_suffix" => proxy_domain_suffixes.push(rule.value.clone()),
+                    "domain_keyword" => proxy_domain_keywords.push(rule.value.clone()),
+                    _ => proxy_domain_suffixes.push(rule.value.clone()),
+                }
+            }
+        }
+
+        // 生成 direct 域名的 DNS 规则 → dns-local
+        if !direct_domains.is_empty() || !direct_domain_suffixes.is_empty() || !direct_domain_keywords.is_empty() {
+            let mut dns_rule = serde_json::Map::new();
+            if !direct_domains.is_empty() {
+                dns_rule.insert("domain".to_string(), serde_json::json!(direct_domains));
+            }
+            if !direct_domain_suffixes.is_empty() {
+                dns_rule.insert("domain_suffix".to_string(), serde_json::json!(direct_domain_suffixes));
+            }
+            if !direct_domain_keywords.is_empty() {
+                dns_rule.insert("domain_keyword".to_string(), serde_json::json!(direct_domain_keywords));
+            }
+            dns_rule.insert("server".to_string(), serde_json::json!("dns-local"));
+            dns_rules.push(serde_json::Value::Object(dns_rule));
+            log::info!("Added DNS rule for direct domains: {} domain, {} suffix, {} keyword",
+                direct_domains.len(), direct_domain_suffixes.len(), direct_domain_keywords.len());
+        }
+
+        // 生成 proxy 域名的 DNS 规则 → dns-remote
+        if !proxy_domains.is_empty() || !proxy_domain_suffixes.is_empty() || !proxy_domain_keywords.is_empty() {
+            let mut dns_rule = serde_json::Map::new();
+            if !proxy_domains.is_empty() {
+                dns_rule.insert("domain".to_string(), serde_json::json!(proxy_domains));
+            }
+            if !proxy_domain_suffixes.is_empty() {
+                dns_rule.insert("domain_suffix".to_string(), serde_json::json!(proxy_domain_suffixes));
+            }
+            if !proxy_domain_keywords.is_empty() {
+                dns_rule.insert("domain_keyword".to_string(), serde_json::json!(proxy_domain_keywords));
+            }
+            dns_rule.insert("server".to_string(), serde_json::json!("dns-remote"));
+            dns_rules.push(serde_json::Value::Object(dns_rule));
+            log::info!("Added DNS rule for proxy domains: {} domain, {} suffix, {} keyword",
+                proxy_domains.len(), proxy_domain_suffixes.len(), proxy_domain_keywords.len());
+        }
+    }
+
+    // ========== 根据规则集(ruleset)生成对应的 DNS 规则 ==========
+    // 与域名规则同理：规则集中设为 direct 的域名类规则集也需要用 dns-local 解析
+    if routing_mode == "rule" {
+        let mut direct_rulesets: Vec<String> = Vec::new();
+        let mut proxy_rulesets: Vec<String> = Vec::new();
+
+        for rs in &enabled_rulesets {
+            // 只为有本地缓存的规则集生成 DNS 规则
+            let local_path = match ruleset_cache_path(state, &rs.tag) {
+                Ok(path) => path,
+                Err(_) => continue,
+            };
+            if !local_path.exists() {
+                continue;
+            }
+
+            match rs.outbound_mode.as_str() {
+                "direct" => direct_rulesets.push(rs.tag.clone()),
+                "proxy" | "node" | "节点" | "profile" | "配置" => proxy_rulesets.push(rs.tag.clone()),
+                _ => {} // block 不需要 DNS 规则
+            }
+        }
+
+        if !direct_rulesets.is_empty() {
+            dns_rules.push(serde_json::json!({
+                "rule_set": direct_rulesets,
+                "server": "dns-local"
+            }));
+            log::info!("Added DNS rule for {} direct rulesets", direct_rulesets.len());
+        }
+
+        if !proxy_rulesets.is_empty() {
+            dns_rules.push(serde_json::json!({
+                "rule_set": proxy_rulesets,
+                "server": "dns-remote"
+            }));
+            log::info!("Added DNS rule for {} proxy rulesets", proxy_rulesets.len());
+        }
+    }
+
+    // FakeDNS 规则（放在域名 DNS 规则之后，确保域名规则优先匹配）
     if settings.fake_dns {
         dns_servers.push(serde_json::json!({
             "tag": "dns-fakeip",
@@ -567,7 +810,10 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
         }));
     }
     
-    let dns_final = "dns-remote";
+    let dns_final = match routing_mode {
+        "global-direct" => "dns-local",
+        _ => "dns-remote",
+    };
     let dns_config = serde_json::json!({
         "servers": dns_servers,
         "rules": dns_rules,
@@ -577,7 +823,6 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
 
     // 避免 1.13+ 硬错误，始终不生成已弃用 outbound DNS rule item
 
-    let routing_mode = settings.routing_mode.as_str();
     let route_final = match routing_mode {
         "global-proxy" => "PROXY",
         "global-direct" => "direct",
@@ -736,7 +981,6 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
 
     // 预先声明规则集引用和缓存目录（广告屏蔽和用户规则集都需要）
     let mut rule_set_refs = Vec::new();
-    let rulesets_cache_dir = state.rulesets_cache_dir();
 
     if settings.tun_enabled {
         rules.insert(1, serde_json::json!({ "inbound": "tun-in", "action": "sniff" }));
@@ -815,7 +1059,13 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
     if routing_mode == "rule" {
         for rs in &enabled_rulesets {
         // 检查本地缓存文件是否存在
-        let local_path = rulesets_cache_dir.join(format!("{}.srs", rs.tag));
+        let local_path = match ruleset_cache_path(state, &rs.tag) {
+            Ok(path) => path,
+            Err(_) => {
+                log::warn!("Invalid ruleset tag '{}', skipping", rs.tag);
+                continue;
+            }
+        };
         
         if !local_path.exists() {
             log::warn!("Ruleset cache not found, skipping: {}", rs.tag);
@@ -906,24 +1156,130 @@ fn get_singbox_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(resource_path.join("resources/libs/sing-box.exe"))
 }
 
+struct SystemProxySnapshot {
+    proxy_enable: Option<String>,
+    proxy_server: Option<String>,
+    proxy_override: Option<String>,
+    auto_config_url: Option<String>,
+}
+
+static SYSTEM_PROXY_SNAPSHOT: once_cell::sync::Lazy<std::sync::Mutex<Option<SystemProxySnapshot>>> =
+    once_cell::sync::Lazy::new(|| std::sync::Mutex::new(None));
+
+#[cfg(windows)]
+async fn query_registry_value(name: &str) -> Result<Option<String>, String> {
+    let output = Command::new("reg")
+        .args([
+            "query",
+            "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
+            "/v",
+            name,
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value = stdout
+        .lines()
+        .find(|line| line.contains(name))
+        .and_then(|line| line.split_whitespace().last())
+        .map(|s| s.to_string());
+
+    Ok(value)
+}
+
+#[cfg(windows)]
+async fn snapshot_system_proxy_if_needed() -> Result<(), String> {
+    let already_snapshotted = {
+        let guard = SYSTEM_PROXY_SNAPSHOT.lock().map_err(|_| "系统代理快照锁失败".to_string())?;
+        guard.is_some()
+    };
+
+    if already_snapshotted {
+        return Ok(());
+    }
+
+    let snapshot = SystemProxySnapshot {
+        proxy_enable: query_registry_value("ProxyEnable").await?,
+        proxy_server: query_registry_value("ProxyServer").await?,
+        proxy_override: query_registry_value("ProxyOverride").await?,
+        auto_config_url: query_registry_value("AutoConfigURL").await?,
+    };
+
+    let mut guard = SYSTEM_PROXY_SNAPSHOT.lock().map_err(|_| "系统代理快照锁失败".to_string())?;
+    if guard.is_none() {
+        *guard = Some(snapshot);
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+async fn set_registry_value(name: &str, value_type: &str, value: &str) -> Result<(), String> {
+    let output = Command::new("reg")
+        .args([
+            "add",
+            "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
+            "/v",
+            name,
+            "/t",
+            value_type,
+            "/d",
+            value,
+            "/f",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+
+    Ok(())
+}
+
+#[cfg(windows)]
+async fn restore_system_proxy_snapshot() -> Result<(), String> {
+    let snapshot = {
+        let mut guard = SYSTEM_PROXY_SNAPSHOT.lock().map_err(|_| "系统代理快照锁失败".to_string())?;
+        guard.take()
+    };
+
+    if let Some(snapshot) = snapshot {
+        let enable_value = snapshot.proxy_enable.as_deref().unwrap_or("0");
+        set_registry_value("ProxyEnable", "REG_DWORD", enable_value).await?;
+
+        if let Some(proxy_server) = snapshot.proxy_server {
+            set_registry_value("ProxyServer", "REG_SZ", &proxy_server).await?;
+        }
+        if let Some(proxy_override) = snapshot.proxy_override {
+            set_registry_value("ProxyOverride", "REG_SZ", &proxy_override).await?;
+        }
+        if let Some(auto_config_url) = snapshot.auto_config_url {
+            set_registry_value("AutoConfigURL", "REG_SZ", &auto_config_url).await?;
+        }
+    } else {
+        set_registry_value("ProxyEnable", "REG_DWORD", "0").await?;
+    }
+
+    Ok(())
+}
+
 async fn enable_system_proxy_internal(port: u16) -> Result<(), String> {
     let proxy = format!("127.0.0.1:{}", port);
     
     #[cfg(windows)]
     {
-        Command::new("reg")
-            .args(["add", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings", "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "1", "/f"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .await
-            .map_err(|e| e.to_string())?;
-
-        Command::new("reg")
-            .args(["add", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings", "/v", "ProxyServer", "/t", "REG_SZ", "/d", &proxy, "/f"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .await
-            .map_err(|e| e.to_string())?;
+        snapshot_system_proxy_if_needed().await?;
+        set_registry_value("ProxyEnable", "REG_DWORD", "1").await?;
+        set_registry_value("ProxyServer", "REG_SZ", &proxy).await?;
     }
 
     #[cfg(not(windows))]
@@ -936,12 +1292,7 @@ async fn enable_system_proxy_internal(port: u16) -> Result<(), String> {
 
 async fn disable_system_proxy_internal() -> Result<(), String> {
     #[cfg(windows)]
-    Command::new("reg")
-        .args(["add", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings", "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "0", "/f"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .await
-        .map_err(|e| e.to_string())?;
+    restore_system_proxy_snapshot().await?;
 
     Ok(())
 }

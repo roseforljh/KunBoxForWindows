@@ -102,13 +102,14 @@ export const useNodesStore = create<NodesState>()(
       }),
 
       selectNode: async (tag) => {
-        // Save selection to backend first
+        const result = await window.api.singbox.switchNode(tag)
+        if (!result.success) {
+          return false
+        }
+
         await window.api.node.setActive(tag)
         set({ activeNodeTag: tag })
-        
-        // Try hot switch via Clash API (only works when VPN is running)
-        const result = await window.api.singbox.switchNode(tag)
-        return result.success
+        return true
       },
 
       saveNodeSelection: (profileId, nodeTag) => {

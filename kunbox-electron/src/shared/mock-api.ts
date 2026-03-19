@@ -52,6 +52,9 @@ const mockNodes: SingBoxOutbound[] = [
   { tag: '🇹🇼 台湾 01', type: 'shadowsocks', server: 'tw1.example.com', server_port: 443 },
 ]
 
+let mockActiveProfileId: string | null = 'mock-profile-1'
+let mockSettings: AppSettings = { ...defaultSettings }
+
 const mockNodesWithProfile: NodeWithProfile[] = mockNodes.map((n) => ({
   ...n,
   sourceProfileId: 'mock-profile-1',
@@ -115,8 +118,11 @@ export const mockApi = {
     update: (_id: string): Promise<Profile> =>
       Promise.resolve(mockProfiles[0]),
     delete: (_id: string): Promise<void> => Promise.resolve(),
-    getActive: (): Promise<string | null> => Promise.resolve('mock-profile-1'),
-    setActive: (_id: string): Promise<void> => Promise.resolve(),
+    getActive: (): Promise<string | null> => Promise.resolve(mockActiveProfileId),
+    setActive: (_id: string): Promise<void> => {
+      mockActiveProfileId = _id
+      return Promise.resolve()
+    },
     refresh: (_id: string): Promise<Profile> => Promise.resolve(mockProfiles[0]),
     edit: (_id: string, _data: any): Promise<Profile> => Promise.resolve(mockProfiles[0]),
     setEnabled: (_id: string, _enabled: boolean): Promise<void> => Promise.resolve(),
@@ -141,8 +147,11 @@ export const mockApi = {
   },
 
   settings: {
-    get: (): Promise<AppSettings> => Promise.resolve({ ...defaultSettings }),
-    set: (_settings: Partial<AppSettings>): Promise<void> => Promise.resolve(),
+    get: (): Promise<AppSettings> => Promise.resolve({ ...mockSettings }),
+    set: (_settings: Partial<AppSettings>): Promise<void> => {
+      mockSettings = { ...mockSettings, ..._settings }
+      return Promise.resolve()
+    },
   },
 
   kernel: {
@@ -172,13 +181,13 @@ export const mockApi = {
         assetName: 'sing-box-1.12.0-windows-amd64.zip',
       },
     ],
-    download: (_release: any, _isAlpha?: boolean) => Promise.resolve({ success: true }),
+    download: (_tagName: string) => Promise.resolve({ success: true }),
     rollback: (_isAlpha?: boolean) => Promise.resolve({ success: true }),
     canRollback: (_isAlpha?: boolean) => Promise.resolve(false),
     clearCache: () => Promise.resolve({ success: true, freedBytes: 0 }),
     openReleasesPage: () => Promise.resolve(),
     openDirectory: () => Promise.resolve(),
-    onDownloadProgress: (_callback: (progress: any) => void) => noopUnlisten(),
+    onDownloadProgress: (_callback: (progress: { downloaded: number; contentLength: number }) => void) => noopUnlisten(),
     onDownloadComplete: (_callback: () => void) => noopUnlisten(),
     onDownloadError: (_callback: (error: string) => void) => noopUnlisten(),
   },
@@ -204,7 +213,7 @@ export const mockApi = {
       Promise.resolve({ currentVersion: '0.1.0-dev', hasUpdate: false }),
     downloadAndInstall: () =>
       Promise.resolve({ currentVersion: '0.1.0-dev', hasUpdate: false }),
-    onDownloadProgress: (_callback: (progress: any) => void) => noopUnlisten(),
+    onDownloadProgress: (_callback: (progress: { downloaded: number; contentLength: number }) => void) => noopUnlisten(),
     onDownloadFinished: (_callback: () => void) => noopUnlisten(),
   },
 
@@ -212,13 +221,11 @@ export const mockApi = {
     minimize: () => Promise.resolve(),
     maximize: () => Promise.resolve(),
     close: () => Promise.resolve(),
-    listRunningProcesses: (): Promise<string[]> => Promise.resolve([]),
     restartAsAdmin: () => Promise.resolve(),
     isAdmin: (): Promise<boolean> => Promise.resolve(false),
-    quit: () => Promise.resolve(),
   },
 }
 
 export function initMockApi() {
-  ;(window as any).api = mockApi
+  (window as any).api = mockApi
 }

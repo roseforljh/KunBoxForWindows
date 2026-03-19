@@ -110,7 +110,7 @@ export function KernelSettings() {
     if (!currentRemote) return
     setDownloading(true)
     try {
-      await window.api.kernel.download(currentRemote, activeBranch === 'alpha')
+      await window.api.kernel.download(currentRemote.tagName)
     } catch (err) {
       toastError(String(err))
       setDownloading(false)

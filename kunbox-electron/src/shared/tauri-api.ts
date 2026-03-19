@@ -147,6 +147,9 @@ export const api = {
     list: (): Promise<SingBoxOutbound[]> => invoke('node_list'),
     setActive: (tag: string): Promise<void> => invoke('node_set_active', { tag }),
     add: (link: string, target?: { type: 'existing'; profileId: string } | { type: 'new'; profileName: string }): Promise<SingBoxOutbound> => {
+      if (target?.type === 'new') {
+        return invoke('node_add', { link, profileName: target.profileName });
+      }
       const profileId = target?.type === 'existing' ? target.profileId : undefined;
       return invoke('node_add', { link, profileId });
     },
@@ -192,7 +195,7 @@ export const api = {
       }>>('kernel_get_remote_releases', { includePrerelease });
       return releases;
     },
-    download: (release: any, _isAlpha?: boolean) => invoke<{ success: boolean }>('kernel_download', { release }),
+    download: (tagName: string) => invoke<{ success: boolean }>('kernel_download', { tagName }),
     rollback: (_isAlpha?: boolean) => invoke<{ success: boolean }>('kernel_rollback'),
     canRollback: (_isAlpha?: boolean) => invoke<boolean>('kernel_can_rollback'),
     clearCache: () => invoke<{ success: boolean; freedBytes: number }>('kernel_clear_cache'),
@@ -235,8 +238,8 @@ export const api = {
     getCurrentVersion: (): Promise<string> => invoke('updater_get_current_version'),
     check: (): Promise<{ currentVersion: string; hasUpdate: boolean; version?: string; date?: string; body?: string }> => invoke('updater_check'),
     downloadAndInstall: (): Promise<{ currentVersion: string; hasUpdate: boolean; version?: string; date?: string; body?: string }> => invoke('updater_download_and_install'),
-    onDownloadProgress: (callback: (progress: { chunkLength: number; contentLength: number }) => void) => {
-      const unlisten = listen<{ chunkLength: number; contentLength: number }>('updater:download-progress', (event) => {
+    onDownloadProgress: (callback: (progress: { downloaded: number; contentLength: number }) => void) => {
+      const unlisten = listen<{ downloaded: number; contentLength: number }>('updater:download-progress', (event) => {
         callback(event.payload);
       });
       return bindUnlisten(unlisten);
@@ -251,10 +254,8 @@ export const api = {
     minimize: () => invoke('window_minimize'),
     maximize: () => invoke('window_maximize'),
     close: () => invoke('window_close'),
-    listRunningProcesses: (): Promise<string[]> => invoke('list_running_processes'),
     restartAsAdmin: () => invoke('restart_as_admin'),
-    isAdmin: (): Promise<boolean> => invoke('is_admin'),
-    quit: () => invoke('quit_app')
+    isAdmin: (): Promise<boolean> => invoke('is_admin')
   }
 };
 

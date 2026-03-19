@@ -23,7 +23,6 @@ export default function Settings() {
   const [activeTab, setActiveTab] = useState<SettingsTab>(() => {
     const savedTab = localStorage.getItem('kunbox-settings-tab') as SettingsTab | null
     if (savedTab && ['proxy', 'tun', 'dns', 'kernel', 'system'].includes(savedTab)) {
-      localStorage.removeItem('kunbox-settings-tab')
       return savedTab
     }
     return 'proxy'

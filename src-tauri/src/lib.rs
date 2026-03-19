@@ -182,12 +182,8 @@ pub fn run() {
             commands::window_maximize,
             commands::window_close,
             commands::window_show,
-            commands::list_running_processes,
             commands::restart_as_admin,
-            commands::quit_app,
             commands::is_admin,
-            commands::set_run_as_admin,
-            commands::get_run_as_admin,
             // Kernel
             commands::kernel_get_local_version,
             commands::kernel_get_capabilities,

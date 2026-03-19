@@ -2,15 +2,6 @@ use tauri::{AppHandle, State, WebviewWindow};
 use crate::state::AppState;
 use crate::types::ProxyState;
 
-#[cfg(windows)]
-use std::process::Command as StdCommand;
-
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
-
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
-
 /// Check if the current process is running with administrator privileges
 #[tauri::command]
 pub fn is_admin() -> bool {
@@ -53,95 +44,6 @@ pub fn is_admin() -> bool {
     #[cfg(not(windows))]
     {
         false
-    }
-}
-
-/// Set the app to always run as administrator via registry
-/// Uses "~ RUNASADMIN" format for better compatibility
-#[tauri::command]
-pub async fn set_run_as_admin(enabled: bool) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        use std::env;
-        
-        let exe_path = env::current_exe().map_err(|e| e.to_string())?;
-        let exe_path_str = exe_path.to_string_lossy().to_string();
-        
-        let args = if enabled {
-            vec![
-                "add".to_string(),
-                r"HKEY_CURRENT_USER\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers".to_string(),
-                "/v".to_string(),
-                exe_path_str,
-                "/t".to_string(),
-                "REG_SZ".to_string(),
-                "/d".to_string(),
-                "~ RUNASADMIN".to_string(),  // Use "~ RUNASADMIN" for better compatibility
-                "/f".to_string(),
-            ]
-        } else {
-            vec![
-                "delete".to_string(),
-                r"HKEY_CURRENT_USER\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers".to_string(),
-                "/v".to_string(),
-                exe_path_str,
-                "/f".to_string(),
-            ]
-        };
-        
-        let output = StdCommand::new("reg")
-            .args(&args)
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .map_err(|e| e.to_string())?;
-        
-        if !output.status.success() && enabled {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("Failed to set registry: {}", stderr));
-        }
-        
-        Ok(())
-    }
-    
-    #[cfg(not(windows))]
-    {
-        let _ = enabled;
-        Err("This feature is only supported on Windows".to_string())
-    }
-}
-
-/// Check if the app is set to always run as administrator
-#[tauri::command]
-pub async fn get_run_as_admin() -> Result<bool, String> {
-    #[cfg(windows)]
-    {
-        use std::env;
-        
-        let exe_path = env::current_exe().map_err(|e| e.to_string())?;
-        let exe_path_str = exe_path.to_string_lossy().to_string();
-        
-        let output = StdCommand::new("reg")
-            .args([
-                "query",
-                r"HKEY_CURRENT_USER\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers",
-                "/v",
-                &exe_path_str,
-            ])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .map_err(|e| e.to_string())?;
-        
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            Ok(stdout.contains("RUNASADMIN"))
-        } else {
-            Ok(false)
-        }
-    }
-    
-    #[cfg(not(windows))]
-    {
-        Ok(false)
     }
 }
 
@@ -189,10 +91,7 @@ pub async fn restart_as_admin(app: AppHandle, state: State<'_, AppState>) -> Res
         }
         
         // Disable system proxy
-        let _ = StdCommand::new("reg")
-            .args(["add", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings", "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "0", "/f"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output();
+        let _ = crate::commands::singbox_disable_system_proxy().await;
         
         *state.proxy_state.lock().await = ProxyState::Idle;
         
@@ -232,72 +131,3 @@ pub async fn restart_as_admin(app: AppHandle, state: State<'_, AppState>) -> Res
     }
 }
 
-#[tauri::command]
-pub async fn list_running_processes() -> Result<Vec<String>, String> {
-    #[cfg(windows)]
-    {
-        let output = StdCommand::new("tasklist")
-            .args(["/FO", "CSV", "/NH"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .map_err(|e| e.to_string())?;
-
-        if !output.status.success() {
-            return Err("获取运行中进程失败".to_string());
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut names = std::collections::BTreeSet::new();
-
-        for line in stdout.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-
-            if let Some(stripped) = trimmed.strip_prefix('"') {
-                if let Some((name, _)) = stripped.split_once('"') {
-                    let lower = name.to_ascii_lowercase();
-                    if lower.ends_with(".exe") && lower != "sing-box.exe" && lower != "kunbox.exe" {
-                        names.insert(name.to_string());
-                    }
-                }
-            }
-        }
-
-        Ok(names.into_iter().collect())
-    }
-
-    #[cfg(not(windows))]
-    {
-        Ok(Vec::new())
-    }
-}
-
-#[tauri::command]
-pub async fn quit_app(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    // Stop sing-box process if running
-    if let Some(cancel) = state.traffic_cancel.lock().await.take() {
-        cancel.cancel();
-    }
-    
-    if let Some(mut child) = state.singbox_process.lock().await.take() {
-        let _ = child.kill().await;
-    }
-    
-    // Disable system proxy
-    #[cfg(windows)]
-    {
-        let _ = StdCommand::new("reg")
-            .args(["add", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings", "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "0", "/f"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output();
-    }
-    
-    *state.proxy_state.lock().await = ProxyState::Idle;
-    
-    log::info!("Safe exit: sing-box stopped, system proxy disabled");
-    
-    app.exit(0);
-    Ok(())
-}

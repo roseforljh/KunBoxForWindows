@@ -45,7 +45,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
         set({ state: 'error', lastError: result.error })
         return { success: false, error: result.error }
       }
-      set({ state: 'connected', needsRestart: false })
+      set({ needsRestart: false })
       return { success: true }
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err)
@@ -67,7 +67,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
         set({ state: 'error', lastError: result.error })
         return { success: false, error: result.error }
       }
-      set({ state: 'idle', traffic: null, lastError: null, needsRestart: false })
+      set({ traffic: null, lastError: null, needsRestart: false })
       return { success: true }
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err)

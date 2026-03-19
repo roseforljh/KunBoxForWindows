@@ -7,6 +7,7 @@ export default function Logs() {
   const [logsEnabled, setLogsEnabled] = useState(true)
   const containerRef = useRef<HTMLDivElement>(null)
   const pendingLogsRef = useRef<LogEntry[]>([])
+  const shouldAutoScrollRef = useRef(true)
 
   useEffect(() => {
     let mounted = true
@@ -61,7 +62,21 @@ export default function Logs() {
   }, [logsEnabled])
 
   useEffect(() => {
-    if (containerRef.current) {
+    const container = containerRef.current
+    if (!container) return
+
+    const handleScroll = () => {
+      const threshold = 32
+      shouldAutoScrollRef.current = container.scrollHeight - container.scrollTop - container.clientHeight <= threshold
+    }
+
+    handleScroll()
+    container.addEventListener('scroll', handleScroll)
+    return () => container.removeEventListener('scroll', handleScroll)
+  }, [])
+
+  useEffect(() => {
+    if (containerRef.current && shouldAutoScrollRef.current) {
       containerRef.current.scrollTop = containerRef.current.scrollHeight
     }
   }, [logs])
@@ -118,8 +133,8 @@ export default function Logs() {
             <p className="text-[var(--text-faint)] font-sans text-sm">暂无日志</p>
           </div>
         ) : (
-          logs.map((log, i) => (
-            <div key={i} className="py-1.5 flex gap-3 hover:bg-[var(--bg-hover)] rounded px-2 -mx-2">
+          logs.map((log) => (
+            <div key={`${log.timestamp}-${log.tag}-${log.message}`} className="py-1.5 flex gap-3 hover:bg-[var(--bg-hover)] rounded px-2 -mx-2">
               <span className="text-[var(--text-faint)] shrink-0">{formatTime(log.timestamp)}</span>
               <span className={`shrink-0 uppercase font-bold ${getLevelColor(log.level)}`}>
                 [{log.level.padEnd(5)}]

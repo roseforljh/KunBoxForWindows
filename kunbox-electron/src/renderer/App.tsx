@@ -422,23 +422,29 @@ export default function App() {
 
   // Auto connect on startup if enabled
   useEffect(() => {
+    let cancelled = false
+
     const checkAutoConnect = async () => {
       try {
         const settings = await window.api.settings.get()
-        if (settings?.autoConnect) {
-          // Small delay to ensure app is fully loaded
-          await new Promise(resolve => setTimeout(resolve, 1000))
-          // Only connect if we're in idle state
-          const currentState = useConnectionStore.getState().state
-          if (currentState === 'idle') {
-            await connect()
-          }
+        if (!settings?.autoConnect) return
+
+        await new Promise(resolve => setTimeout(resolve, 1000))
+        if (cancelled) return
+
+        const currentState = useConnectionStore.getState().state
+        if (currentState === 'idle') {
+          await connect()
         }
       } catch (e) {
         console.error('Auto connect failed:', e)
       }
     }
     checkAutoConnect()
+
+    return () => {
+      cancelled = true
+    }
   }, [connect]) // Include connect in dependencies
 
   // Listen for singbox state and traffic updates
@@ -507,7 +513,7 @@ export default function App() {
       try {
         const settings = await window.api.settings.get()
         if (settings.tunEnabled) return
-        await window.api.settings.set({ ...settings, tunEnabled: true })
+        await window.api.settings.set({ tunEnabled: true })
         await restartIfConnected()
       } catch (e) {
         console.error('Failed to enable TUN:', e)
@@ -518,7 +524,7 @@ export default function App() {
       try {
         const settings = await window.api.settings.get()
         if (!settings.tunEnabled) return
-        await window.api.settings.set({ ...settings, tunEnabled: false })
+        await window.api.settings.set({ tunEnabled: false })
         await restartIfConnected()
       } catch (e) {
         console.error('Failed to disable TUN:', e)
