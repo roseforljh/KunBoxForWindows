@@ -16,6 +16,8 @@ pub struct AppState {
     pub singbox_process: Arc<Mutex<Option<tokio::process::Child>>>,
     pub start_time: Arc<Mutex<Option<u64>>>,
     pub traffic_cancel: Arc<Mutex<Option<CancellationToken>>>,
+    pub shutdown_in_progress: Arc<Mutex<bool>>,
+    pub lifecycle_lock: Arc<Mutex<()>>,
 }
 
 impl AppState {
@@ -33,6 +35,8 @@ impl AppState {
             singbox_process: Arc::new(Mutex::new(None)),
             start_time: Arc::new(Mutex::new(None)),
             traffic_cancel: Arc::new(Mutex::new(None)),
+            shutdown_in_progress: Arc::new(Mutex::new(false)),
+            lifecycle_lock: Arc::new(Mutex::new(())),
         }
     }
 

@@ -113,6 +113,21 @@ fn ruleset_cache_path(state: &AppState, tag: &str) -> Result<std::path::PathBuf,
     Ok(state.rulesets_cache_dir().join(format!("{}.srs", tag)))
 }
 
+async fn build_local_proxy_client(state: &AppState, timeout_secs: u64) -> Option<reqwest::Client> {
+    let settings = state.settings.lock().await.clone();
+    let proxy_url = format!("http://127.0.0.1:{}", settings.local_port);
+
+    reqwest::Proxy::all(&proxy_url)
+        .ok()
+        .and_then(|proxy| {
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(timeout_secs))
+                .proxy(proxy)
+                .build()
+                .ok()
+        })
+}
+
 #[tauri::command]
 pub async fn ruleset_download(state: State<'_, AppState>, ruleset: RuleSet) -> Result<serde_json::Value, String> {
     if ruleset.rule_type != "remote" {
@@ -134,15 +149,7 @@ pub async fn ruleset_download(state: State<'_, AppState>, ruleset: RuleSet) -> R
     let github_path = extract_github_path(&original_url);
     
     // 创建代理客户端（使用本地 VPN 代理）
-    let proxy_client = reqwest::Proxy::all("http://127.0.0.1:7890")
-        .ok()
-        .and_then(|proxy| {
-            reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .proxy(proxy)
-                .build()
-                .ok()
-        });
+    let proxy_client = build_local_proxy_client(&state, 30).await;
     
     // 创建直连客户端
     let direct_client = reqwest::Client::builder()
@@ -299,22 +306,23 @@ mod tests {
         );
         assert_eq!(extract_github_path("https://example.com/file.srs"), None);
     }
+
+    #[tokio::test]
+    async fn local_proxy_client_uses_settings_port() {
+        let state = AppState::new(std::path::PathBuf::from("/tmp/test"));
+        state.settings.lock().await.local_port = 17890;
+
+        let client = build_local_proxy_client(&state, 5).await;
+
+        assert!(client.is_some());
+    }
 }
 
 /// 从 GitHub API 获取规则集仓库列表（代理优先 + 直连回退）
 #[tauri::command]
-pub async fn ruleset_fetch_hub() -> Result<serde_json::Value, String> {
+pub async fn ruleset_fetch_hub(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let url = "https://api.github.com/repos/SagerNet/sing-geosite/git/trees/rule-set?recursive=1";
-
-    let proxy_client = reqwest::Proxy::all("http://127.0.0.1:7890")
-        .ok()
-        .and_then(|proxy| {
-            reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(15))
-                .proxy(proxy)
-                .build()
-                .ok()
-        });
+    let proxy_client = build_local_proxy_client(&state, 15).await;
 
     let direct_client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))

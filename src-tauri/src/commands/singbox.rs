@@ -39,7 +39,11 @@ fn is_running_as_admin() -> bool {
 }
 
 pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Result<CommandResult, String> {
+    let _lifecycle_guard = state.lifecycle_lock.lock().await;
     let singbox_path = get_singbox_path(&app)?;
+
+    #[cfg(windows)]
+    repair_stale_proxy_if_needed(state).await?;
     
     if !singbox_path.exists() {
         return Ok(CommandResult::err("未检测到 sing-box 内核，请先到【设置 → 内核】下载并安装后再启动 VPN。"));
@@ -95,6 +99,7 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
         } else {
             format!("内核配置检查失败: {}", detail)
         };
+        *state.shutdown_in_progress.lock().await = false;
         return Ok(CommandResult::err(message));
     }
 
@@ -124,6 +129,9 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| e.to_string())?;
+
+    #[cfg(windows)]
+    write_proxy_session_marker(state, ProxySessionFlag::Active)?;
 
     // Capture stderr for logging
     if let Some(stderr) = child.stderr.take() {
@@ -161,6 +169,7 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
     let start_time_state = state.start_time.clone();
     let process_slot = state.singbox_process.clone();
     let traffic_cancel = state.traffic_cancel.clone();
+    let shutdown_in_progress = state.shutdown_in_progress.clone();
     tokio::spawn(async move {
         // Poll the child process by periodically checking if it has exited.
         // We cannot call child.wait() because that requires &mut ownership,
@@ -183,13 +192,14 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
                             drop(guard);
 
                             let current_state = proxy_state.lock().await.clone();
-                            if !matches!(current_state, ProxyState::Idle | ProxyState::Disconnecting) {
+                            let shutting_down = *shutdown_in_progress.lock().await;
+                            if !shutting_down && !matches!(current_state, ProxyState::Idle | ProxyState::Disconnecting) {
                                 *proxy_state.lock().await = ProxyState::Error;
                                 *start_time_state.lock().await = None;
                                 if let Some(cancel) = traffic_cancel.lock().await.take() {
                                     cancel.cancel();
                                 }
-                                let _ = disable_system_proxy_internal().await;
+                                let _ = disable_system_proxy_for_state_on_crash(&wait_app).await;
                                 let _ = wait_app.emit("singbox:state", "error");
                                 let _ = wait_app.emit("singbox:log", serde_json::json!({
                                     "timestamp": chrono::Utc::now().timestamp_millis(),
@@ -209,13 +219,14 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
                             drop(guard);
 
                             let current_state = proxy_state.lock().await.clone();
-                            if !matches!(current_state, ProxyState::Idle | ProxyState::Disconnecting) {
+                            let shutting_down = *shutdown_in_progress.lock().await;
+                            if !shutting_down && !matches!(current_state, ProxyState::Idle | ProxyState::Disconnecting) {
                                 *proxy_state.lock().await = ProxyState::Error;
                                 *start_time_state.lock().await = None;
                                 if let Some(cancel) = traffic_cancel.lock().await.take() {
                                     cancel.cancel();
                                 }
-                                let _ = disable_system_proxy_internal().await;
+                                let _ = disable_system_proxy_for_state_on_crash(&wait_app).await;
                                 let _ = wait_app.emit("singbox:state", "error");
                             }
                             break;
@@ -258,13 +269,16 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
     // Enable system proxy
     let settings = state.settings.lock().await;
     if settings.system_proxy {
-        let _ = enable_system_proxy_internal(settings.local_port).await;
+        let _ = enable_system_proxy_for_state(state, settings.local_port).await;
     }
 
     Ok(CommandResult::ok())
 }
 
 pub(crate) async fn singbox_stop_impl(app: AppHandle, state: &AppState) -> Result<CommandResult, String> {
+    let _lifecycle_guard = state.lifecycle_lock.lock().await;
+    *state.shutdown_in_progress.lock().await = true;
+
     // Cancel traffic polling
     if let Some(cancel) = state.traffic_cancel.lock().await.take() {
         cancel.cancel();
@@ -281,10 +295,20 @@ pub(crate) async fn singbox_stop_impl(app: AppHandle, state: &AppState) -> Resul
     // Managed process has already been stopped above if present
 
     // Disable system proxy
-    let _ = disable_system_proxy_internal().await;
+    #[cfg(windows)]
+    let _ = write_proxy_session_marker(state, ProxySessionFlag::Cleaning);
+
+    let cleanup_result = disable_system_proxy_for_state(state, ProxyCleanupMode::RestoreSnapshot).await;
+    if cleanup_result.is_err() {
+        let _ = disable_system_proxy_for_state(state, ProxyCleanupMode::ForceClear).await;
+    }
+
+    #[cfg(windows)]
+    let _ = clear_proxy_session_marker(state);
 
     *state.proxy_state.lock().await = ProxyState::Idle;
     *state.start_time.lock().await = None;
+    *state.shutdown_in_progress.lock().await = false;
     let _ = app.emit("singbox:state", "idle");
 
     Ok(CommandResult::ok())
@@ -349,7 +373,7 @@ pub async fn singbox_enable_system_proxy(port: Option<u16>) -> Result<CommandRes
 
 #[tauri::command]
 pub async fn singbox_disable_system_proxy() -> Result<CommandResult, String> {
-    disable_system_proxy_internal().await?;
+    disable_system_proxy_internal(ProxyCleanupMode::RestoreSnapshot).await?;
     Ok(CommandResult::ok())
 }
 
@@ -1163,6 +1187,26 @@ struct SystemProxySnapshot {
     auto_config_url: Option<String>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct PersistedSystemProxySnapshot {
+    proxy_enable: Option<String>,
+    proxy_server: Option<String>,
+    proxy_override: Option<String>,
+    auto_config_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProxyCleanupMode {
+    RestoreSnapshot,
+    ForceClear,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProxySessionFlag {
+    Active,
+    Cleaning,
+}
+
 static SYSTEM_PROXY_SNAPSHOT: once_cell::sync::Lazy<std::sync::Mutex<Option<SystemProxySnapshot>>> =
     once_cell::sync::Lazy::new(|| std::sync::Mutex::new(None));
 
@@ -1220,6 +1264,33 @@ async fn snapshot_system_proxy_if_needed() -> Result<(), String> {
 }
 
 #[cfg(windows)]
+async fn snapshot_system_proxy_if_needed_for_state(state: &AppState) -> Result<(), String> {
+    let already_snapshotted = {
+        let guard = SYSTEM_PROXY_SNAPSHOT.lock().map_err(|_| "系统代理快照锁失败".to_string())?;
+        guard.is_some()
+    };
+
+    if already_snapshotted {
+        return Ok(());
+    }
+
+    let snapshot = SystemProxySnapshot {
+        proxy_enable: query_registry_value("ProxyEnable").await?,
+        proxy_server: query_registry_value("ProxyServer").await?,
+        proxy_override: query_registry_value("ProxyOverride").await?,
+        auto_config_url: query_registry_value("AutoConfigURL").await?,
+    };
+
+    save_persisted_proxy_snapshot(state, &snapshot)?;
+
+    let mut guard = SYSTEM_PROXY_SNAPSHOT.lock().map_err(|_| "系统代理快照锁失败".to_string())?;
+    if guard.is_none() {
+        *guard = Some(snapshot);
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
 async fn set_registry_value(name: &str, value_type: &str, value: &str) -> Result<(), String> {
     let output = Command::new("reg")
         .args([
@@ -1246,11 +1317,138 @@ async fn set_registry_value(name: &str, value_type: &str, value: &str) -> Result
 }
 
 #[cfg(windows)]
-async fn restore_system_proxy_snapshot() -> Result<(), String> {
+async fn delete_registry_value(name: &str) -> Result<(), String> {
+    let output = Command::new("reg")
+        .args([
+            "delete",
+            "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
+            "/v",
+            name,
+            "/f",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+    if stderr.contains("unable to find") || stderr.contains("无法找到") || stderr.contains("找不到") {
+        return Ok(());
+    }
+
+    Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+}
+
+#[cfg(windows)]
+fn proxy_session_marker_path(state: &AppState) -> PathBuf {
+    state.data_dir.join("proxy_session.flag")
+}
+
+#[cfg(windows)]
+fn persisted_proxy_snapshot_path(state: &AppState) -> PathBuf {
+    state.data_dir.join("proxy_snapshot.json")
+}
+
+#[cfg(windows)]
+fn write_proxy_session_marker(state: &AppState, flag: ProxySessionFlag) -> Result<(), String> {
+    let value = match flag {
+        ProxySessionFlag::Active => "active",
+        ProxySessionFlag::Cleaning => "cleaning",
+    };
+    fs::write(proxy_session_marker_path(state), value).map_err(|e| e.to_string())
+}
+
+#[cfg(windows)]
+fn clear_proxy_session_marker(state: &AppState) -> Result<(), String> {
+    let path = proxy_session_marker_path(state);
+    if path.exists() {
+        fs::remove_file(path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn read_proxy_session_marker(state: &AppState) -> Result<Option<String>, String> {
+    let path = proxy_session_marker_path(state);
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let value = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    Ok(Some(value.trim().to_string()))
+}
+
+#[cfg(windows)]
+fn save_persisted_proxy_snapshot(state: &AppState, snapshot: &SystemProxySnapshot) -> Result<(), String> {
+    let persisted = PersistedSystemProxySnapshot {
+        proxy_enable: snapshot.proxy_enable.clone(),
+        proxy_server: snapshot.proxy_server.clone(),
+        proxy_override: snapshot.proxy_override.clone(),
+        auto_config_url: snapshot.auto_config_url.clone(),
+    };
+
+    let content = serde_json::to_vec(&persisted).map_err(|e| e.to_string())?;
+    fs::write(persisted_proxy_snapshot_path(state), content).map_err(|e| e.to_string())
+}
+
+#[cfg(windows)]
+fn load_persisted_proxy_snapshot(state: &AppState) -> Result<Option<SystemProxySnapshot>, String> {
+    let path = persisted_proxy_snapshot_path(state);
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let content = fs::read(path).map_err(|e| e.to_string())?;
+    let persisted: PersistedSystemProxySnapshot = serde_json::from_slice(&content).map_err(|e| e.to_string())?;
+    Ok(Some(SystemProxySnapshot {
+        proxy_enable: persisted.proxy_enable,
+        proxy_server: persisted.proxy_server,
+        proxy_override: persisted.proxy_override,
+        auto_config_url: persisted.auto_config_url,
+    }))
+}
+
+#[cfg(windows)]
+fn clear_persisted_proxy_snapshot(state: &AppState) -> Result<(), String> {
+    let path = persisted_proxy_snapshot_path(state);
+    if path.exists() {
+        fs::remove_file(path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn looks_like_local_proxy_server(value: &str) -> bool {
+    let value = value.trim().to_ascii_lowercase();
+    value.starts_with("127.0.0.1:")
+        || value.starts_with("localhost:")
+        || value.contains("127.0.0.1:")
+        || value.contains("localhost:")
+}
+
+#[cfg(windows)]
+async fn force_clear_system_proxy() -> Result<(), String> {
+    set_registry_value("ProxyEnable", "REG_DWORD", "0").await?;
+    delete_registry_value("ProxyServer").await?;
+    delete_registry_value("ProxyOverride").await?;
+    delete_registry_value("AutoConfigURL").await?;
+    Ok(())
+}
+
+#[cfg(windows)]
+async fn restore_system_proxy_snapshot(mode: ProxyCleanupMode) -> Result<(), String> {
     let snapshot = {
         let mut guard = SYSTEM_PROXY_SNAPSHOT.lock().map_err(|_| "系统代理快照锁失败".to_string())?;
         guard.take()
     };
+
+    if mode == ProxyCleanupMode::ForceClear {
+        return force_clear_system_proxy().await;
+    }
 
     if let Some(snapshot) = snapshot {
         let enable_value = snapshot.proxy_enable.as_deref().unwrap_or("0");
@@ -1258,18 +1456,54 @@ async fn restore_system_proxy_snapshot() -> Result<(), String> {
 
         if let Some(proxy_server) = snapshot.proxy_server {
             set_registry_value("ProxyServer", "REG_SZ", &proxy_server).await?;
+        } else {
+            delete_registry_value("ProxyServer").await?;
         }
         if let Some(proxy_override) = snapshot.proxy_override {
             set_registry_value("ProxyOverride", "REG_SZ", &proxy_override).await?;
+        } else {
+            delete_registry_value("ProxyOverride").await?;
         }
         if let Some(auto_config_url) = snapshot.auto_config_url {
             set_registry_value("AutoConfigURL", "REG_SZ", &auto_config_url).await?;
+        } else {
+            delete_registry_value("AutoConfigURL").await?;
         }
     } else {
-        set_registry_value("ProxyEnable", "REG_DWORD", "0").await?;
+        force_clear_system_proxy().await?;
     }
 
     Ok(())
+}
+
+#[cfg(windows)]
+async fn restore_persisted_or_clear(state: &AppState) -> Result<(), String> {
+    if let Some(snapshot) = load_persisted_proxy_snapshot(state)? {
+        set_registry_value("ProxyEnable", "REG_DWORD", snapshot.proxy_enable.as_deref().unwrap_or("0")).await?;
+
+        if let Some(proxy_server) = snapshot.proxy_server {
+            set_registry_value("ProxyServer", "REG_SZ", &proxy_server).await?;
+        } else {
+            delete_registry_value("ProxyServer").await?;
+        }
+
+        if let Some(proxy_override) = snapshot.proxy_override {
+            set_registry_value("ProxyOverride", "REG_SZ", &proxy_override).await?;
+        } else {
+            delete_registry_value("ProxyOverride").await?;
+        }
+
+        if let Some(auto_config_url) = snapshot.auto_config_url {
+            set_registry_value("AutoConfigURL", "REG_SZ", &auto_config_url).await?;
+        } else {
+            delete_registry_value("AutoConfigURL").await?;
+        }
+
+        clear_persisted_proxy_snapshot(state)?;
+        return Ok(());
+    }
+
+    force_clear_system_proxy().await
 }
 
 async fn enable_system_proxy_internal(port: u16) -> Result<(), String> {
@@ -1290,9 +1524,102 @@ async fn enable_system_proxy_internal(port: u16) -> Result<(), String> {
     Ok(())
 }
 
-async fn disable_system_proxy_internal() -> Result<(), String> {
+#[cfg(windows)]
+async fn enable_system_proxy_for_state(state: &AppState, port: u16) -> Result<(), String> {
+    let proxy = format!("127.0.0.1:{}", port);
+    snapshot_system_proxy_if_needed_for_state(state).await?;
+    set_registry_value("ProxyEnable", "REG_DWORD", "1").await?;
+    set_registry_value("ProxyServer", "REG_SZ", &proxy).await?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+async fn enable_system_proxy_for_state(_state: &AppState, port: u16) -> Result<(), String> {
+    enable_system_proxy_internal(port).await
+}
+
+#[cfg(windows)]
+async fn disable_system_proxy_for_state(state: &AppState, mode: ProxyCleanupMode) -> Result<(), String> {
+    match mode {
+        ProxyCleanupMode::RestoreSnapshot => restore_persisted_or_clear(state).await,
+        ProxyCleanupMode::ForceClear => {
+            let result = force_clear_system_proxy().await;
+            clear_persisted_proxy_snapshot(state)?;
+            result
+        }
+    }
+}
+
+#[cfg(not(windows))]
+async fn disable_system_proxy_for_state(_state: &AppState, mode: ProxyCleanupMode) -> Result<(), String> {
+    disable_system_proxy_internal(mode).await
+}
+
+#[cfg(windows)]
+async fn disable_system_proxy_for_state_on_crash(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    disable_system_proxy_for_state(&state, ProxyCleanupMode::RestoreSnapshot).await
+}
+
+#[cfg(not(windows))]
+async fn disable_system_proxy_for_state_on_crash(_app: &AppHandle) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(windows)]
+async fn repair_stale_proxy_if_needed(state: &AppState) -> Result<(), String> {
+    let marker = read_proxy_session_marker(state)?;
+    let proxy_enable = query_registry_value("ProxyEnable").await?;
+    let proxy_server = query_registry_value("ProxyServer").await?;
+    let auto_config_url = query_registry_value("AutoConfigURL").await?;
+
+    let has_local_proxy_server = proxy_server
+        .as_deref()
+        .map(looks_like_local_proxy_server)
+        .unwrap_or(false);
+
+    let should_repair = marker.as_deref() == Some("active")
+        || marker.as_deref() == Some("cleaning")
+        || proxy_enable.as_deref() == Some("0") && has_local_proxy_server
+        || auto_config_url
+            .as_deref()
+            .map(|value| value.contains("127.0.0.1") || value.contains("localhost"))
+            .unwrap_or(false);
+
+    if should_repair {
+        log::warn!("Detected stale proxy configuration from previous session, forcing cleanup");
+        restore_persisted_or_clear(state).await?;
+        clear_proxy_session_marker(state)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(not(windows))]
+async fn repair_stale_proxy_if_needed(_state: &AppState) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_local_proxy_server_values() {
+        assert!(looks_like_local_proxy_server("127.0.0.1:7890"));
+        assert!(looks_like_local_proxy_server("http=127.0.0.1:7890;https=127.0.0.1:7890"));
+        assert!(!looks_like_local_proxy_server("10.0.0.1:7890"));
+    }
+
+    #[test]
+    fn force_clear_mode_is_distinct() {
+        assert_ne!(ProxyCleanupMode::RestoreSnapshot, ProxyCleanupMode::ForceClear);
+    }
+}
+
+async fn disable_system_proxy_internal(mode: ProxyCleanupMode) -> Result<(), String> {
     #[cfg(windows)]
-    restore_system_proxy_snapshot().await?;
+    restore_system_proxy_snapshot(mode).await?;
 
     Ok(())
 }

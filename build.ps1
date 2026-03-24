@@ -18,7 +18,7 @@ if (-not $Mode) {
     Write-Host "  [1] Debug"
     Write-Host ""
     $input = Read-Host "Enter choice (0/1)"
-    
+
     if ($input -eq "1") {
         $Mode = "debug"
     } else {
@@ -27,6 +27,9 @@ if (-not $Mode) {
 }
 
 $isDebug = $Mode -eq "debug" -or $Mode -eq "1"
+$hasSigningKey = $false
+$tauriArgs = @("tauri", "build")
+$tempConfigPath = $null
 
 if ($isDebug) {
     Write-Host "Building DEBUG version..." -ForegroundColor Yellow
@@ -44,14 +47,28 @@ if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
     }
 }
 
-if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
-    Write-Host "Missing TAURI_SIGNING_PRIVATE_KEY. Please load it from a secure external location before building." -ForegroundColor Red
-    Write-Host "Example: set TAURI_SIGNING_PRIVATE_KEY_FILE and run . .\\tauri-signing.local.ps1" -ForegroundColor Yellow
-    exit 1
-}
+$hasSigningKey = -not [string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)
 
-if (-not $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) {
-    Write-Host "TAURI_SIGNING_PRIVATE_KEY_PASSWORD not set; continuing (works only if key has no password)." -ForegroundColor Yellow
+if ($hasSigningKey) {
+    if (-not $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) {
+        Write-Host "TAURI_SIGNING_PRIVATE_KEY_PASSWORD not set; continuing (works only if key has no password)." -ForegroundColor Yellow
+    }
+    Write-Host "Signing key detected: release build will include updater artifacts." -ForegroundColor Green
+} else {
+    Write-Host "No TAURI_SIGNING_PRIVATE_KEY detected." -ForegroundColor Yellow
+    Write-Host "Release build will continue WITHOUT updater signing artifacts." -ForegroundColor Yellow
+
+    if (-not $isDebug) {
+        $baseConfigPath = Join-Path $PSScriptRoot "src-tauri\tauri.conf.json"
+        $tempConfigPath = Join-Path $env:TEMP "kunbox.tauri.unsigned.$PID.json"
+        $config = Get-Content $baseConfigPath -Raw | ConvertFrom-Json
+        if (-not $config.bundle) {
+            $config | Add-Member -NotePropertyName bundle -NotePropertyValue ([pscustomobject]@{})
+        }
+        $config.bundle.createUpdaterArtifacts = $false
+        $config | ConvertTo-Json -Depth 100 | Set-Content $tempConfigPath -Encoding UTF8
+        $tauriArgs += @("--config", $tempConfigPath)
+    }
 }
 
 # Step 1: Build frontend
@@ -63,6 +80,7 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "Frontend build failed!" -ForegroundColor Red
     Write-Host $frontendResult
     Set-Location $PSScriptRoot
+    if ($tempConfigPath -and (Test-Path $tempConfigPath)) { Remove-Item $tempConfigPath -Force }
     exit 1
 }
 Write-Host "Frontend build completed." -ForegroundColor Green
@@ -73,12 +91,17 @@ Write-Host "[2/2] Building backend (Tauri)..." -ForegroundColor Cyan
 Set-Location "$PSScriptRoot\src-tauri"
 
 if ($isDebug) {
-    $tauriResult = & cargo tauri build --debug 2>&1
-} else {
-    $tauriResult = & cargo tauri build 2>&1
+    $tauriArgs += "--debug"
 }
 
-if ($LASTEXITCODE -ne 0) {
+$tauriResult = & cargo @tauriArgs 2>&1
+$tauriExitCode = $LASTEXITCODE
+
+if ($tempConfigPath -and (Test-Path $tempConfigPath)) {
+    Remove-Item $tempConfigPath -Force
+}
+
+if ($tauriExitCode -ne 0) {
     Write-Host "Backend build failed!" -ForegroundColor Red
     Write-Host $tauriResult
     Set-Location $PSScriptRoot
@@ -102,5 +125,9 @@ if ($isDebug) {
     Write-Host "Installer packages:" -ForegroundColor Yellow
     Write-Host "  MSI:  $PSScriptRoot\src-tauri\target\release\bundle\msi\" -ForegroundColor White
     Write-Host "  NSIS: $PSScriptRoot\src-tauri\target\release\bundle\nsis\" -ForegroundColor White
+    if (-not $hasSigningKey) {
+        Write-Host ""
+        Write-Host "Note: updater artifacts were skipped because no signing key was provided." -ForegroundColor Yellow
+    }
 }
 Write-Host ""

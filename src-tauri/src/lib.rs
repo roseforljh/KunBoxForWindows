@@ -318,35 +318,14 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 "quit" => {
-                    // Safe exit: stop singbox and disable system proxy
                     let app_handle = app.clone();
-                    std::thread::spawn(move || {
-                        // Disable system proxy synchronously
-                        #[cfg(windows)]
-                        {
-                            use std::process::Command;
-                            const CREATE_NO_WINDOW: u32 = 0x08000000;
-                            use std::os::windows::process::CommandExt;
-                            let _ = Command::new("reg")
-                                .args(["add", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings", "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "0", "/f"])
-                                .creation_flags(CREATE_NO_WINDOW)
-                                .output();
+                    tauri::async_runtime::spawn(async move {
+                        if let Some(state) = app_handle.try_state::<AppState>() {
+                            let _ = commands::singbox::singbox_stop_impl(app_handle.clone(), &state).await;
                         }
-                        
-                        // Kill sing-box process
-                        #[cfg(windows)]
-                        {
-                            use std::process::Command;
-                            const CREATE_NO_WINDOW: u32 = 0x08000000;
-                            use std::os::windows::process::CommandExt;
-                            let _ = Command::new("taskkill")
-                                .args(["/F", "/IM", "sing-box.exe"])
-                                .creation_flags(CREATE_NO_WINDOW)
-                                .output();
-                        }
-                        
-                        log::info!("Safe exit: sing-box stopped, system proxy disabled");
-                        std::thread::sleep(std::time::Duration::from_millis(200));
+
+                        log::info!("Safe exit: sing-box stopped, system proxy restored");
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                         app_handle.exit(0);
                     });
                 }

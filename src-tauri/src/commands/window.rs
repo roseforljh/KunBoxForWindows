@@ -1,6 +1,5 @@
 use tauri::{AppHandle, State, WebviewWindow};
 use crate::state::AppState;
-use crate::types::ProxyState;
 
 /// Check if the current process is running with administrator privileges
 #[tauri::command]
@@ -81,19 +80,7 @@ pub async fn restart_as_admin(app: AppHandle, state: State<'_, AppState>) -> Res
         use windows::Win32::UI::Shell::ShellExecuteW;
         use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
         
-        // Stop sing-box process if running
-        if let Some(cancel) = state.traffic_cancel.lock().await.take() {
-            cancel.cancel();
-        }
-        
-        if let Some(mut child) = state.singbox_process.lock().await.take() {
-            let _ = child.kill().await;
-        }
-        
-        // Disable system proxy
-        let _ = crate::commands::singbox_disable_system_proxy().await;
-        
-        *state.proxy_state.lock().await = ProxyState::Idle;
+        let _ = crate::commands::singbox::singbox_stop_impl(app.clone(), &state).await;
         
         // Get current executable path
         let exe_path = env::current_exe().map_err(|e| e.to_string())?;
