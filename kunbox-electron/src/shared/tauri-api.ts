@@ -250,10 +250,11 @@ export const api = {
     }
   },
 
-  window: {
+    window: {
     minimize: () => invoke('window_minimize'),
     maximize: () => invoke('window_maximize'),
     close: () => invoke('window_close'),
+    show: () => invoke('window_show'),
     restartAsAdmin: () => invoke('restart_as_admin'),
     isAdmin: (): Promise<boolean> => invoke('is_admin')
   }

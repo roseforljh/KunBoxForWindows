@@ -1,6 +1,8 @@
 use tauri::Manager;
 use tauri::Emitter;
 use std::path::PathBuf;
+use std::fs::OpenOptions;
+use std::io::Write;
 
 mod types;
 mod state;
@@ -8,6 +10,15 @@ mod commands;
 
 use state::AppState;
 use types::AppSettings;
+
+fn append_startup_diagnostic(data_dir: &PathBuf, message: &str) {
+    let _ = std::fs::create_dir_all(data_dir);
+    let path = data_dir.join("startup-diagnostics.log");
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+        let _ = writeln!(file, "[{}] {}", ts, message);
+    }
+}
 
 /// Synchronously read settings from file
 fn read_settings_sync(data_dir: &PathBuf) -> AppSettings {
@@ -24,15 +35,33 @@ fn read_settings_sync(data_dir: &PathBuf) -> AppSettings {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(windows)]
+    let data_dir = get_data_dir();
+
+    #[cfg(windows)]
+    append_startup_diagnostic(&data_dir, "app launch started");
+
     // Check if we need to restart as admin
     #[cfg(windows)]
     {
-        let data_dir = get_data_dir();
         let settings = read_settings_sync(&data_dir);
+        append_startup_diagnostic(
+            &data_dir,
+            &format!(
+                "startup settings: require_admin={}, silent_start={}, start_with_windows={}, auto_connect={}, tun_enabled={}, system_proxy={}",
+                settings.require_admin,
+                settings.silent_start,
+                settings.start_with_windows,
+                settings.auto_connect,
+                settings.tun_enabled,
+                settings.system_proxy,
+            ),
+        );
         
         // If requireAdmin is set and we're not running as admin, restart with elevation
         if settings.require_admin && !commands::is_admin() {
             use std::env;
+            append_startup_diagnostic(&data_dir, "require_admin enabled and process is not elevated, attempting ShellExecuteW(runas)");
             
             if let Ok(exe_path) = env::current_exe() {
                 let exe_path_wide: Vec<u16> = exe_path.to_string_lossy()
@@ -58,10 +87,14 @@ pub fn run() {
                     
                     // If ShellExecuteW returns > 32, it succeeded - exit current instance
                     if result.0 as isize > 32 {
+                        append_startup_diagnostic(&data_dir, "ShellExecuteW(runas) succeeded, exiting current non-elevated instance");
                         std::process::exit(0);
                     }
+                    append_startup_diagnostic(&data_dir, &format!("ShellExecuteW(runas) failed or was cancelled, code={}", result.0 as isize));
                     // If failed (user cancelled UAC), continue running without admin
                 }
+            } else {
+                append_startup_diagnostic(&data_dir, "failed to resolve current_exe while attempting admin restart");
             }
         }
     }
@@ -86,10 +119,12 @@ pub fn run() {
             // Initialize app state
             let data_dir = get_data_dir();
             std::fs::create_dir_all(&data_dir).ok();
+            append_startup_diagnostic(&data_dir, "tauri setup entered");
             
             // Create configs directory
             let configs_dir = data_dir.join("configs");
             std::fs::create_dir_all(&configs_dir).ok();
+            append_startup_diagnostic(&data_dir, &format!("config dir ready: {:?}", configs_dir));
             
             log::info!("Data directory: {:?}", data_dir);
 
@@ -97,6 +132,16 @@ pub fn run() {
             let settings = read_settings_sync(&data_dir);
             let rulesets = commands::rulesets::load_rulesets(&state);
             let custom_rules = commands::rules::load_custom_rules(&state);
+            append_startup_diagnostic(
+                &data_dir,
+                &format!(
+                    "state initialized: silent_start={}, auto_connect={}, tun_enabled={}, system_proxy={}",
+                    settings.silent_start,
+                    settings.auto_connect,
+                    settings.tun_enabled,
+                    settings.system_proxy,
+                ),
+            );
 
             tauri::async_runtime::block_on(async {
                 *state.settings.lock().await = settings;
@@ -111,13 +156,16 @@ pub fn run() {
                 let settings = read_settings_sync(&data_dir);
                 if settings.silent_start {
                     let _ = window.hide();
+                    append_startup_diagnostic(&data_dir, "main window hidden due to silent_start");
                 } else {
                     let _ = window.show();
+                    append_startup_diagnostic(&data_dir, "main window shown after setup");
                 }
             }
 
             // Setup tray icon
             setup_tray(app)?;
+            append_startup_diagnostic(&data_dir, "tray setup completed");
 
             Ok(())
         })

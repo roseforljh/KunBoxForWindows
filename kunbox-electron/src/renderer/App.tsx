@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, forwardRef, useImperativeHandle, useR
 import { motion, AnimatePresence, useAnimation } from 'framer-motion'
 import { Minus, Square, X, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { useConnectionStore } from './stores/connectionStore'
-import { ToastProvider } from './components/ui/Toast'
+import { ToastProvider, useToast } from './components/ui/Toast'
 import Dashboard from './components/Dashboard'
 import Nodes from './components/Nodes'
 import Profiles from './components/Profiles'
@@ -398,12 +398,21 @@ function useTheme() {
 }
 
 export default function App() {
+  return (
+    <ToastProvider>
+      <AppContent />
+    </ToastProvider>
+  )
+}
+
+function AppContent() {
   const [currentPage, setCurrentPage] = useState<Page>('dashboard')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const { state, setState, setTraffic, connect, disconnect } = useConnectionStore()
   const stateRef = useRef(state)
   const connectRef = useRef(connect)
   const disconnectRef = useRef(disconnect)
+  const { warning } = useToast()
   useTheme()
 
   useEffect(() => {
@@ -429,7 +438,14 @@ export default function App() {
         const settings = await window.api.settings.get()
         if (!settings?.autoConnect) return
 
-        await new Promise(resolve => setTimeout(resolve, 1000))
+        // On Windows auto-start, the system/network/proxy environment may not be
+        // fully ready yet. Give startup launches a longer grace period to avoid
+        // flaky first-boot connection failures.
+        const startupDelay = settings.startWithWindows ? 8000 : 1000
+        if (settings.startWithWindows) {
+          warning('检测到开机自启，已延迟自动连接 8 秒以避免首启失败')
+        }
+        await new Promise(resolve => setTimeout(resolve, startupDelay))
         if (cancelled) return
 
         const currentState = useConnectionStore.getState().state
@@ -445,7 +461,7 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [connect]) // Include connect in dependencies
+  }, [connect, warning]) // Include connect in dependencies
 
   // Listen for singbox state and traffic updates
   useEffect(() => {
@@ -563,7 +579,6 @@ export default function App() {
   }
 
   return (
-    <ToastProvider>
       <div 
         className="flex flex-col h-screen relative" 
         style={{ backgroundColor: 'var(--bg-primary)', '--sidebar-width': sidebarCollapsed ? '72px' : '256px' } as React.CSSProperties}
@@ -642,7 +657,6 @@ export default function App() {
         </main>
       </div>
     </div>
-    </ToastProvider>
   )
 }
 

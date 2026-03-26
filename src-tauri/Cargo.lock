@@ -2172,6 +2172,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "chrono",
+ "encoding_rs",
  "futures",
  "futures-util",
  "log",

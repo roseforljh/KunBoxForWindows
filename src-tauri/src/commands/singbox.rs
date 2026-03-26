@@ -3,12 +3,34 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::fs::OpenOptions;
+use std::io::Write;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::process::Command;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio_util::sync::CancellationToken;
 use crate::state::AppState;
 use crate::types::{CommandResult, ProxyState, TrafficStats};
+
+#[cfg(windows)]
+fn decode_windows_output(bytes: &[u8]) -> String {
+    let (decoded, _, had_errors) = encoding_rs::GBK.decode(bytes);
+    let text = decoded.trim().to_string();
+    if !had_errors && !text.is_empty() {
+        return text;
+    }
+    String::from_utf8_lossy(bytes).trim().to_string()
+}
+
+#[cfg(windows)]
+fn append_startup_diagnostic(state: &AppState, message: &str) {
+    let _ = fs::create_dir_all(&state.data_dir);
+    let path = state.data_dir.join("startup-diagnostics.log");
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+        let _ = writeln!(file, "[{}] {}", ts, message);
+    }
+}
 
 #[cfg(windows)]
 #[allow(unused_imports)]
@@ -40,18 +62,35 @@ fn is_running_as_admin() -> bool {
 
 pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Result<CommandResult, String> {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
+    append_startup_diagnostic(state, "singbox_start invoked");
     let singbox_path = get_singbox_path(&app)?;
+    append_startup_diagnostic(state, &format!("resolved sing-box path: {:?}", singbox_path));
 
     #[cfg(windows)]
-    repair_stale_proxy_if_needed(state).await?;
+    {
+        append_startup_diagnostic(state, "checking for stale proxy configuration before startup");
+        repair_stale_proxy_if_needed(state).await?;
+        append_startup_diagnostic(state, "stale proxy repair check completed");
+    }
     
     if !singbox_path.exists() {
+        append_startup_diagnostic(state, "sing-box kernel missing on startup");
         return Ok(CommandResult::err("未检测到 sing-box 内核，请先到【设置 → 内核】下载并安装后再启动 VPN。"));
     }
 
     // Check if TUN mode is enabled and admin rights are required
     let settings = state.settings.lock().await;
+    append_startup_diagnostic(
+        state,
+        &format!(
+            "startup connect settings: tun_enabled={}, system_proxy={}, local_port={}",
+            settings.tun_enabled,
+            settings.system_proxy,
+            settings.local_port,
+        ),
+    );
     if settings.tun_enabled && !is_running_as_admin() {
+        append_startup_diagnostic(state, "startup blocked because TUN mode requires admin privileges");
         return Ok(CommandResult::err("TUN 模式需要管理员权限。请右键点击应用图标，选择「以管理员身份运行」后重试。"));
     }
     drop(settings);
@@ -91,9 +130,10 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
         .map_err(|e| e.to_string())?;
 
     if !check_output.status.success() {
-        let stderr = String::from_utf8_lossy(&check_output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&check_output.stdout).trim().to_string();
+        let stderr = decode_windows_output(&check_output.stderr);
+        let stdout = decode_windows_output(&check_output.stdout);
         let detail = if !stderr.is_empty() { stderr } else { stdout };
+        append_startup_diagnostic(state, &format!("sing-box preflight check failed: {}", detail));
         let message = if detail.is_empty() {
             "内核配置检查失败，请检查节点与DNS设置".to_string()
         } else {
@@ -132,6 +172,7 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
 
     #[cfg(windows)]
     write_proxy_session_marker(state, ProxySessionFlag::Active)?;
+    append_startup_diagnostic(state, "sing-box process spawned successfully");
 
     // Capture stderr for logging
     if let Some(stderr) = child.stderr.take() {
@@ -269,9 +310,13 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
     // Enable system proxy
     let settings = state.settings.lock().await;
     if settings.system_proxy {
+        append_startup_diagnostic(state, &format!("enabling system proxy on port {}", settings.local_port));
         let _ = enable_system_proxy_for_state(state, settings.local_port).await;
+    } else {
+        append_startup_diagnostic(state, "system proxy disabled in settings, skipping enable step");
     }
 
+    append_startup_diagnostic(state, "singbox_start finished successfully");
     Ok(CommandResult::ok())
 }
 
@@ -1228,7 +1273,7 @@ async fn query_registry_value(name: &str) -> Result<Option<String>, String> {
         return Ok(None);
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = decode_windows_output(&output.stdout);
     let value = stdout
         .lines()
         .find(|line| line.contains(name))
@@ -1310,7 +1355,7 @@ async fn set_registry_value(name: &str, value_type: &str, value: &str) -> Result
         .map_err(|e| e.to_string())?;
 
     if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        return Err(decode_windows_output(&output.stderr));
     }
 
     Ok(())
@@ -1335,12 +1380,12 @@ async fn delete_registry_value(name: &str) -> Result<(), String> {
         return Ok(());
     }
 
-    let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+    let stderr = decode_windows_output(&output.stderr).to_lowercase();
     if stderr.contains("unable to find") || stderr.contains("无法找到") || stderr.contains("找不到") {
         return Ok(());
     }
 
-    Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    Err(decode_windows_output(&output.stderr))
 }
 
 #[cfg(windows)]
@@ -1573,6 +1618,17 @@ async fn repair_stale_proxy_if_needed(state: &AppState) -> Result<(), String> {
     let proxy_server = query_registry_value("ProxyServer").await?;
     let auto_config_url = query_registry_value("AutoConfigURL").await?;
 
+    append_startup_diagnostic(
+        state,
+        &format!(
+            "stale proxy probe: marker={:?}, proxy_enable={:?}, proxy_server={:?}, auto_config_url={:?}",
+            marker,
+            proxy_enable,
+            proxy_server,
+            auto_config_url,
+        ),
+    );
+
     let has_local_proxy_server = proxy_server
         .as_deref()
         .map(looks_like_local_proxy_server)
@@ -1587,9 +1643,13 @@ async fn repair_stale_proxy_if_needed(state: &AppState) -> Result<(), String> {
             .unwrap_or(false);
 
     if should_repair {
+        append_startup_diagnostic(state, "detected stale proxy configuration, forcing restore/clear");
         log::warn!("Detected stale proxy configuration from previous session, forcing cleanup");
         restore_persisted_or_clear(state).await?;
         clear_proxy_session_marker(state)?;
+        append_startup_diagnostic(state, "stale proxy cleanup completed");
+    } else {
+        append_startup_diagnostic(state, "no stale proxy configuration detected");
     }
 
     Ok(())

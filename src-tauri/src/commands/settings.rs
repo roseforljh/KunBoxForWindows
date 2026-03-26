@@ -7,6 +7,16 @@ use crate::types::AppSettings;
 use std::process::Command;
 
 #[cfg(windows)]
+fn decode_windows_output(bytes: &[u8]) -> String {
+    let (decoded, _, had_errors) = encoding_rs::GBK.decode(bytes);
+    let text = decoded.trim().to_string();
+    if !had_errors && !text.is_empty() {
+        return text;
+    }
+    String::from_utf8_lossy(bytes).trim().to_string()
+}
+
+#[cfg(windows)]
 fn ensure_u16_in_range(value: u64, field: &str) -> Result<u16, String> {
     if value == 0 || value > u16::MAX as u64 {
         return Err(format!("{} 超出有效范围", field));
@@ -41,7 +51,7 @@ fn set_windows_startup(enable: bool) -> Result<(), String> {
             .output()
             .map_err(|e| e.to_string())?;
         if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+            return Err(decode_windows_output(&output.stderr));
         }
     } else {
         let output = Command::new("reg")
@@ -54,7 +64,7 @@ fn set_windows_startup(enable: bool) -> Result<(), String> {
             .output()
             .map_err(|e| e.to_string())?;
         if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+            return Err(decode_windows_output(&output.stderr));
         }
     }
     Ok(())
