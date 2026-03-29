@@ -1,5 +1,6 @@
 use tauri::{AppHandle, Emitter, Manager, State};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use crate::state::AppState;
 use crate::types::ProxyState;
@@ -116,7 +117,142 @@ fn path_exists(path: &Path) -> bool {
     fs::metadata(path).is_ok()
 }
 
-fn replace_kernel_file(kernel_dir: &Path, bytes: &[u8]) -> Result<(), String> {
+fn remove_path_if_exists(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    if path.is_dir() {
+        fs::remove_dir_all(path).map_err(|e| e.to_string())?;
+    } else {
+        fs::remove_file(path).map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+fn kernel_download_archive_path(kernel_dir: &Path) -> PathBuf {
+    kernel_dir.join("sing-box.download.zip")
+}
+
+fn kernel_extract_temp_path(kernel_dir: &Path, filename: &str) -> PathBuf {
+    kernel_dir.join(format!("{}.download", filename))
+}
+
+fn kernel_cache_targets(state: &AppState) -> Vec<PathBuf> {
+    vec![
+        state.config_dir.join("cache.db"),
+        state.rulesets_cache_dir(),
+        state.data_dir.join("cache"),
+    ]
+}
+
+fn clear_kernel_cache_targets(paths: &[PathBuf]) -> Result<u64, String> {
+    let mut freed_bytes = 0;
+
+    for path in paths {
+        if !path.exists() {
+            continue;
+        }
+
+        freed_bytes += if path.is_dir() {
+            get_dir_size(path)
+        } else {
+            path.metadata().map(|meta| meta.len()).unwrap_or(0)
+        };
+
+        remove_path_if_exists(path)?;
+    }
+
+    Ok(freed_bytes)
+}
+
+async fn download_kernel_archive_to_path(
+    app: &AppHandle,
+    response: reqwest::Response,
+    archive_path: &Path,
+) -> Result<(), String> {
+    let total_size = response.content_length().unwrap_or(0);
+    if total_size > MAX_KERNEL_DOWNLOAD_SIZE_BYTES {
+        let err = "内核安装包过大，已拒绝下载";
+        let _ = app.emit("kernel:download-error", err);
+        return Err(err.to_string());
+    }
+
+    let mut file = fs::File::create(archive_path).map_err(|e| e.to_string())?;
+    let mut downloaded = 0u64;
+    let mut stream = response.bytes_stream();
+
+    use futures_util::StreamExt;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| e.to_string())?;
+        file.write_all(&chunk).map_err(|e| e.to_string())?;
+        downloaded += chunk.len() as u64;
+
+        if downloaded > MAX_KERNEL_DOWNLOAD_SIZE_BYTES {
+            let err = "内核安装包过大，已拒绝下载";
+            let _ = app.emit("kernel:download-error", err);
+            return Err(err.to_string());
+        }
+
+        if total_size > 0 {
+            let progress = serde_json::json!({
+                "downloaded": downloaded,
+                "total": total_size,
+                "percent": (downloaded as f64 / total_size as f64 * 100.0) as u32
+            });
+            let _ = app.emit("kernel:download-progress", progress);
+        }
+    }
+
+    file.flush().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn extract_kernel_archive(
+    archive_path: &Path,
+    kernel_path: &Path,
+    cronet_path: &Path,
+) -> Result<bool, String> {
+    remove_path_if_exists(kernel_path)?;
+    remove_path_if_exists(cronet_path)?;
+
+    let archive_file = fs::File::open(archive_path).map_err(|e| e.to_string())?;
+    let mut archive = zip::ZipArchive::new(archive_file).map_err(|e| e.to_string())?;
+    let mut found_kernel = false;
+    let mut found_cronet = false;
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
+        let name = file.name().to_string();
+
+        if name.ends_with("sing-box.exe") {
+            let mut output = fs::File::create(kernel_path).map_err(|e| e.to_string())?;
+            std::io::copy(&mut file, &mut output).map_err(|e| e.to_string())?;
+            output.flush().map_err(|e| e.to_string())?;
+            found_kernel = true;
+            continue;
+        }
+
+        if name.ends_with("libcronet.dll") {
+            let mut output = fs::File::create(cronet_path).map_err(|e| e.to_string())?;
+            std::io::copy(&mut file, &mut output).map_err(|e| e.to_string())?;
+            output.flush().map_err(|e| e.to_string())?;
+            found_cronet = true;
+        }
+    }
+
+    if !found_kernel {
+        remove_path_if_exists(kernel_path)?;
+    }
+    if !found_cronet {
+        let _ = remove_path_if_exists(cronet_path);
+    }
+
+    Ok(found_cronet)
+}
+
+fn replace_kernel_file_from_path(kernel_dir: &Path, source_path: &Path) -> Result<(), String> {
     let kernel_path = kernel_dir.join(KERNEL_FILENAME);
     let backup_path = kernel_dir.join("sing-box.exe.bak");
 
@@ -138,28 +274,23 @@ fn replace_kernel_file(kernel_dir: &Path, bytes: &[u8]) -> Result<(), String> {
             }
         }
 
-        match fs::write(&kernel_path, bytes) {
+        match fs::rename(source_path, &kernel_path) {
             Ok(_) => return Ok(()),
             Err(err) => {
                 last_error = Some(err.to_string());
-
-                if kernel_path.exists() {
-                    let _ = fs::remove_file(&kernel_path);
-                }
-
-                if !kernel_path.exists() && backup_path.exists() {
-                    let _ = fs::rename(&backup_path, &kernel_path);
-                }
-
                 std::thread::sleep(std::time::Duration::from_millis(500));
             }
         }
     }
 
-    Err(format!(
-        "无法替换 sing-box.exe，请先停止代理后重试：{}",
-        last_error.unwrap_or_else(|| "文件被占用".to_string())
-    ))
+    Err(last_error.unwrap_or_else(|| "替换内核文件失败".to_string()))
+}
+
+fn replace_support_file(target_path: &Path, source_path: &Path) -> Result<(), String> {
+    if target_path.exists() {
+        fs::remove_file(target_path).map_err(|e| e.to_string())?;
+    }
+    fs::rename(source_path, target_path).map_err(|e| e.to_string())
 }
 
 fn find_windows_asset<'a>(assets: &'a [GithubAsset], tag_name: &str) -> Option<&'a GithubAsset> {
@@ -519,68 +650,22 @@ pub async fn kernel_download(app: AppHandle, state: State<'_, AppState>, tag_nam
         err
     })?;
 
-    let total_size = response.content_length().unwrap_or(0);
-    if total_size > MAX_KERNEL_DOWNLOAD_SIZE_BYTES {
-        let err = "内核安装包过大，已拒绝下载";
-        let _ = app.emit("kernel:download-error", err);
-        return Err(err.to_string());
-    }
-    let mut downloaded: u64 = 0;
-
-    let mut bytes = Vec::new();
-    let mut stream = response.bytes_stream();
-
-    use futures_util::StreamExt;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| e.to_string())?;
-        bytes.extend_from_slice(&chunk);
-        downloaded += chunk.len() as u64;
-
-        if downloaded > MAX_KERNEL_DOWNLOAD_SIZE_BYTES {
-            let err = "内核安装包过大，已拒绝下载";
-            let _ = app.emit("kernel:download-error", err);
-            return Err(err.to_string());
-        }
-
-        if total_size > 0 {
-            let progress = serde_json::json!({
-                "downloaded": downloaded,
-                "total": total_size,
-                "percent": (downloaded as f64 / total_size as f64 * 100.0) as u32
-            });
-            let _ = app.emit("kernel:download-progress", progress);
-        }
-    }
-
     let kernel_dir = get_kernel_dir_for_install(&app)?;
     fs::create_dir_all(&kernel_dir).map_err(|e| e.to_string())?;
 
-    let cursor = std::io::Cursor::new(bytes);
-    let mut archive = zip::ZipArchive::new(cursor).map_err(|e| e.to_string())?;
+    let archive_path = kernel_download_archive_path(&kernel_dir);
+    let extracted_kernel_path = kernel_extract_temp_path(&kernel_dir, KERNEL_FILENAME);
+    let extracted_cronet_path = kernel_extract_temp_path(&kernel_dir, "libcronet.dll");
 
-    let mut found = false;
-    let mut exe_bytes: Option<Vec<u8>> = None;
-    let mut cronet_bytes: Option<Vec<u8>> = None;
-    for i in 0..archive.len() {
-        let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
-        let name = file.name().to_string();
+    remove_path_if_exists(&archive_path)?;
+    remove_path_if_exists(&extracted_kernel_path)?;
+    remove_path_if_exists(&extracted_cronet_path)?;
 
-        if name.ends_with("sing-box.exe") {
-            let mut bytes = Vec::new();
-            std::io::Read::read_to_end(&mut file, &mut bytes).map_err(|e| e.to_string())?;
-            exe_bytes = Some(bytes);
-            found = true;
-            continue;
-        }
+    download_kernel_archive_to_path(&app, response, &archive_path).await?;
+    let has_cronet = extract_kernel_archive(&archive_path, &extracted_kernel_path, &extracted_cronet_path)?;
+    let _ = remove_path_if_exists(&archive_path);
 
-        if name.ends_with("libcronet.dll") {
-            let mut bytes = Vec::new();
-            std::io::Read::read_to_end(&mut file, &mut bytes).map_err(|e| e.to_string())?;
-            cronet_bytes = Some(bytes);
-        }
-    }
-
-    if !found {
+    if !extracted_kernel_path.exists() {
         let err = "sing-box.exe not found in archive";
         let _ = app.emit("kernel:download-error", err);
         return Err(err.to_string());
@@ -595,11 +680,11 @@ pub async fn kernel_download(app: AppHandle, state: State<'_, AppState>, tag_nam
         }
     }
 
-    replace_kernel_file(&kernel_dir, exe_bytes.as_deref().ok_or_else(|| "sing-box.exe not found in archive".to_string())?)?;
+    replace_kernel_file_from_path(&kernel_dir, &extracted_kernel_path)?;
     log::info!("Kernel installed to {:?}", kernel_dir.join(KERNEL_FILENAME));
 
-    if let Some(bytes) = cronet_bytes {
-        fs::write(kernel_dir.join("libcronet.dll"), bytes).map_err(|e| e.to_string())?;
+    if has_cronet {
+        replace_support_file(&kernel_dir.join("libcronet.dll"), &extracted_cronet_path)?;
         log::info!("Naive runtime installed to {:?}", kernel_dir.join("libcronet.dll"));
     }
 
@@ -650,13 +735,7 @@ pub async fn kernel_can_rollback(app: AppHandle) -> Result<bool, String> {
 
 #[tauri::command]
 pub async fn kernel_clear_cache(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let cache_dir = state.data_dir.join("cache");
-    let mut freed_bytes: u64 = 0;
-    
-    if cache_dir.exists() {
-        freed_bytes = get_dir_size(&cache_dir);
-        fs::remove_dir_all(&cache_dir).map_err(|e| e.to_string())?;
-    }
+    let freed_bytes = clear_kernel_cache_targets(&kernel_cache_targets(&state))?;
     
     Ok(serde_json::json!({ "success": true, "freedBytes": freed_bytes }))
 }
@@ -784,6 +863,16 @@ async fn get_kernel_version_info(kernel_path: &std::path::Path) -> Option<(Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::AppState;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_test_dir(name: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("kunbox-kernel-{}-{}", name, suffix))
+    }
 
     #[test]
     fn validates_release_tags() {
@@ -800,5 +889,26 @@ mod tests {
         assert_eq!(release.tag_name, "v1.13.0");
         assert_eq!(release.asset_name, "sing-box-1.13.0-windows-amd64.zip");
         assert!(release.download_url.contains("/v1.13.0/sing-box-1.13.0-windows-amd64.zip"));
+    }
+
+    #[test]
+    fn clears_actual_cache_db_and_ruleset_cache() {
+        let data_dir = unique_test_dir("clear-cache");
+        let state = AppState::new(data_dir.clone());
+
+        fs::create_dir_all(state.rulesets_cache_dir()).unwrap();
+        fs::create_dir_all(state.data_dir.join("cache")).unwrap();
+        fs::write(state.config_dir.join("cache.db"), vec![1u8; 16]).unwrap();
+        fs::write(state.rulesets_cache_dir().join("demo.srs"), vec![2u8; 24]).unwrap();
+        fs::write(state.data_dir.join("cache").join("legacy.bin"), vec![3u8; 8]).unwrap();
+
+        let freed = clear_kernel_cache_targets(&kernel_cache_targets(&state)).unwrap();
+
+        assert!(freed >= 48);
+        assert!(!state.config_dir.join("cache.db").exists());
+        assert!(!state.rulesets_cache_dir().exists());
+        assert!(!state.data_dir.join("cache").exists());
+
+        let _ = fs::remove_dir_all(data_dir);
     }
 }

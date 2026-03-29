@@ -46,7 +46,7 @@ interface NodesState {
   latencyCache: LatencyCache
   nodeSelections: Record<string, string>
 
-  setNodes: (nodes: SingBoxOutbound[]) => void
+  setNodes: (nodes: SingBoxOutbound[]) => Promise<void>
   setActiveNode: (tag: string | null) => void
   setSearchText: (text: string) => void
   setSortMode: (mode: NodesState['sortMode']) => void
@@ -81,12 +81,15 @@ export const useNodesStore = create<NodesState>()(
       latencyCache: {},
       nodeSelections: {},
 
-      setNodes: (nodes) => {
+      setNodes: async (nodes) => {
         const { latencyCache } = get()
-        // Restore latency from cache
+        const now = Date.now()
+        const activeProfileId = await window.api.profile.getActive()
+        
         const nodesWithLatency = nodes.map((n: SingBoxOutbound) => {
-          const cached = n.tag ? latencyCache[n.tag] : null
-          if (cached) {
+          const cacheKey = activeProfileId && n.tag ? `${activeProfileId}::${n.tag}` : null
+          const cached = cacheKey ? latencyCache[cacheKey] : null
+          if (cached && now - cached.timestamp < 3600000) {
             return { ...n, latencyMs: cached.latencyMs, isTimeout: cached.isTimeout }
           }
           return { ...n }
@@ -129,15 +132,15 @@ export const useNodesStore = create<NodesState>()(
         const { nodes } = get()
         if (nodes.length === 0) return
 
-        // Create new abort controller
+        const activeProfileId = await window.api.profile.getActive()
+        if (!activeProfileId) return
+
         abortController = new AbortController()
         const signal = abortController.signal
 
         set({ isTesting: true, testProgress: 0, testTotal: nodes.length })
 
-        // Test nodes one by one
         for (let i = 0; i < nodes.length; i++) {
-          // Check if cancelled
           if (signal.aborted) {
             break
           }
@@ -152,7 +155,8 @@ export const useNodesStore = create<NodesState>()(
             const isTimeout = latency <= 0
             const latencyMs = latency > 0 ? latency : null
             
-            // Update node and cache
+            const cacheKey = `${activeProfileId}::${node.tag}`
+            
             set((state) => ({
               nodes: state.nodes.map(n => n.tag === node.tag
                 ? { ...n, latencyMs, isTimeout }
@@ -160,10 +164,11 @@ export const useNodesStore = create<NodesState>()(
               ),
               latencyCache: {
                 ...state.latencyCache,
-                [node.tag!]: { latencyMs, isTimeout, timestamp: Date.now() }
+                [cacheKey]: { latencyMs, isTimeout, timestamp: Date.now() }
               }
             }))
           } catch {
+            const cacheKey = `${activeProfileId}::${node.tag}`
             set((state) => ({
               nodes: state.nodes.map(n => n.tag === node.tag
                 ? { ...n, latencyMs: null, isTimeout: true }
@@ -171,7 +176,7 @@ export const useNodesStore = create<NodesState>()(
               ),
               latencyCache: {
                 ...state.latencyCache,
-                [node.tag!]: { latencyMs: null, isTimeout: true, timestamp: Date.now() }
+                [cacheKey]: { latencyMs: null, isTimeout: true, timestamp: Date.now() }
               }
             }))
           }
@@ -190,9 +195,14 @@ export const useNodesStore = create<NodesState>()(
       },
 
       testNodeLatency: async (tag) => {
+        const activeProfileId = await window.api.profile.getActive()
+        if (!activeProfileId) return
+
         set((state) => ({
           nodes: state.nodes.map(n => n.tag === tag ? { ...n, isTesting: true } : n)
         }))
+
+        const cacheKey = `${activeProfileId}::${tag}`
 
         try {
           const latency = await window.api.node.testLatency(tag)
@@ -206,7 +216,7 @@ export const useNodesStore = create<NodesState>()(
             ),
             latencyCache: {
               ...state.latencyCache,
-              [tag]: { latencyMs, isTimeout, timestamp: Date.now() }
+              [cacheKey]: { latencyMs, isTimeout, timestamp: Date.now() }
             }
           }))
         } catch {
@@ -217,7 +227,7 @@ export const useNodesStore = create<NodesState>()(
             ),
             latencyCache: {
               ...state.latencyCache,
-              [tag]: { latencyMs: null, isTimeout: true, timestamp: Date.now() }
+              [cacheKey]: { latencyMs: null, isTimeout: true, timestamp: Date.now() }
             }
           }))
         }
@@ -225,38 +235,49 @@ export const useNodesStore = create<NodesState>()(
 
       loadNodes: async () => {
         const nodes = await window.api.node.list()
+        const activeProfileId = await window.api.profile.getActive()
         const { activeNodeTag, latencyCache } = get()
+        const now = Date.now()
 
-        // Restore latency from cache
+        const newCache = { ...latencyCache }
+        let cacheChanged = false
+        for (const tag in newCache) {
+          if (now - newCache[tag].timestamp >= 3600000) {
+            delete newCache[tag]
+            cacheChanged = true
+          }
+        }
+
         const nodesWithLatency = nodes.map((n: SingBoxOutbound) => {
-          const cached = n.tag ? latencyCache[n.tag] : null
+          const cacheKey = activeProfileId && n.tag ? `${activeProfileId}::${n.tag}` : null
+          const cached = cacheKey ? newCache[cacheKey] : null
           if (cached) {
             return { ...n, latencyMs: cached.latencyMs, isTimeout: cached.isTimeout }
           }
           return { ...n }
         })
         
-        // Auto-select first node if none is active
         if (nodes.length > 0 && !activeNodeTag) {
           const firstTag = nodes[0].tag
           if (firstTag) {
             await window.api.node.setActive(firstTag)
-            set({ nodes: nodesWithLatency, activeNodeTag: firstTag })
+            set({ nodes: nodesWithLatency, activeNodeTag: firstTag, ...(cacheChanged ? { latencyCache: newCache } : {}) })
             return
           }
         }
         
-        set({ nodes: nodesWithLatency })
+        set({ nodes: nodesWithLatency, ...(cacheChanged ? { latencyCache: newCache } : {}) })
       },
 
       loadAllNodes: async () => {
         const allNodes = await window.api.node.listAll()
         const { latencyCache } = get()
+        const now = Date.now()
         
-        // Restore latency from cache
         const nodesWithLatency = allNodes.map((n: NodeWithProfile) => {
-          const cached = n.tag ? latencyCache[n.tag] : null
-          if (cached) {
+          const cacheKey = n.sourceProfileId && n.tag ? `${n.sourceProfileId}::${n.tag}` : null
+          const cached = cacheKey ? latencyCache[cacheKey] : null
+          if (cached && now - cached.timestamp < 3600000) {
             return { ...n, latencyMs: cached.latencyMs, isTimeout: cached.isTimeout }
           }
           return { ...n }

@@ -20,7 +20,15 @@ export default function Dashboard() {
       lastError: s.lastError,
     }))
   )
-  const { nodes, activeNodeTag, loadNodes, testNodeLatency } = useNodesStore()
+  const { activeNodeTag, loadNodes, testNodeLatency, activeNode, totalNodes } = useNodesStore(
+    useShallow((s) => ({
+      activeNodeTag: s.activeNodeTag,
+      loadNodes: s.loadNodes,
+      testNodeLatency: s.testNodeLatency,
+      activeNode: s.nodes.find(n => n.tag === s.activeNodeTag),
+      totalNodes: s.nodes.length
+    }))
+  )
   const [isAnimating, setIsAnimating] = useState(false)
   const { profiles, loadProfiles } = useProfiles()
   const [isTesting, setIsTesting] = useState(false)
@@ -75,12 +83,8 @@ export default function Dashboard() {
   }, [loadNodes, loadProfilesSafe])
 
   // Get active node info
-  const activeNode = nodes.find(n => n.tag === activeNodeTag)
   const activeProfile = profiles.find(p => p.enabled)
   const currentLatency = activeNode?.latencyMs ?? null
-
-  // Calculate total nodes count from all enabled profiles
-  const totalNodes = nodes.length
 
   const handleToggle = async () => {
     if (isAnimating || isConnecting || isDisconnecting) return

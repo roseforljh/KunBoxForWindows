@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react'
+  import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { Reorder } from 'framer-motion'
 import * as Switch from '@radix-ui/react-switch'
 import {
@@ -309,7 +309,7 @@ export default function RuleSets() {
 
   const { profiles, loadProfiles } = useProfiles()
   const [isLoadingData, setIsLoadingData] = useState(false)
-  const { nodes, loadNodes } = useNodesStore()
+  const { allNodes, loadAllNodes } = useNodesStore()
 
   const [dialogData, setDialogData] = useState({
     tag: '',
@@ -334,12 +334,45 @@ export default function RuleSets() {
     })
   }, [])
 
+  const ruleSetsRef = useRef(ruleSets)
+  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+
+  useEffect(() => {
+    ruleSetsRef.current = ruleSets
+  }, [ruleSets])
+
+  const flushSave = useCallback(async () => {
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current)
+      saveTimeoutRef.current = null
+    }
+    try {
+      await window.api.ruleset.save(ruleSetsRef.current)
+    } catch (error) {
+      console.error('Failed to save rulesets:', error)
+      toast.error('保存规则集失败')
+    }
+  }, [toast])
+
   // Save rulesets to main process when changed (only after initial load)
   useEffect(() => {
     if (isRuleSetsLoaded) {
-      window.api.ruleset.save(ruleSets)
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current)
+      }
+      saveTimeoutRef.current = setTimeout(() => {
+        flushSave()
+      }, 500)
     }
-  }, [ruleSets, isRuleSetsLoaded])
+  }, [ruleSets, isRuleSetsLoaded, flushSave])
+
+  useEffect(() => {
+    return () => {
+      if (saveTimeoutRef.current) {
+        flushSave()
+      }
+    }
+  }, [flushSave])
 
   const loadProfilesSafe = useCallback(async () => {
     try {
@@ -352,11 +385,11 @@ export default function RuleSets() {
   const loadAllData = useCallback(async () => {
     setIsLoadingData(true)
     try {
-      await Promise.all([loadNodes(), loadProfilesSafe()])
+      await Promise.all([loadAllNodes(), loadProfilesSafe()])
     } finally {
       setIsLoadingData(false)
     }
-  }, [loadNodes, loadProfilesSafe])
+  }, [loadAllNodes, loadProfilesSafe])
 
   useEffect(() => {
     loadAllData()
@@ -684,6 +717,17 @@ export default function RuleSets() {
       // Find profile name by ID
       const profile = profiles.find(p => p.id === ruleSet.outboundValue)
       return profile?.name || ruleSet.outboundValue
+    }
+    if (ruleSet.outboundMode === 'node') {
+      const parts = ruleSet.outboundValue.split('::')
+      if (parts.length === 2) {
+        const [profileId, nodeTag] = parts
+        const profile = profiles.find(p => p.id === profileId)
+        if (profile) {
+          return `${nodeTag} (${profile.name})`
+        }
+        return nodeTag
+      }
     }
     return ruleSet.outboundValue
   }
@@ -1043,11 +1087,11 @@ export default function RuleSets() {
                     -- 请选择{dialogData.outboundMode === 'node' ? '节点' : '配置'} --
                   </option>
                   {dialogData.outboundMode === 'node'
-                    ? nodes
+                    ? allNodes
                         .filter((n) => n.tag)
                         .map((node) => (
-                          <option key={node.tag} value={node.tag}>
-                            {node.tag} ({node.type})
+                          <option key={`${node.sourceProfileId}::${node.tag}`} value={`${node.sourceProfileId}::${node.tag}`}>
+                            {node.tag} ({node.type}) - {node.sourceProfileName}
                           </option>
                         ))
                     : profiles.map((profile) => (
@@ -1057,7 +1101,7 @@ export default function RuleSets() {
                       ))}
                 </select>
               )}
-              {dialogData.outboundMode === 'node' && nodes.filter((n) => n.tag).length === 0 && !isLoadingData && (
+              {dialogData.outboundMode === 'node' && allNodes.filter((n) => n.tag).length === 0 && !isLoadingData && (
                 <p className="text-xs text-amber-400 mt-1">暂无可用节点</p>
               )}
               {dialogData.outboundMode === 'profile' && profiles.length === 0 && !isLoadingData && (

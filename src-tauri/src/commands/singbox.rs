@@ -1,5 +1,6 @@
 use tauri::{AppHandle, Emitter, Manager, State};
 use std::fs;
+use std::future::Future;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -38,6 +39,8 @@ use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+const SELECTOR_LATENCY_CONCURRENCY_LIMIT: usize = 8;
 
 #[cfg(windows)]
 fn is_running_as_admin() -> bool {
@@ -571,6 +574,42 @@ fn apply_route_target(mut rule: serde_json::Value, target: &str) -> serde_json::
     rule
 }
 
+fn profile_selector_tag(profile_id: &str) -> String {
+    format!("P:{}", profile_id)
+}
+
+fn parse_profile_scoped_node_ref(value: &str) -> Option<(&str, &str)> {
+    let (profile_id, node_tag) = value.split_once("::")?;
+    if profile_id.is_empty() || node_tag.is_empty() {
+        return None;
+    }
+    Some((profile_id, node_tag))
+}
+
+fn normalized_node_reference_tag(node_ref: &str) -> String {
+    match parse_profile_scoped_node_ref(node_ref) {
+        Some((profile_id, node_tag)) => format!("{}::{}", profile_id, node_tag),
+        None => node_ref.to_string(),
+    }
+}
+
+fn resolve_node_route_outbound(
+    node_ref: &str,
+    available_outbound_tags: &std::collections::HashSet<String>,
+) -> Option<String> {
+    let outbound_tag = normalized_node_reference_tag(node_ref);
+    available_outbound_tags
+        .contains(&outbound_tag)
+        .then_some(outbound_tag)
+}
+
+fn with_outbound_tag(mut node: serde_json::Value, tag: &str) -> serde_json::Value {
+    if let Some(obj) = node.as_object_mut() {
+        obj.insert("tag".to_string(), serde_json::Value::String(tag.to_string()));
+    }
+    node
+}
+
 fn is_valid_profile_id(profile_id: &str) -> bool {
     !profile_id.is_empty()
         && profile_id.len() <= 64
@@ -674,13 +713,17 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
     // 收集规则集引用的 profile ID 和 node tag
     let enabled_rulesets: Vec<_> = rulesets.iter().filter(|r| r.enabled).collect();
     let mut referenced_profile_ids = std::collections::HashSet::new();
-    let mut referenced_node_tags = std::collections::HashSet::new();
+    let mut referenced_profile_scoped_node_refs = std::collections::HashSet::new();
     
     for rs in &enabled_rulesets {
         if let Some(ref value) = rs.outbound_value {
             match rs.outbound_mode.as_str() {
                 "profile" | "配置" => { referenced_profile_ids.insert(value.clone()); }
-                "node" | "节点" => { referenced_node_tags.insert(value.clone()); }
+                "node" | "节点" => {
+                    if parse_profile_scoped_node_ref(value).is_some() {
+                        referenced_profile_scoped_node_refs.insert(value.clone());
+                    }
+                }
                 _ => {}
             }
         }
@@ -692,13 +735,9 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
             match rule.outbound_mode.as_str() {
                 "profile" => { referenced_profile_ids.insert(value.clone()); }
                 "node" => { 
-                    // Parse "profileId::nodeTag" format
-                    let node_tag = if value.contains("::") {
-                        value.split("::").nth(1).unwrap_or(value).to_string()
-                    } else {
-                        value.clone()
+                    if parse_profile_scoped_node_ref(value).is_some() {
+                        referenced_profile_scoped_node_refs.insert(value.clone());
                     };
-                    referenced_node_tags.insert(node_tag);
                 }
                 _ => {}
             }
@@ -944,23 +983,28 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
         }
     }
 
-    // 2. 处理跨配置节点引用（node 模式）
-    for node_tag in &referenced_node_tags {
-        if existing_tags.contains(node_tag) {
+    for node_ref in &referenced_profile_scoped_node_refs {
+        let Some((profile_id, node_tag)) = parse_profile_scoped_node_ref(node_ref) else {
+            continue;
+        };
+        let outbound_tag = normalized_node_reference_tag(node_ref);
+        if existing_tags.contains(&outbound_tag) {
             continue;
         }
-        // 在其他配置中查找该节点
-        for profile in &all_profiles {
+
+        if let Some(profile) = all_profiles.iter().find(|p| p.id == profile_id) {
             if let Some(node) = profile.nodes.iter().find(|n| {
-                n.get("tag").and_then(|t| t.as_str()) == Some(node_tag.as_str())
+                n.get("tag").and_then(|t| t.as_str()) == Some(node_tag)
             }) {
                 let node_type = node.get("type").and_then(|t| t.as_str()).unwrap_or("");
                 if is_proxy_type(node_type) {
-                    outbounds.push(process_node(node));
-                    proxy_tags.push(node_tag.clone());
-                    existing_tags.insert(node_tag.clone());
-                    log::info!("Added cross-profile node: {} from profile {}", node_tag, profile.name);
-                    break;
+                    outbounds.push(with_outbound_tag(process_node(node), &outbound_tag));
+                    existing_tags.insert(outbound_tag.clone());
+                    log::info!(
+                        "Added profile-scoped node: {} from profile {}",
+                        outbound_tag,
+                        profile.name
+                    );
                 }
             }
         }
@@ -971,7 +1015,7 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
     
     for profile_id in &referenced_profile_ids {
         if let Some(profile) = all_profiles.iter().find(|p| &p.id == profile_id) {
-            let selector_tag = format!("P:{}", profile.name);
+            let selector_tag = profile_selector_tag(&profile.id);
             if existing_tags.contains(&selector_tag) {
                 continue;
             }
@@ -1068,16 +1112,10 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
                 "block" => "block".to_string(),
                 "node" => {
                     if let Some(ref node_ref) = rule.outbound_value {
-                        // Parse "profileId::nodeTag" format
-                        let node_tag = if node_ref.contains("::") {
-                            node_ref.split("::").nth(1).unwrap_or(node_ref).to_string()
-                        } else {
-                            node_ref.clone()
-                        };
-                        if available_outbound_tags.contains(&node_tag) {
+                        if let Some(node_tag) = resolve_node_route_outbound(node_ref, &available_outbound_tags) {
                             node_tag
                         } else {
-                            log::warn!("Node '{}' not found for domain rule '{}', falling back to PROXY", node_tag, rule.value);
+                            log::warn!("Node '{}' not found for domain rule '{}', falling back to PROXY", node_ref, rule.value);
                             "PROXY".to_string()
                         }
                     } else {
@@ -1156,11 +1194,11 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
             "block" => "block".to_string(),
             // node 模式：验证节点是否存在
             "node" | "节点" => {
-                if let Some(ref node_tag) = rs.outbound_value {
-                    if available_outbound_tags.contains(node_tag) {
-                        node_tag.clone()
+                if let Some(ref node_ref) = rs.outbound_value {
+                    if let Some(node_tag) = resolve_node_route_outbound(node_ref, &available_outbound_tags) {
+                        node_tag
                     } else {
-                        log::warn!("Node '{}' not found for ruleset '{}', falling back to PROXY", node_tag, rs.tag);
+                        log::warn!("Node '{}' not found for ruleset '{}', falling back to PROXY", node_ref, rs.tag);
                         "PROXY".to_string()
                     }
                 } else {
@@ -1663,6 +1701,96 @@ async fn repair_stale_proxy_if_needed(_state: &AppState) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::AppState;
+    use crate::types::{CustomRules, DomainRule, Profile, ProfilesData, RuleSet};
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn update_max(target: &AtomicUsize, candidate: usize) {
+        let mut current = target.load(Ordering::SeqCst);
+        while candidate > current {
+            match target.compare_exchange(current, candidate, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    fn unique_test_dir(name: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("kunbox-singbox-{}-{}", name, suffix))
+    }
+
+    fn make_profile(id: &str, name: &str) -> Profile {
+        Profile {
+            id: id.to_string(),
+            name: name.to_string(),
+            url: String::new(),
+            last_update: None,
+            node_count: 1,
+            enabled: true,
+            auto_update_interval: 0,
+            dns_pre_resolve: false,
+            dns_server: None,
+        }
+    }
+
+    fn make_node(tag: &str) -> serde_json::Value {
+        serde_json::json!({
+            "tag": tag,
+            "type": "vmess",
+            "server": "example.com",
+            "server_port": 443,
+            "uuid": "00000000-0000-0000-0000-000000000000"
+        })
+    }
+
+    fn make_ruleset(id: &str, outbound_mode: &str, outbound_value: Option<&str>) -> RuleSet {
+        RuleSet {
+            id: id.to_string(),
+            tag: id.to_string(),
+            name: id.to_string(),
+            rule_type: "remote".to_string(),
+            format: "binary".to_string(),
+            url: None,
+            outbound_mode: outbound_mode.to_string(),
+            outbound_value: outbound_value.map(|value| value.to_string()),
+            enabled: true,
+            is_built_in: false,
+        }
+    }
+
+    fn make_domain_rule(value: &str, outbound_value: &str) -> DomainRule {
+        DomainRule {
+            id: "rule-1".to_string(),
+            name: value.to_string(),
+            rule_type: "domain".to_string(),
+            value: value.to_string(),
+            outbound_mode: "node".to_string(),
+            outbound_value: Some(outbound_value.to_string()),
+            enabled: true,
+        }
+    }
+
+    fn write_json_file(path: &Path, value: &impl serde::Serialize) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, serde_json::to_vec_pretty(value).unwrap()).unwrap();
+    }
+
+    fn read_generated_config(state: &AppState) -> serde_json::Value {
+        let config_path = state.config_dir.join("config.json");
+        let content = fs::read_to_string(config_path).unwrap();
+        serde_json::from_str(&content).unwrap()
+    }
 
     #[test]
     fn detects_local_proxy_server_values() {
@@ -1674,6 +1802,192 @@ mod tests {
     #[test]
     fn force_clear_mode_is_distinct() {
         assert_ne!(ProxyCleanupMode::RestoreSnapshot, ProxyCleanupMode::ForceClear);
+    }
+
+    #[tokio::test]
+    async fn generate_config_uses_profile_ids_for_selector_tags() {
+        let data_dir = unique_test_dir("duplicate-profile-selector");
+        let state = AppState::new(data_dir.clone());
+
+        let profiles_data = ProfilesData {
+            profiles: vec![
+                make_profile("profile-a", "Same Name"),
+                make_profile("profile-b", "Same Name"),
+            ],
+            active_profile_id: Some("profile-a".to_string()),
+            active_node_tag: Some("node-a".to_string()),
+            node_selections: HashMap::new(),
+        };
+
+        write_json_file(&state.profiles_file(), &profiles_data);
+        write_json_file(&state.configs_dir().join("profile-a.json"), &vec![make_node("node-a")]);
+        write_json_file(&state.configs_dir().join("profile-b.json"), &vec![make_node("node-b")]);
+
+        *state.rulesets.lock().await = vec![
+            make_ruleset("rs-a", "profile", Some("profile-a")),
+            make_ruleset("rs-b", "profile", Some("profile-b")),
+        ];
+
+        let result = generate_config(&state).await.unwrap();
+        assert!(result.success);
+
+        let config = read_generated_config(&state);
+        let outbounds = config["outbounds"].as_array().unwrap();
+        let tags: std::collections::HashSet<&str> = outbounds
+            .iter()
+            .filter_map(|outbound| outbound.get("tag").and_then(|tag| tag.as_str()))
+            .collect();
+
+        assert!(tags.contains("P:profile-a"));
+        assert!(tags.contains("P:profile-b"));
+        assert!(!tags.contains("P:Same Name"));
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn generate_config_preserves_profile_scoped_node_identity_for_domain_rules() {
+        let data_dir = unique_test_dir("profile-scoped-node-routing");
+        let state = AppState::new(data_dir.clone());
+
+        let profiles_data = ProfilesData {
+            profiles: vec![
+                make_profile("profile-a", "Alpha"),
+                make_profile("profile-b", "Beta"),
+            ],
+            active_profile_id: Some("profile-a".to_string()),
+            active_node_tag: Some("shared-node".to_string()),
+            node_selections: HashMap::new(),
+        };
+
+        write_json_file(&state.profiles_file(), &profiles_data);
+        write_json_file(&state.configs_dir().join("profile-a.json"), &vec![make_node("shared-node")]);
+        write_json_file(&state.configs_dir().join("profile-b.json"), &vec![make_node("shared-node")]);
+
+        *state.custom_rules.lock().await = CustomRules {
+            domain_rules: vec![make_domain_rule("example.com", "profile-b::shared-node")],
+        };
+
+        let result = generate_config(&state).await.unwrap();
+        assert!(result.success);
+
+        let config = read_generated_config(&state);
+        let outbounds = config["outbounds"].as_array().unwrap();
+        let tags: std::collections::HashSet<&str> = outbounds
+            .iter()
+            .filter_map(|outbound| outbound.get("tag").and_then(|tag| tag.as_str()))
+            .collect();
+
+        assert!(tags.contains("shared-node"));
+        assert!(tags.contains("profile-b::shared-node"));
+
+        let domain_rule = config["route"]["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|rule| {
+                rule.get("domain")
+                    .and_then(|domain| domain.as_array())
+                    .map(|domains| domains.iter().any(|value| value.as_str() == Some("example.com")))
+                    .unwrap_or(false)
+            })
+            .unwrap();
+
+        assert_eq!(
+            domain_rule.get("outbound").and_then(|value| value.as_str()),
+            Some("profile-b::shared-node")
+        );
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn generate_config_supports_profile_scoped_and_bare_ruleset_node_routes() {
+        let data_dir = unique_test_dir("ruleset-profile-scoped-node-routing");
+        let state = AppState::new(data_dir.clone());
+
+        let profiles_data = ProfilesData {
+            profiles: vec![
+                make_profile("profile-a", "Alpha"),
+                make_profile("profile-b", "Beta"),
+            ],
+            active_profile_id: Some("profile-a".to_string()),
+            active_node_tag: Some("shared-node".to_string()),
+            node_selections: HashMap::new(),
+        };
+
+        write_json_file(&state.profiles_file(), &profiles_data);
+        write_json_file(&state.configs_dir().join("profile-a.json"), &vec![make_node("shared-node")]);
+        write_json_file(&state.configs_dir().join("profile-b.json"), &vec![make_node("shared-node")]);
+        fs::create_dir_all(state.rulesets_cache_dir()).unwrap();
+        fs::write(state.rulesets_cache_dir().join("rs-profile.srs"), b"dummy").unwrap();
+        fs::write(state.rulesets_cache_dir().join("rs-bare.srs"), b"dummy").unwrap();
+
+        *state.rulesets.lock().await = vec![
+            make_ruleset("rs-profile", "node", Some("profile-b::shared-node")),
+            make_ruleset("rs-bare", "node", Some("shared-node")),
+        ];
+
+        let result = generate_config(&state).await.unwrap();
+        assert!(result.success);
+
+        let config = read_generated_config(&state);
+        let outbounds = config["outbounds"].as_array().unwrap();
+        let tags: std::collections::HashSet<&str> = outbounds
+            .iter()
+            .filter_map(|outbound| outbound.get("tag").and_then(|tag| tag.as_str()))
+            .collect();
+
+        assert!(tags.contains("shared-node"));
+        assert!(tags.contains("profile-b::shared-node"));
+
+        let rules = config["route"]["rules"].as_array().unwrap();
+        let profile_ruleset_rule = rules.iter().find(|rule| {
+            rule.get("rule_set")
+                .and_then(|rule_set| rule_set.as_array())
+                .map(|rule_sets| rule_sets.iter().any(|value| value.as_str() == Some("rs-profile")))
+                .unwrap_or(false)
+        }).unwrap();
+        let bare_ruleset_rule = rules.iter().find(|rule| {
+            rule.get("rule_set")
+                .and_then(|rule_set| rule_set.as_array())
+                .map(|rule_sets| rule_sets.iter().any(|value| value.as_str() == Some("rs-bare")))
+                .unwrap_or(false)
+        }).unwrap();
+
+        assert_eq!(
+            profile_ruleset_rule.get("outbound").and_then(|value| value.as_str()),
+            Some("profile-b::shared-node")
+        );
+        assert_eq!(
+            bare_ruleset_rule.get("outbound").and_then(|value| value.as_str()),
+            Some("shared-node")
+        );
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn bounded_selector_probe_helper_caps_concurrency() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
+        let tags: Vec<String> = (0..12).map(|idx| format!("node-{idx}")).collect();
+
+        let results = run_bounded_selector_probes(tags.clone(), 3, |tag| {
+            let active = active.clone();
+            let max_active = max_active.clone();
+            async move {
+                let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                update_max(&max_active, current);
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                active.fetch_sub(1, Ordering::SeqCst);
+                (tag, Some(10))
+            }
+        })
+        .await;
+
+        assert_eq!(results.len(), tags.len());
+        assert!(max_active.load(Ordering::SeqCst) <= 3);
     }
 }
 
@@ -1773,6 +2087,7 @@ async fn load_profiles_data_from_file(state: &AppState) -> crate::types::Profile
 
 async fn collect_referenced_profile_selector_tags(state: &AppState) -> Vec<String> {
     let rulesets = state.rulesets.lock().await.clone();
+    let custom_rules = state.custom_rules.lock().await.clone();
 
     let mut referenced_profile_ids = std::collections::HashSet::new();
 
@@ -1784,20 +2099,29 @@ async fn collect_referenced_profile_selector_tags(state: &AppState) -> Vec<Strin
         }
     }
 
+    for rule in custom_rules.domain_rules.iter().filter(|r| r.enabled) {
+        if let Some(value) = &rule.outbound_value {
+            if rule.outbound_mode == "profile" {
+                referenced_profile_ids.insert(value.clone());
+            }
+        }
+    }
+
     if referenced_profile_ids.is_empty() {
         return Vec::new();
     }
 
     let profiles_data = load_profiles_data_from_file(state).await;
-    let profile_name_map: std::collections::HashMap<String, String> = profiles_data
+    let existing_profile_ids: std::collections::HashSet<String> = profiles_data
         .profiles
         .iter()
-        .map(|p| (p.id.clone(), p.name.clone()))
+        .map(|p| p.id.clone())
         .collect();
 
     let mut selector_tags: Vec<String> = referenced_profile_ids
         .into_iter()
-        .filter_map(|profile_id| profile_name_map.get(&profile_id).map(|name| format!("P:{}", name)))
+        .filter(|profile_id| existing_profile_ids.contains(profile_id))
+        .map(|profile_id| profile_selector_tag(&profile_id))
         .collect();
 
     selector_tags.sort();
@@ -1823,6 +2147,67 @@ async fn switch_selector_to_node(
             err
         );
     }
+}
+
+async fn probe_selector_node_latency(
+    client: reqwest::Client,
+    tag: String,
+    test_url: String,
+) -> (String, Option<u32>) {
+    let result = client
+        .get(format!("http://127.0.0.1:9090/proxies/{}/delay", urlencoding::encode(&tag)))
+        .query(&[("url", test_url.as_str()), ("timeout", "5000")])
+        .timeout(std::time::Duration::from_secs(6))
+        .send()
+        .await;
+
+    let delay = match result {
+        Ok(resp) if resp.status().is_success() => {
+            if let Ok(data) = resp.json::<serde_json::Value>().await {
+                match data.get("delay").and_then(|d| d.as_u64()) {
+                    Some(value) if value > 0 => Some(value as u32),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+
+    (tag, delay)
+}
+
+async fn run_bounded_selector_probes<I, F, Fut>(
+    items: I,
+    concurrency_limit: usize,
+    mut probe: F,
+) -> Vec<(String, Option<u32>)>
+where
+    I: IntoIterator<Item = String>,
+    F: FnMut(String) -> Fut,
+    Fut: Future<Output = (String, Option<u32>)>,
+{
+    let mut remaining = items.into_iter();
+    let mut in_flight = FuturesUnordered::new();
+    let concurrency_limit = concurrency_limit.max(1);
+
+    for _ in 0..concurrency_limit {
+        let Some(item) = remaining.next() else {
+            break;
+        };
+        in_flight.push(probe(item));
+    }
+
+    let mut results = Vec::new();
+    while let Some(result) = in_flight.next().await {
+        results.push(result);
+        if let Some(item) = remaining.next() {
+            in_flight.push(probe(item));
+        }
+    }
+
+    results
 }
 
 async fn test_selector_latency_internal(
@@ -1857,50 +2242,28 @@ async fn test_selector_latency_internal(
 
     log::info!("Testing {} nodes for selector '{}'", node_tags.len(), selector_tag);
 
-    let mut futures = FuturesUnordered::new();
-    for tag in node_tags.clone() {
-        let client = client.clone();
-        let test_url = test_url.clone();
-        futures.push(async move {
-            let result = client
-                .get(format!("http://127.0.0.1:9090/proxies/{}/delay", urlencoding::encode(&tag)))
-                .query(&[("url", &test_url), ("timeout", &"5000".to_string())])
-                .timeout(std::time::Duration::from_secs(6))
-                .send()
-                .await;
+    let results = run_bounded_selector_probes(
+        node_tags.clone(),
+        SELECTOR_LATENCY_CONCURRENCY_LIMIT,
+        |tag| {
+            let client = client.clone();
+            let test_url = test_url.clone();
+            async move { probe_selector_node_latency(client, tag, test_url).await }
+        },
+    )
+    .await;
 
-            let delay = match result {
-                Ok(resp) if resp.status().is_success() => {
-                    if let Ok(data) = resp.json::<serde_json::Value>().await {
-                        match data.get("delay").and_then(|d| d.as_u64()) {
-                            Some(value) if value > 0 => Some(value as u32),
-                            _ => None,
-                        }
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
-            };
-
-            (tag, delay)
-        });
-    }
-
-    let mut results: Vec<(String, Option<u32>)> = Vec::new();
     let mut first_switch_done = false;
     let mut best_node: Option<(String, u32)> = None;
     let mut valid_count: usize = 0;
     let first_switch_threshold = std::cmp::min(5usize, node_tags.len());
 
-    while let Some((tag, delay)) = futures.next().await {
-        results.push((tag.clone(), delay));
-
+    for (tag, delay) in &results {
         if let Some(d) = delay {
             valid_count += 1;
             match &best_node {
-                None => best_node = Some((tag.clone(), d)),
-                Some((_, best_delay)) if d < *best_delay => best_node = Some((tag.clone(), d)),
+                None => best_node = Some((tag.clone(), *d)),
+                Some((_, best_delay)) if *d < *best_delay => best_node = Some((tag.clone(), *d)),
                 _ => {}
             }
         }

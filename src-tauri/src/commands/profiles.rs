@@ -18,6 +18,33 @@ static TEMP_SINGBOX_PROCESS: once_cell::sync::Lazy<Arc<Mutex<Option<tokio::proce
     once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(None)));
 const TEMP_SINGBOX_PORT: u16 = 19090;
 
+fn temp_singbox_dir(state: &AppState) -> std::path::PathBuf {
+    state.data_dir.join("temp_test")
+}
+
+fn remove_temp_singbox_dir(path: &std::path::Path) -> Result<(), String> {
+    if path.exists() {
+        fs::remove_dir_all(path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+async fn cleanup_temp_singbox_process() {
+    let mut process = TEMP_SINGBOX_PROCESS.lock().await;
+    if let Some(mut child) = process.take() {
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+    }
+}
+
+async fn cleanup_temp_singbox(state: &AppState) {
+    cleanup_temp_singbox_process().await;
+    let temp_dir = temp_singbox_dir(state);
+    if let Err(err) = remove_temp_singbox_dir(&temp_dir) {
+        log::warn!("Failed to clean temp sing-box dir {:?}: {}", temp_dir, err);
+    }
+}
+
 fn load_profiles_data(state: &AppState) -> ProfilesData {
     let file = state.profiles_file();
     if file.exists() {
@@ -1114,12 +1141,13 @@ fn extract_hostname(url: &str) -> String {
 
 #[tauri::command]
 pub async fn node_test_latency(app: AppHandle, state: State<'_, AppState>, tag: String) -> Result<i64, String> {
-    let is_vpn_running = {
+    // 只在 Connected 状态才用主singbox，Connecting 时不启动临时singbox（避免双核心）
+    let proxy_state = {
         let proxy_state = state.proxy_state.lock().await;
-        matches!(*proxy_state, ProxyState::Connected)
+        (*proxy_state).clone()
     };
 
-    if is_vpn_running {
+    if matches!(proxy_state, ProxyState::Connected) {
         match test_latency_via_clash_api(&tag, 9090).await {
             Ok(v) if v > 0 => return Ok(v),
             Ok(_) => {}
@@ -1127,6 +1155,10 @@ pub async fn node_test_latency(app: AppHandle, state: State<'_, AppState>, tag: 
                 log::warn!("Main Clash API latency test failed for '{}': {}", tag, e);
             }
         }
+    } else if matches!(proxy_state, ProxyState::Connecting) {
+        // VPN正在连接中，主singbox正在启动，此时不应启动临时singbox
+        log::debug!("Latency test skipped: VPN is connecting, main singbox not ready");
+        return Ok(-1);
     }
 
     let started = start_temp_singbox(&app, &state).await;
@@ -1154,15 +1186,18 @@ pub async fn node_test_all(app: AppHandle, state: State<'_, AppState>) -> Result
     
     let nodes = load_profile_nodes(&state, &profile_id);
     
-    // Check if main VPN is running
-    let is_vpn_running = {
+    let proxy_state = {
         let proxy_state = state.proxy_state.lock().await;
-        matches!(*proxy_state, ProxyState::Connected)
+        (*proxy_state).clone()
     };
     
     let mut ports: Vec<u16> = Vec::new();
-    if is_vpn_running {
+    if matches!(proxy_state, ProxyState::Connected) {
         ports.push(9090);
+    } else if matches!(proxy_state, ProxyState::Connecting) {
+        // VPN正在连接中，不启动临时singbox，避免双核心
+        log::debug!("Batch latency test skipped: VPN is connecting");
+        return Ok(std::collections::HashMap::new());
     }
 
     let temp_ready = start_temp_singbox(&app, &state).await;
@@ -1255,7 +1290,10 @@ fn get_kernel_path_with_fallback(app: &AppHandle) -> Option<std::path::PathBuf> 
 }
 
 async fn start_temp_singbox(app: &AppHandle, state: &AppState) -> bool {
+    let _lifecycle_guard = state.lifecycle_lock.lock().await;
+
     // Check if already running
+    let mut cleanup_existing = false;
     {
         let mut process = TEMP_SINGBOX_PROCESS.lock().await;
         if let Some(ref mut child) = *process {
@@ -1266,13 +1304,19 @@ async fn start_temp_singbox(app: &AppHandle, state: &AppState) -> bool {
                     if check_clash_api_running(TEMP_SINGBOX_PORT).await {
                         return true;
                     }
+                    cleanup_existing = true;
                 }
                 _ => {
                     // Process exited
                     *process = None;
+                    cleanup_existing = true;
                 }
             }
         }
+    }
+
+    if cleanup_existing {
+        cleanup_temp_singbox(state).await;
     }
     
     // Get kernel path
@@ -1301,7 +1345,10 @@ async fn start_temp_singbox(app: &AppHandle, state: &AppState) -> bool {
     }
     
     // Create temp config
-    let temp_dir = state.data_dir.join("temp_test");
+    let temp_dir = temp_singbox_dir(state);
+    if let Err(err) = remove_temp_singbox_dir(&temp_dir) {
+        log::warn!("Failed to clear stale temp dir {:?}: {}", temp_dir, err);
+    }
     if let Err(e) = fs::create_dir_all(&temp_dir) {
         log::error!("Failed to create temp dir: {}", e);
         return false;
@@ -1315,6 +1362,7 @@ async fn start_temp_singbox(app: &AppHandle, state: &AppState) -> bool {
     
     if let Err(e) = fs::write(&config_path, &config_str) {
         log::error!("Failed to write temp config: {}", e);
+        let _ = remove_temp_singbox_dir(&temp_dir);
         return false;
     }
     
@@ -1323,6 +1371,7 @@ async fn start_temp_singbox(app: &AppHandle, state: &AppState) -> bool {
         Some(s) => s,
         None => {
             log::error!("Config path contains invalid UTF-8 characters");
+            let _ = remove_temp_singbox_dir(&temp_dir);
             return false;
         }
     };
@@ -1358,10 +1407,12 @@ async fn start_temp_singbox(app: &AppHandle, state: &AppState) -> bool {
             }
 
             log::warn!("Temp sing-box started but Clash API not ready in time");
+            cleanup_temp_singbox(state).await;
             false
         }
         Err(e) => {
             log::error!("Failed to start temp sing-box: {}", e);
+            let _ = remove_temp_singbox_dir(&temp_dir);
             false
         }
     }
@@ -1628,8 +1679,17 @@ fn export_node_to_link(node: &SingBoxOutbound) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
-    #[test]
+    fn unique_test_dir(name: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("kunbox-profiles-{}-{}", name, suffix))
+    }
+
     #[test]
     fn parses_insecure_flags_from_links() {
         let trojan = parse_trojan_link("trojan://pwd@example.com:443?allowInsecure=true#demo").unwrap();
@@ -1639,5 +1699,17 @@ mod tests {
         let hysteria2 = parse_hysteria2_link("hysteria2://pwd@example.com:443?insecure=true#demo").unwrap();
         let hysteria2_tls = hysteria2.extra.get("tls").and_then(|v| v.as_object()).unwrap();
         assert_eq!(hysteria2_tls.get("insecure").and_then(|v| v.as_bool()), Some(true));
+    }
+
+    #[test]
+    fn removes_temp_singbox_directory_recursively() {
+        let temp_dir = unique_test_dir("temp-cleanup");
+        let nested = temp_dir.join("nested");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("config.json"), b"{}").unwrap();
+
+        remove_temp_singbox_dir(&temp_dir).unwrap();
+
+        assert!(!temp_dir.exists());
     }
 }

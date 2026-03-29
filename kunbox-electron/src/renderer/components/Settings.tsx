@@ -67,6 +67,9 @@ export default function Settings() {
           console.error('Failed to restart as admin, rolled back requireAdmin:', e)
         }
       }
+    } catch (e) {
+      setSettings(prevSettings)
+      console.error(`Failed to save setting ${key}:`, e)
     } finally {
       setSaving(false)
     }

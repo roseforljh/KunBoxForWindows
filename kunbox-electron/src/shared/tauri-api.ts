@@ -15,7 +15,9 @@ function bindUnlisten(unlistenPromise: Promise<() => void>) {
         unlistenFn = fn;
       }
     })
-    .catch(() => {});
+    .catch((err) => {
+      console.error('Failed to bind listener:', err);
+    });
 
   return () => {
     cancelled = true;

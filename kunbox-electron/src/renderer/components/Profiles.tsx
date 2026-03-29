@@ -169,7 +169,7 @@ export default function Profiles() {
 
     // 3. Load nodes for the new profile
     const nodes = await window.api.node.list()
-    nodesStore.setNodes(nodes)
+    await nodesStore.setNodes(nodes)
 
     // 4. Restore saved node selection, or fallback to first node
     const savedTag = nodesStore.restoreNodeSelection(id)

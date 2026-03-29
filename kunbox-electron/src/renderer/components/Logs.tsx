@@ -46,6 +46,9 @@ export default function Logs() {
 
     const unsubscribe = window.api.singbox.onLog((entry: LogEntry) => {
       pendingLogsRef.current.push(entry)
+      if (pendingLogsRef.current.length > 1000) {
+        pendingLogsRef.current.splice(0, pendingLogsRef.current.length - 1000)
+      }
     })
 
     const flushTimer = window.setInterval(() => {

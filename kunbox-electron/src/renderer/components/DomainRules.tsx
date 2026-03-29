@@ -17,6 +17,7 @@ import {
   ChevronDown
 } from 'lucide-react'
 import { Modal, ModalButton } from './ui/Modal'
+import { useShallow } from 'zustand/react/shallow'
 import { useNodesStore } from '../stores/nodesStore'
 import type { DomainRule, DomainRuleType, OutboundMode } from '@shared/types'
 import { useProfiles } from '../lib/useProfiles'
@@ -142,7 +143,12 @@ export default function DomainRules() {
   const [isLoadingData, setIsLoadingData] = useState(false)
   const toast = useToast()
 
-  const { allNodes, loadAllNodes } = useNodesStore()
+  const { allNodes, loadAllNodes } = useNodesStore(
+    useShallow((s) => ({
+      allNodes: s.allNodes,
+      loadAllNodes: s.loadAllNodes
+    }))
+  )
 
   const [dialogData, setDialogData] = useState({
     value: '',
