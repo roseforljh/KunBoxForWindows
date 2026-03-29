@@ -43,6 +43,37 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 const SELECTOR_LATENCY_CONCURRENCY_LIMIT: usize = 8;
 
 #[cfg(windows)]
+async fn kill_stray_singbox_processes(state: &AppState) -> Result<(), String> {
+    append_startup_diagnostic(state, "startup cleanup: killing stray sing-box.exe processes");
+
+    let output = Command::new("taskkill")
+        .args(["/F", "/T", "/IM", "sing-box.exe"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if output.status.success() {
+        append_startup_diagnostic(state, "startup cleanup: stray sing-box.exe processes terminated");
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        return Ok(());
+    }
+
+    let stdout = decode_windows_output(&output.stdout);
+    let stderr = decode_windows_output(&output.stderr);
+    let combined = if !stderr.is_empty() { stderr } else { stdout };
+    let lower = combined.to_lowercase();
+
+    if lower.contains("not found") || lower.contains("没有运行的任务") || lower.contains("没有找到") {
+        append_startup_diagnostic(state, "startup cleanup: no stray sing-box.exe process found");
+        return Ok(());
+    }
+
+    append_startup_diagnostic(state, &format!("startup cleanup: taskkill failed: {}", combined));
+    Err(format!("清理残留 sing-box 进程失败: {}", combined))
+}
+
+#[cfg(windows)]
 fn is_running_as_admin() -> bool {
     use std::process::Command as StdCommand;
     use std::os::windows::process::CommandExt;
@@ -98,10 +129,15 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
     }
     drop(settings);
 
-    // Stop any existing managed process in our state before starting a new one
     if let Some(mut child) = state.singbox_process.lock().await.take() {
         let _ = child.kill().await;
+        let _ = child.wait().await;
     }
+
+    crate::commands::profiles::cleanup_temp_singbox(state).await;
+
+    #[cfg(windows)]
+    kill_stray_singbox_processes(state).await?;
 
     // Generate config
     let config_result = generate_config(&state).await?;
@@ -281,6 +317,27 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
         }
     });
 
+    let mut clash_api_ready = false;
+    for _ in 0..20 {
+        if crate::commands::profiles::check_clash_api_running(9090).await {
+            clash_api_ready = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+
+    if !clash_api_ready {
+        if let Some(mut child) = state.singbox_process.lock().await.take() {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+        }
+        *state.proxy_state.lock().await = ProxyState::Error;
+        *state.start_time.lock().await = None;
+        append_startup_diagnostic(state, "main Clash API not ready in time");
+        let _ = app.emit("singbox:state", "error");
+        return Ok(CommandResult::err("主核心 Clash API 启动超时，请重试。"));
+    }
+
     *state.proxy_state.lock().await = ProxyState::Connected;
     
     let _ = app.emit("singbox:state", "connected");
@@ -325,6 +382,7 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
 
 pub(crate) async fn singbox_stop_impl(app: AppHandle, state: &AppState) -> Result<CommandResult, String> {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
+    append_startup_diagnostic(state, "singbox_stop invoked");
     *state.shutdown_in_progress.lock().await = true;
 
     // Cancel traffic polling
@@ -337,7 +395,28 @@ pub(crate) async fn singbox_stop_impl(app: AppHandle, state: &AppState) -> Resul
 
     // Kill process from state
     if let Some(mut child) = state.singbox_process.lock().await.take() {
-        let _ = child.kill().await;
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                append_startup_diagnostic(state, &format!("singbox_stop: child already exited with status {}", status));
+            }
+            Ok(None) => {
+                child.kill().await.map_err(|e| {
+                    append_startup_diagnostic(state, &format!("singbox_stop: kill failed: {}", e));
+                    e.to_string()
+                })?;
+                child.wait().await.map_err(|e| {
+                    append_startup_diagnostic(state, &format!("singbox_stop: wait failed: {}", e));
+                    e.to_string()
+                })?;
+                append_startup_diagnostic(state, "singbox_stop: child killed and waited successfully");
+            }
+            Err(e) => {
+                append_startup_diagnostic(state, &format!("singbox_stop: try_wait failed: {}", e));
+                return Err(e.to_string());
+            }
+        }
+    } else {
+        append_startup_diagnostic(state, "singbox_stop: no managed child handle present");
     }
 
     // Managed process has already been stopped above if present
@@ -356,8 +435,12 @@ pub(crate) async fn singbox_stop_impl(app: AppHandle, state: &AppState) -> Resul
 
     *state.proxy_state.lock().await = ProxyState::Idle;
     *state.start_time.lock().await = None;
+
+    crate::commands::profiles::cleanup_temp_singbox(state).await;
+
     *state.shutdown_in_progress.lock().await = false;
     let _ = app.emit("singbox:state", "idle");
+    append_startup_diagnostic(state, "singbox_stop finished successfully");
 
     Ok(CommandResult::ok())
 }
@@ -1988,6 +2071,22 @@ mod tests {
 
         assert_eq!(results.len(), tags.len());
         assert!(max_active.load(Ordering::SeqCst) <= 3);
+    }
+
+    #[test]
+    fn recognizes_taskkill_missing_process_output() {
+        let samples = [
+            "ERROR: The process \"sing-box.exe\" not found.",
+            "错误: 没有找到进程 \"sing-box.exe\"。",
+            "错误: 没有运行的任务与指定标准匹配。",
+        ];
+
+        for sample in samples {
+            let lower = sample.to_lowercase();
+            assert!(
+                lower.contains("not found") || lower.contains("没有运行的任务") || lower.contains("没有找到")
+            );
+        }
     }
 }
 

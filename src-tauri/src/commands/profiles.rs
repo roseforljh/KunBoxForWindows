@@ -17,6 +17,26 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 static TEMP_SINGBOX_PROCESS: once_cell::sync::Lazy<Arc<Mutex<Option<tokio::process::Child>>>> = 
     once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(None)));
 const TEMP_SINGBOX_PORT: u16 = 19090;
+const MAIN_CLASH_API_PORT: u16 = 9090;
+
+#[derive(Debug, PartialEq, Eq)]
+enum LatencyTestBackend {
+    Main,
+    Temp,
+    Skip,
+}
+
+fn select_latency_test_backend(proxy_state: &ProxyState, main_api_ready: bool) -> LatencyTestBackend {
+    if main_api_ready {
+        return LatencyTestBackend::Main;
+    }
+
+    if matches!(proxy_state, ProxyState::Connected | ProxyState::Connecting) {
+        return LatencyTestBackend::Skip;
+    }
+
+    LatencyTestBackend::Temp
+}
 
 fn temp_singbox_dir(state: &AppState) -> std::path::PathBuf {
     state.data_dir.join("temp_test")
@@ -37,7 +57,7 @@ async fn cleanup_temp_singbox_process() {
     }
 }
 
-async fn cleanup_temp_singbox(state: &AppState) {
+pub(crate) async fn cleanup_temp_singbox(state: &AppState) {
     cleanup_temp_singbox_process().await;
     let temp_dir = temp_singbox_dir(state);
     if let Err(err) = remove_temp_singbox_dir(&temp_dir) {
@@ -1141,24 +1161,27 @@ fn extract_hostname(url: &str) -> String {
 
 #[tauri::command]
 pub async fn node_test_latency(app: AppHandle, state: State<'_, AppState>, tag: String) -> Result<i64, String> {
-    // 只在 Connected 状态才用主singbox，Connecting 时不启动临时singbox（避免双核心）
     let proxy_state = {
         let proxy_state = state.proxy_state.lock().await;
         (*proxy_state).clone()
     };
+    let main_api_ready = check_clash_api_running(MAIN_CLASH_API_PORT).await;
 
-    if matches!(proxy_state, ProxyState::Connected) {
-        match test_latency_via_clash_api(&tag, 9090).await {
-            Ok(v) if v > 0 => return Ok(v),
-            Ok(_) => {}
-            Err(e) => {
-                log::warn!("Main Clash API latency test failed for '{}': {}", tag, e);
+    match select_latency_test_backend(&proxy_state, main_api_ready) {
+        LatencyTestBackend::Main => {
+            match test_latency_via_clash_api(&tag, MAIN_CLASH_API_PORT).await {
+                Ok(v) if v > 0 => return Ok(v),
+                Ok(_) | Err(_) => {
+                    log::warn!("Main Clash API latency probe failed for '{}', returning -1", tag);
+                    return Ok(-1);
+                }
             }
         }
-    } else if matches!(proxy_state, ProxyState::Connecting) {
-        // VPN正在连接中，主singbox正在启动，此时不应启动临时singbox
-        log::debug!("Latency test skipped: VPN is connecting, main singbox not ready");
-        return Ok(-1);
+        LatencyTestBackend::Skip => {
+            log::debug!("Latency test skipped: main sing-box not ready for state {:?}", proxy_state);
+            return Ok(-1);
+        }
+        LatencyTestBackend::Temp => {}
     }
 
     let started = start_temp_singbox(&app, &state).await;
@@ -1167,7 +1190,9 @@ pub async fn node_test_latency(app: AppHandle, state: State<'_, AppState>, tag: 
         return Ok(-1);
     }
 
-    match test_latency_via_clash_api(&tag, TEMP_SINGBOX_PORT).await {
+    let result = test_latency_via_clash_api(&tag, TEMP_SINGBOX_PORT).await;
+    cleanup_temp_singbox(&state).await;
+    match result {
         Ok(v) => Ok(v),
         Err(e) => {
             log::warn!("Temp Clash API latency test failed for '{}': {}", tag, e);
@@ -1190,25 +1215,31 @@ pub async fn node_test_all(app: AppHandle, state: State<'_, AppState>) -> Result
         let proxy_state = state.proxy_state.lock().await;
         (*proxy_state).clone()
     };
+    let main_api_ready = check_clash_api_running(MAIN_CLASH_API_PORT).await;
     
     let mut ports: Vec<u16> = Vec::new();
-    if matches!(proxy_state, ProxyState::Connected) {
-        ports.push(9090);
-    } else if matches!(proxy_state, ProxyState::Connecting) {
-        // VPN正在连接中，不启动临时singbox，避免双核心
-        log::debug!("Batch latency test skipped: VPN is connecting");
-        return Ok(std::collections::HashMap::new());
-    }
-
-    let temp_ready = start_temp_singbox(&app, &state).await;
-    if temp_ready {
-        ports.push(TEMP_SINGBOX_PORT);
+    let mut temp_used = false;
+    match select_latency_test_backend(&proxy_state, main_api_ready) {
+        LatencyTestBackend::Main => {
+            ports.push(MAIN_CLASH_API_PORT);
+        }
+        LatencyTestBackend::Skip => {
+            log::debug!("Batch latency test skipped: main sing-box not ready for state {:?}", proxy_state);
+            return Ok(std::collections::HashMap::new());
+        }
+        LatencyTestBackend::Temp => {
+            let temp_ready = start_temp_singbox(&app, &state).await;
+            if temp_ready {
+                ports.push(TEMP_SINGBOX_PORT);
+                temp_used = true;
+            }
+        }
     }
 
     if ports.is_empty() {
         return Ok(std::collections::HashMap::new());
     }
-    
+
     let mut results = std::collections::HashMap::new();
     
     // Test in chunks for concurrency
@@ -1243,7 +1274,11 @@ pub async fn node_test_all(app: AppHandle, state: State<'_, AppState>) -> Result
             results.insert(tag, latency);
         }
     }
-    
+
+    if temp_used {
+        cleanup_temp_singbox(&state).await;
+    }
+
     Ok(results)
 }
 
@@ -1278,6 +1313,43 @@ async fn test_latency_via_clash_api(proxy_name: &str, port: u16) -> Result<i64, 
     Ok(-1)
 }
 
+#[derive(Debug)]
+enum TempStartBlockReason {
+    ShutdownInProgress,
+    ProxyStateTransitional(ProxyState),
+    MainProcessAlive,
+    UnknownProcessState,
+}
+
+#[derive(Debug)]
+enum TempStartGuard {
+    Allowed,
+    Blocked(TempStartBlockReason),
+}
+
+async fn can_start_temp_singbox(state: &AppState) -> TempStartGuard {
+    if *state.shutdown_in_progress.lock().await {
+        return TempStartGuard::Blocked(TempStartBlockReason::ShutdownInProgress);
+    }
+    let proxy_state = state.proxy_state.lock().await.clone();
+    if matches!(proxy_state, ProxyState::Connecting | ProxyState::Disconnecting) {
+        return TempStartGuard::Blocked(TempStartBlockReason::ProxyStateTransitional(proxy_state.clone()));
+    }
+    drop(proxy_state);
+    if let Some(ref mut child) = *state.singbox_process.lock().await {
+        match child.try_wait() {
+            Ok(None) => {
+                return TempStartGuard::Blocked(TempStartBlockReason::MainProcessAlive);
+            }
+            Ok(Some(_)) => {}
+            Err(_) => {
+                return TempStartGuard::Blocked(TempStartBlockReason::UnknownProcessState);
+            }
+        }
+    }
+    TempStartGuard::Allowed
+}
+
 fn get_kernel_path_with_fallback(app: &AppHandle) -> Option<std::path::PathBuf> {
     if let Ok(data_dir) = app.path().app_data_dir() {
         let data_kernel = data_dir.join("libs").join("sing-box.exe");
@@ -1292,7 +1364,26 @@ fn get_kernel_path_with_fallback(app: &AppHandle) -> Option<std::path::PathBuf> 
 async fn start_temp_singbox(app: &AppHandle, state: &AppState) -> bool {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
 
-    // Check if already running
+    match can_start_temp_singbox(state).await {
+        TempStartGuard::Blocked(TempStartBlockReason::ShutdownInProgress) => {
+            log::debug!("start_temp_singbox refused: shutdown in progress");
+            return false;
+        }
+        TempStartGuard::Blocked(TempStartBlockReason::ProxyStateTransitional(s)) => {
+            log::debug!("start_temp_singbox refused: proxy state is {:?}", s);
+            return false;
+        }
+        TempStartGuard::Blocked(TempStartBlockReason::MainProcessAlive) => {
+            log::debug!("start_temp_singbox refused: main sing-box child is still alive");
+            return false;
+        }
+        TempStartGuard::Blocked(TempStartBlockReason::UnknownProcessState) => {
+            log::debug!("start_temp_singbox refused: could not determine main child state");
+            return false;
+        }
+        TempStartGuard::Allowed => {}
+    }
+
     let mut cleanup_existing = false;
     {
         let mut process = TEMP_SINGBOX_PROCESS.lock().await;
@@ -1418,7 +1509,7 @@ async fn start_temp_singbox(app: &AppHandle, state: &AppState) -> bool {
     }
 }
 
-async fn check_clash_api_running(port: u16) -> bool {
+pub(crate) async fn check_clash_api_running(port: u16) -> bool {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(500))
         .build();
@@ -1682,6 +1773,9 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    static TEMP_PROCESS_TEST_LOCK: once_cell::sync::Lazy<tokio::sync::Mutex<()>> =
+        once_cell::sync::Lazy::new(|| tokio::sync::Mutex::new(()));
+
     fn unique_test_dir(name: &str) -> PathBuf {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1701,6 +1795,118 @@ mod tests {
         assert_eq!(hysteria2_tls.get("insecure").and_then(|v| v.as_bool()), Some(true));
     }
 
+    fn make_test_state() -> AppState {
+        let dir = unique_test_dir("temp-singbox-guard");
+        AppState::new(dir)
+    }
+
+    #[tokio::test]
+    async fn temp_start_forbidden_when_shutdown_in_progress() {
+        let state = make_test_state();
+        *state.shutdown_in_progress.lock().await = true;
+        let guard = can_start_temp_singbox(&state).await;
+        match guard {
+            TempStartGuard::Blocked(TempStartBlockReason::ShutdownInProgress) => {}
+            other => panic!("expected ShutdownInProgress block, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn temp_start_forbidden_when_proxy_state_connecting() {
+        let state = make_test_state();
+        *state.proxy_state.lock().await = ProxyState::Connecting;
+        let guard = can_start_temp_singbox(&state).await;
+        match guard {
+            TempStartGuard::Blocked(TempStartBlockReason::ProxyStateTransitional(s)) => {
+                assert!(matches!(s, ProxyState::Connecting));
+            }
+            other => panic!("expected ProxyStateTransitional(Connecting) block, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn temp_start_forbidden_when_proxy_state_disconnecting() {
+        let state = make_test_state();
+        *state.proxy_state.lock().await = ProxyState::Disconnecting;
+        let guard = can_start_temp_singbox(&state).await;
+        match guard {
+            TempStartGuard::Blocked(TempStartBlockReason::ProxyStateTransitional(s)) => {
+                assert!(matches!(s, ProxyState::Disconnecting));
+            }
+            other => panic!("expected ProxyStateTransitional(Disconnecting) block, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn temp_start_forbidden_when_main_process_alive() {
+        use tokio::process::Command;
+        let state = make_test_state();
+        let child = Command::new("cmd").args(["/C", "sleep", "10"]).spawn().unwrap();
+        *state.singbox_process.lock().await = Some(child);
+        let guard = can_start_temp_singbox(&state).await;
+        match guard {
+            TempStartGuard::Blocked(TempStartBlockReason::MainProcessAlive) => {}
+            other => panic!("expected MainProcessAlive block, got {:?}", other),
+        }
+        let _ = state.singbox_process.lock().await.take().unwrap().kill().await;
+    }
+
+    #[tokio::test]
+    async fn temp_start_allowed_when_idle_and_no_main_process() {
+        let state = make_test_state();
+        *state.proxy_state.lock().await = ProxyState::Idle;
+        assert!(state.singbox_process.lock().await.is_none());
+        let guard = can_start_temp_singbox(&state).await;
+        match guard {
+            TempStartGuard::Allowed => {}
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn temp_start_allowed_when_error_and_no_main_process() {
+        let state = make_test_state();
+        *state.proxy_state.lock().await = ProxyState::Error;
+        assert!(state.singbox_process.lock().await.is_none());
+        let guard = can_start_temp_singbox(&state).await;
+        match guard {
+            TempStartGuard::Allowed => {}
+            other => panic!("expected Allowed, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn temp_start_forbidden_when_main_process_exited_normally() {
+        use tokio::process::Command;
+        let state = make_test_state();
+        let child = Command::new("cmd").args(["/C", "echo", "done"]).spawn().unwrap();
+        *state.singbox_process.lock().await = Some(child);
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+        let guard = can_start_temp_singbox(&state).await;
+        match guard {
+            TempStartGuard::Allowed => {}
+            other => panic!("expected Allowed after main process exits, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn latency_uses_main_backend_when_main_api_is_ready() {
+        assert_eq!(select_latency_test_backend(&ProxyState::Idle, true), LatencyTestBackend::Main);
+        assert_eq!(select_latency_test_backend(&ProxyState::Error, true), LatencyTestBackend::Main);
+    }
+
+    #[test]
+    fn latency_skips_temp_when_connected_but_main_api_not_ready() {
+        assert_eq!(select_latency_test_backend(&ProxyState::Connected, false), LatencyTestBackend::Skip);
+        assert_eq!(select_latency_test_backend(&ProxyState::Connecting, false), LatencyTestBackend::Skip);
+    }
+
+    #[test]
+    fn latency_uses_temp_only_when_main_api_is_down_and_proxy_not_connected() {
+        assert_eq!(select_latency_test_backend(&ProxyState::Idle, false), LatencyTestBackend::Temp);
+        assert_eq!(select_latency_test_backend(&ProxyState::Error, false), LatencyTestBackend::Temp);
+    }
+
     #[test]
     fn removes_temp_singbox_directory_recursively() {
         let temp_dir = unique_test_dir("temp-cleanup");
@@ -1711,5 +1917,70 @@ mod tests {
         remove_temp_singbox_dir(&temp_dir).unwrap();
 
         assert!(!temp_dir.exists());
+    }
+
+    #[test]
+    fn remove_temp_singbox_dir_succeeds_on_nonexistent_path() {
+        let nonexistent = unique_test_dir("nonexistent");
+        assert!(!nonexistent.exists());
+        let result = remove_temp_singbox_dir(&nonexistent);
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn cleanup_temp_singbox_process_kills_and_clears_process() {
+        let _guard = TEMP_PROCESS_TEST_LOCK.lock().await;
+        let child = tokio::process::Command::new("cmd")
+            .args(["/C", "echo", "done"])
+            .spawn()
+            .expect("spawn test process");
+        {
+            let mut slot = TEMP_SINGBOX_PROCESS.lock().await;
+            *slot = Some(child);
+        }
+
+        cleanup_temp_singbox_process().await;
+
+        let slot = TEMP_SINGBOX_PROCESS.lock().await;
+        assert!(slot.is_none(), "TEMP_SINGBOX_PROCESS should be None after cleanup");
+    }
+
+    #[tokio::test]
+    async fn cleanup_temp_singbox_process_succeeds_when_slot_is_empty() {
+        let _guard = TEMP_PROCESS_TEST_LOCK.lock().await;
+        {
+            let mut slot = TEMP_SINGBOX_PROCESS.lock().await;
+            *slot = None;
+        }
+
+        cleanup_temp_singbox_process().await;
+
+        let slot = TEMP_SINGBOX_PROCESS.lock().await;
+        assert!(slot.is_none());
+    }
+
+    #[tokio::test]
+    async fn cleanup_temp_singbox_removes_dir_and_process() {
+        let _guard = TEMP_PROCESS_TEST_LOCK.lock().await;
+        let state = make_test_state();
+        let temp_dir = temp_singbox_dir(&state);
+        let nested = temp_dir.join("nested");
+        std::fs::create_dir_all(&nested).expect("create nested dir");
+        std::fs::write(nested.join("config.json"), b"{}").expect("write config");
+
+        let child = tokio::process::Command::new("cmd")
+            .args(["/C", "echo", "done"])
+            .spawn()
+            .expect("spawn test process");
+        {
+            let mut slot = TEMP_SINGBOX_PROCESS.lock().await;
+            *slot = Some(child);
+        }
+
+        cleanup_temp_singbox(&state).await;
+
+        let slot = TEMP_SINGBOX_PROCESS.lock().await;
+        assert!(slot.is_none(), "TEMP_SINGBOX_PROCESS should be None");
+        assert!(!temp_dir.exists(), "temp dir should be removed");
     }
 }

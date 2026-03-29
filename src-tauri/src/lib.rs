@@ -33,6 +33,37 @@ fn read_settings_sync(data_dir: &PathBuf) -> AppSettings {
     AppSettings::default()
 }
 
+fn spawn_safe_exit(app_handle: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        #[cfg(windows)]
+        append_startup_diagnostic(&get_data_dir(), "safe exit requested");
+
+        if let Some(state) = app_handle.try_state::<AppState>() {
+            #[cfg(windows)]
+            append_startup_diagnostic(&state.data_dir, "safe exit: stopping sing-box before app exit");
+
+            let stop_result = commands::singbox::singbox_stop_impl(app_handle.clone(), &state).await;
+            match stop_result {
+                Ok(_) => {
+                    #[cfg(windows)]
+                    append_startup_diagnostic(&state.data_dir, "safe exit: sing-box stopped successfully");
+                }
+                Err(err) => {
+                    #[cfg(windows)]
+                    append_startup_diagnostic(&state.data_dir, &format!("safe exit: sing-box stop failed: {}", err));
+                    return;
+                }
+            }
+        } else {
+            #[cfg(windows)]
+            append_startup_diagnostic(&get_data_dir(), "safe exit: AppState unavailable");
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        app_handle.exit(0);
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(windows)]
@@ -180,9 +211,8 @@ pub fn run() {
                     let _ = window.hide();
                     api.prevent_close();
                 } else {
-                    // Allow window to close (app will exit)
-                    // First emit quit event to cleanup
-                    let _ = window.emit("tray-quit", ());
+                    api.prevent_close();
+                    spawn_safe_exit(window.app_handle().clone());
                 }
             }
         })
@@ -366,16 +396,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 "quit" => {
-                    let app_handle = app.clone();
-                    tauri::async_runtime::spawn(async move {
-                        if let Some(state) = app_handle.try_state::<AppState>() {
-                            let _ = commands::singbox::singbox_stop_impl(app_handle.clone(), &state).await;
-                        }
-
-                        log::info!("Safe exit: sing-box stopped, system proxy restored");
-                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                        app_handle.exit(0);
-                    });
+                    spawn_safe_exit(app.clone());
                 }
                 _ => {}
             }
