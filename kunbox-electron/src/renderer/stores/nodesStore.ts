@@ -32,6 +32,7 @@ interface LatencyCache {
 
 // Abort controller for batch testing
 let abortController: AbortController | null = null
+let testAllRunId = 0
 
 interface NodesState {
   nodes: NodeItem[]
@@ -137,61 +138,104 @@ export const useNodesStore = create<NodesState>()(
 
         abortController = new AbortController()
         const signal = abortController.signal
+        const runId = ++testAllRunId
 
-        set({ isTesting: true, testProgress: 0, testTotal: nodes.length })
+        set((state) => ({
+          isTesting: true,
+          testProgress: 0,
+          testTotal: nodes.length,
+          nodes: state.nodes.map(n => ({ ...n, isTesting: true }))
+        }))
 
-        for (let i = 0; i < nodes.length; i++) {
-          if (signal.aborted) {
-            break
+        const concurrency = 5
+        let currentIndex = 0
+        let completedCount = 0
+
+        const worker = async () => {
+          while (currentIndex < nodes.length) {
+            if (signal.aborted || runId !== testAllRunId) return
+
+            const index = currentIndex++
+            const node = nodes[index]
+            const tag = node.tag
+
+            if (!tag) {
+              completedCount++
+              set({ testProgress: completedCount })
+              continue
+            }
+
+            const cacheKey = `${activeProfileId}::${tag}`
+
+            try {
+              const latency = await window.api.node.testLatency(tag)
+              if (signal.aborted || runId !== testAllRunId) return
+
+              const isTimeout = latency <= 0
+              const latencyMs = latency > 0 ? latency : null
+              
+              set((state) => {
+                if (runId !== testAllRunId) return state
+                return {
+                  nodes: state.nodes.map(n => n.tag === tag
+                    ? { ...n, latencyMs, isTimeout, isTesting: false }
+                    : n
+                  ),
+                  latencyCache: {
+                    ...state.latencyCache,
+                    [cacheKey]: { latencyMs, isTimeout, timestamp: Date.now() }
+                  },
+                  testProgress: completedCount + 1
+                }
+              })
+            } catch {
+              if (signal.aborted || runId !== testAllRunId) return
+              
+              set((state) => {
+                if (runId !== testAllRunId) return state
+                return {
+                  nodes: state.nodes.map(n => n.tag === tag 
+                    ? { ...n, isTesting: false, isTimeout: true, latencyMs: null } 
+                    : n
+                  ),
+                  latencyCache: {
+                    ...state.latencyCache,
+                    [cacheKey]: { latencyMs: null, isTimeout: true, timestamp: Date.now() }
+                  },
+                  testProgress: completedCount + 1
+                }
+              })
+            }
+            completedCount++
           }
+        }
 
-          const node = nodes[i]
-          if (!node.tag) continue
-          
-          set({ testProgress: i + 1 })
-          
-          try {
-            const latency = await window.api.node.testLatency(node.tag)
-            const isTimeout = latency <= 0
-            const latencyMs = latency > 0 ? latency : null
-            
-            const cacheKey = `${activeProfileId}::${node.tag}`
-            
+        try {
+          const workers = Array.from({ length: Math.min(concurrency, nodes.length) }, () => worker())
+          await Promise.all(workers)
+        } finally {
+          if (runId === testAllRunId) {
+            abortController = null
             set((state) => ({
-              nodes: state.nodes.map(n => n.tag === node.tag
-                ? { ...n, latencyMs, isTimeout }
-                : n
-              ),
-              latencyCache: {
-                ...state.latencyCache,
-                [cacheKey]: { latencyMs, isTimeout, timestamp: Date.now() }
-              }
-            }))
-          } catch {
-            const cacheKey = `${activeProfileId}::${node.tag}`
-            set((state) => ({
-              nodes: state.nodes.map(n => n.tag === node.tag
-                ? { ...n, latencyMs: null, isTimeout: true }
-                : n
-              ),
-              latencyCache: {
-                ...state.latencyCache,
-                [cacheKey]: { latencyMs: null, isTimeout: true, timestamp: Date.now() }
-              }
+              isTesting: false,
+              testProgress: 0,
+              nodes: state.nodes.map(n => ({ ...n, isTesting: false }))
             }))
           }
         }
-        
-        abortController = null
-        set({ isTesting: false, testProgress: 0 })
       },
 
       cancelTestAllLatency: () => {
+        testAllRunId += 1
         if (abortController) {
           abortController.abort()
           abortController = null
         }
-        set({ isTesting: false, testProgress: 0 })
+        set((state) => ({
+          isTesting: false,
+          testProgress: 0,
+          nodes: state.nodes.map(n => ({ ...n, isTesting: false }))
+        }))
       },
 
       testNodeLatency: async (tag) => {
