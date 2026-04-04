@@ -474,10 +474,37 @@ pub async fn singbox_get_status(state: State<'_, AppState>) -> Result<serde_json
 }
 
 #[tauri::command]
-pub async fn singbox_switch_node(state: State<'_, AppState>, node_tag: String) -> Result<CommandResult, String> {
+pub async fn singbox_switch_node(app: AppHandle, state: State<'_, AppState>, node_tag: String) -> Result<CommandResult, String> {
     let proxy_state = state.proxy_state.lock().await.clone();
     if !matches!(proxy_state, ProxyState::Connected) {
         return Ok(CommandResult::err("VPN not running"));
+    }
+
+    let mut profiles_data = load_profiles_data_from_file(&state).await;
+    let active_profile_id = match profiles_data.active_profile_id.clone() {
+        Some(id) => id,
+        None => return Ok(CommandResult::err("No active profile")),
+    };
+    let previous_active_node_tag = profiles_data.active_node_tag.clone();
+
+    profiles_data.active_node_tag = Some(node_tag.clone());
+    let profiles_content = serde_json::to_string_pretty(&profiles_data).map_err(|e| e.to_string())?;
+    fs::write(state.profiles_file(), profiles_content).map_err(|e| e.to_string())?;
+    *state.profiles_data.lock().await = profiles_data;
+
+    let nodes_file = profile_nodes_path(&state, &active_profile_id)?;
+    let raw_nodes: Vec<serde_json::Value> = if nodes_file.exists() {
+        let content = fs::read_to_string(&nodes_file).map_err(|e| e.to_string())?;
+        serde_json::from_str(&content).map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
+
+    let previous_signature = node_bootstrap_signature(active_or_first_node(&raw_nodes, previous_active_node_tag.as_deref()));
+    let target_signature = node_bootstrap_signature(active_or_first_node(&raw_nodes, Some(&node_tag)));
+
+    if previous_signature != target_signature {
+        return singbox_restart(app, state).await;
     }
 
     let client = reqwest::Client::new();
@@ -525,6 +552,8 @@ fn process_node(node: &serde_json::Value) -> serde_json::Value {
         let node_type = obj.get("type").and_then(|t| t.as_str()).unwrap_or("").to_string();
         let server = obj.get("server").and_then(|s| s.as_str()).unwrap_or("").to_string();
         let port = obj.get("server_port").and_then(|p| p.as_u64()).unwrap_or(0);
+
+        obj.remove(crate::commands::profiles::ECH_DNS_SERVER_META_KEY);
 
         if node_type != "shadowsocks" && node_type != "shadowsocksr" {
             obj.remove("method");
@@ -643,6 +672,93 @@ fn build_dns_server(address: &str, tag: &str, detour: &str) -> serde_json::Value
     }
 
     server_obj
+}
+
+fn build_dns_server_with_resolver(
+    address: &str,
+    tag: &str,
+    detour: &str,
+    domain_resolver: Option<&str>,
+) -> serde_json::Value {
+    let mut server_obj = build_dns_server(address, tag, detour);
+    if let Some(resolver) = domain_resolver {
+        server_obj["domain_resolver"] = serde_json::Value::String(resolver.to_string());
+    }
+    server_obj
+}
+
+fn node_has_ech(node: &serde_json::Value) -> bool {
+    let Some(ech) = node.get("tls").and_then(|value| value.get("ech")) else {
+        return false;
+    };
+
+    ech.get("enabled").and_then(|value| value.as_bool()) == Some(true)
+        || ech.get("query_server_name").is_some()
+        || ech.get("config").is_some()
+}
+
+fn node_needs_ech_subscription_repair(node: &serde_json::Value) -> bool {
+    let Some(ech) = node.get("tls").and_then(|value| value.get("ech")) else {
+        return false;
+    };
+
+    if node
+        .get(crate::commands::profiles::ECH_DNS_SERVER_META_KEY)
+        .and_then(|value| value.as_str())
+        .is_some()
+    {
+        return false;
+    }
+
+    node_has_ech(node) && ech.get("config").is_none()
+}
+
+fn extract_ech_dns_server_override(
+    raw_nodes: &[serde_json::Value],
+    active_node_tag: Option<&str>,
+) -> Option<String> {
+    if let Some(active_tag) = active_node_tag {
+        if let Some(value) = raw_nodes
+            .iter()
+            .find(|node| node.get("tag").and_then(|value| value.as_str()) == Some(active_tag))
+            .and_then(|node| node.get(crate::commands::profiles::ECH_DNS_SERVER_META_KEY))
+            .and_then(|value| value.as_str())
+        {
+            return Some(value.to_string());
+        }
+    }
+
+    let mut values = raw_nodes
+        .iter()
+        .filter_map(|node| node.get(crate::commands::profiles::ECH_DNS_SERVER_META_KEY))
+        .filter_map(|value| value.as_str())
+        .collect::<Vec<_>>();
+    values.sort_unstable();
+    values.dedup();
+    (values.len() == 1).then(|| values[0].to_string())
+}
+
+fn active_or_first_node<'a>(raw_nodes: &'a [serde_json::Value], active_node_tag: Option<&str>) -> Option<&'a serde_json::Value> {
+    active_node_tag
+        .and_then(|active_tag| {
+            raw_nodes
+                .iter()
+                .find(|node| node.get("tag").and_then(|value| value.as_str()) == Some(active_tag))
+        })
+        .or_else(|| raw_nodes.first())
+}
+
+fn node_bootstrap_signature(node: Option<&serde_json::Value>) -> (bool, Option<String>) {
+    let Some(node) = node else {
+        return (false, None);
+    };
+
+    let uses_ech = node_has_ech(node);
+    let resolver = node
+        .get(crate::commands::profiles::ECH_DNS_SERVER_META_KEY)
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string());
+    (uses_ech, resolver)
 }
 
 fn apply_route_target(mut rule: serde_json::Value, target: &str) -> serde_json::Value {
@@ -778,10 +894,39 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
     }
 
     let nodes_content = fs::read_to_string(&nodes_file).map_err(|e| e.to_string())?;
-    let raw_nodes: Vec<serde_json::Value> = serde_json::from_str(&nodes_content).map_err(|e| e.to_string())?;
+    let mut raw_nodes: Vec<serde_json::Value> = serde_json::from_str(&nodes_content).map_err(|e| e.to_string())?;
 
     if raw_nodes.is_empty() {
         return Ok(CommandResult::err("No nodes in active profile"));
+    }
+
+    let active_profile = profiles_data
+        .profiles
+        .iter()
+        .find(|profile| profile.id == active_profile_id);
+
+    if let Some(profile) = active_profile {
+        let needs_ech_repair = !profile.url.trim().is_empty()
+            && raw_nodes.iter().any(node_needs_ech_subscription_repair);
+
+        if needs_ech_repair {
+            match crate::commands::profiles::fetch_subscription(&profile.url).await {
+                Ok(repaired_nodes) if !repaired_nodes.is_empty() => {
+                    if let Ok(repaired_content) = serde_json::to_string_pretty(&repaired_nodes) {
+                        if fs::write(&nodes_file, &repaired_content).is_ok() {
+                            if let Ok(repaired_raw_nodes) = serde_json::from_str::<Vec<serde_json::Value>>(&repaired_content) {
+                                raw_nodes = repaired_raw_nodes;
+                                log::info!("Repaired legacy ECH subscription nodes for profile '{}'", profile.name);
+                            }
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    log::warn!("Failed to refresh legacy ECH nodes for profile '{}': {}", profile.name, err);
+                }
+            }
+        }
     }
 
     // 处理当前配置的节点
@@ -789,6 +934,23 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
 
     let active_node_tag = profiles_data.active_node_tag.clone()
         .or_else(|| nodes.first().and_then(|n| n.get("tag").and_then(|t| t.as_str()).map(|s| s.to_string())));
+
+    let inferred_ech_dns_server = extract_ech_dns_server_override(&raw_nodes, active_node_tag.as_deref());
+    let active_node_has_ech = active_or_first_node(&raw_nodes, active_node_tag.as_deref())
+        .map(node_has_ech)
+        .unwrap_or(false);
+    let effective_remote_dns = if active_node_has_ech {
+        inferred_ech_dns_server
+            .clone()
+            .or_else(|| active_profile.and_then(|profile| profile.dns_server.clone()))
+            .unwrap_or_else(|| settings.remote_dns.clone())
+    } else {
+        active_profile
+            .and_then(|profile| profile.dns_server.clone())
+            .unwrap_or_else(|| settings.remote_dns.clone())
+    };
+    let remote_dns_detour = if active_node_has_ech { "direct" } else { "PROXY" };
+    let remote_dns_domain_resolver = active_node_has_ech.then_some("dns-local");
 
     // 加载所有配置文件信息（用于跨配置分流）
     let all_profiles = load_all_profiles(state, &profiles_data);
@@ -835,7 +997,12 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
     // 构建 DNS 服务器列表（sing-box 1.12+ 新格式）
     let mut dns_servers = vec![
         build_dns_server(&settings.local_dns, "dns-local", "direct"),
-        build_dns_server(&settings.remote_dns, "dns-remote", "PROXY"),
+        build_dns_server_with_resolver(
+            &effective_remote_dns,
+            "dns-remote",
+            remote_dns_detour,
+            remote_dns_domain_resolver,
+        ),
     ];
 
     // 构建 DNS 规则
@@ -2046,6 +2213,134 @@ mod tests {
             bare_ruleset_rule.get("outbound").and_then(|value| value.as_str()),
             Some("shared-node")
         );
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn generate_config_uses_direct_dns_bootstrap_for_ech_nodes() {
+        let data_dir = unique_test_dir("ech-bootstrap");
+        let state = AppState::new(data_dir.clone());
+
+        let mut profile = make_profile("profile-ech", "ECH Profile");
+        profile.dns_server = Some("https://dns.alidns.com/dns-query".to_string());
+
+        let profiles_data = ProfilesData {
+            profiles: vec![profile],
+            active_profile_id: Some("profile-ech".to_string()),
+            active_node_tag: Some("ECH Node".to_string()),
+            node_selections: HashMap::new(),
+        };
+
+        write_json_file(&state.profiles_file(), &profiles_data);
+        write_json_file(
+            &state.configs_dir().join("profile-ech.json"),
+            &vec![serde_json::json!({
+                "tag": "ECH Node",
+                "type": "vless",
+                "server": "104.19.41.41",
+                "server_port": 443,
+                "uuid": "68d55b3f-c4f1-481a-8bfb-e483004f2c15",
+                "packet_encoding": "xudp",
+                "tls": {
+                    "enabled": true,
+                    "server_name": "cm.5945946.xyz",
+                    "ech": {
+                        "enabled": true,
+                        "query_server_name": "cloudflare-ech.com"
+                    }
+                },
+                crate::commands::profiles::ECH_DNS_SERVER_META_KEY: "https://dns.alidns.com/dns-query"
+            })],
+        );
+
+        let result = generate_config(&state).await.unwrap();
+        assert!(result.success);
+
+        let config = read_generated_config(&state);
+        let dns_remote = config["dns"]["servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|server| server.get("tag").and_then(|value| value.as_str()) == Some("dns-remote"))
+            .unwrap();
+
+        assert_eq!(dns_remote.get("server").and_then(|value| value.as_str()), Some("dns.alidns.com"));
+        assert_eq!(dns_remote.get("path").and_then(|value| value.as_str()), Some("/dns-query"));
+        assert_eq!(dns_remote.get("domain_resolver").and_then(|value| value.as_str()), Some("dns-local"));
+        assert!(dns_remote.get("detour").is_none(), "ECH bootstrap DNS must not detour through proxy");
+
+        let outbound = config["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node.get("tag").and_then(|value| value.as_str()) == Some("ECH Node"))
+            .unwrap();
+
+        assert_eq!(
+            outbound.get(crate::commands::profiles::ECH_DNS_SERVER_META_KEY),
+            None,
+            "internal ECH DNS metadata must not leak into final sing-box config"
+        );
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn generate_config_keeps_proxy_dns_for_non_ech_active_node() {
+        let data_dir = unique_test_dir("ech-non-active");
+        let state = AppState::new(data_dir.clone());
+
+        let profiles_data = ProfilesData {
+            profiles: vec![make_profile("profile-mixed", "Mixed Profile")],
+            active_profile_id: Some("profile-mixed".to_string()),
+            active_node_tag: Some("Plain Node".to_string()),
+            node_selections: HashMap::new(),
+        };
+
+        write_json_file(&state.profiles_file(), &profiles_data);
+        write_json_file(
+            &state.configs_dir().join("profile-mixed.json"),
+            &vec![
+                serde_json::json!({
+                    "tag": "Plain Node",
+                    "type": "vmess",
+                    "server": "example.com",
+                    "server_port": 443,
+                    "uuid": "00000000-0000-0000-0000-000000000000"
+                }),
+                serde_json::json!({
+                    "tag": "ECH Node",
+                    "type": "vless",
+                    "server": "104.19.41.41",
+                    "server_port": 443,
+                    "uuid": "68d55b3f-c4f1-481a-8bfb-e483004f2c15",
+                    crate::commands::profiles::ECH_DNS_SERVER_META_KEY: "https://dns.alidns.com/dns-query",
+                    "tls": {
+                        "enabled": true,
+                        "server_name": "cm.5945946.xyz",
+                        "ech": {
+                            "enabled": true,
+                            "query_server_name": "cloudflare-ech.com"
+                        }
+                    }
+                }),
+            ],
+        );
+
+        let result = generate_config(&state).await.unwrap();
+        assert!(result.success);
+
+        let config = read_generated_config(&state);
+        let dns_remote = config["dns"]["servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|server| server.get("tag").and_then(|value| value.as_str()) == Some("dns-remote"))
+            .unwrap();
+
+        assert_eq!(dns_remote.get("detour").and_then(|value| value.as_str()), Some("PROXY"));
+        assert!(dns_remote.get("domain_resolver").is_none());
 
         let _ = fs::remove_dir_all(data_dir);
     }

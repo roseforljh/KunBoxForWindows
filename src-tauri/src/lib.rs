@@ -235,8 +235,10 @@ pub fn run() {
             commands::node_delete,
             commands::node_add,
             commands::node_export,
+            commands::node_begin_latency_tests,
             commands::node_test_latency,
             commands::node_test_all,
+            commands::node_cancel_latency_tests,
             commands::node_list_all,
             // Profiles extra
             commands::profile_import_content,

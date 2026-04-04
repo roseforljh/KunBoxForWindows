@@ -1,7 +1,9 @@
 use tauri::{AppHandle, Manager, State};
+use std::collections::HashSet;
 use std::fs;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use crate::state::AppState;
 use crate::types::{Profile, ProfilesData, ProxyState, SingBoxOutbound};
@@ -16,6 +18,19 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 // Temporary sing-box for latency testing
 static TEMP_SINGBOX_PROCESS: once_cell::sync::Lazy<Arc<Mutex<Option<tokio::process::Child>>>> = 
     once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(None)));
+static TEMP_SINGBOX_TAG_MAP: once_cell::sync::Lazy<Arc<Mutex<std::collections::HashMap<String, Vec<String>>>>> =
+    once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(std::collections::HashMap::new())));
+static TEMP_SINGBOX_ACTIVE_TESTS: once_cell::sync::Lazy<Arc<Mutex<usize>>> =
+    once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(0)));
+static TEMP_SINGBOX_OWNER_BATCH_ID: once_cell::sync::Lazy<Arc<Mutex<Option<u64>>>> =
+    once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(None)));
+static LATENCY_TEST_CANCEL_TOKEN: once_cell::sync::Lazy<Arc<Mutex<CancellationToken>>> =
+    once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(CancellationToken::new())));
+static ACTIVE_LATENCY_BATCH_ID: once_cell::sync::Lazy<Arc<Mutex<Option<u64>>>> =
+    once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(None)));
+static CANCELED_LATENCY_BATCHES: once_cell::sync::Lazy<Arc<Mutex<HashSet<u64>>>> =
+    once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(HashSet::new())));
+pub(crate) const ECH_DNS_SERVER_META_KEY: &str = "x_kunbox_ech_dns_server";
 const TEMP_SINGBOX_PORT: u16 = 19090;
 const MAIN_CLASH_API_PORT: u16 = 9090;
 
@@ -57,8 +72,133 @@ async fn cleanup_temp_singbox_process() {
     }
 }
 
+async fn clear_temp_singbox_tag_map() {
+    TEMP_SINGBOX_TAG_MAP.lock().await.clear();
+}
+
+async fn acquire_temp_singbox_test_slot(run_id: Option<u64>) -> bool {
+    let mut owner = TEMP_SINGBOX_OWNER_BATCH_ID.lock().await;
+    let mut active = TEMP_SINGBOX_ACTIVE_TESTS.lock().await;
+
+    if *active == 0 {
+        *owner = run_id;
+    }
+
+    if *owner != run_id {
+        return false;
+    }
+
+    *active += 1;
+    true
+}
+
+async fn release_temp_singbox_test_slot(state: &AppState, run_id: Option<u64>) {
+    let should_cleanup = {
+        let mut owner = TEMP_SINGBOX_OWNER_BATCH_ID.lock().await;
+        let mut active = TEMP_SINGBOX_ACTIVE_TESTS.lock().await;
+        if *owner != run_id {
+            return;
+        }
+        if *active > 0 {
+            *active -= 1;
+        }
+        if *active == 0 {
+            *owner = None;
+            true
+        } else {
+            false
+        }
+    };
+
+    if should_cleanup {
+        cleanup_temp_singbox(state).await;
+    }
+}
+
+async fn read_temp_singbox_tag_map() -> std::collections::HashMap<String, Vec<String>> {
+    TEMP_SINGBOX_TAG_MAP.lock().await.clone()
+}
+
+async fn take_temp_singbox_tag_for_batch(run_id: Option<u64>, original_tag: &str) -> Option<String> {
+    if *TEMP_SINGBOX_OWNER_BATCH_ID.lock().await != run_id {
+        return None;
+    }
+    let mut tag_map = TEMP_SINGBOX_TAG_MAP.lock().await;
+    take_temp_singbox_tag(&mut tag_map, original_tag)
+}
+
+async fn current_latency_test_cancel_token() -> CancellationToken {
+    LATENCY_TEST_CANCEL_TOKEN.lock().await.clone()
+}
+
+async fn cancel_and_reset_latency_test_token() {
+    let mut slot = LATENCY_TEST_CANCEL_TOKEN.lock().await;
+    slot.cancel();
+    *slot = CancellationToken::new();
+}
+
+async fn begin_latency_test_batch(run_id: u64) {
+    cancel_and_reset_latency_test_token().await;
+    *ACTIVE_LATENCY_BATCH_ID.lock().await = Some(run_id);
+    CANCELED_LATENCY_BATCHES.lock().await.remove(&run_id);
+}
+
+async fn mark_latency_test_batch_cancelled(run_id: Option<u64>) {
+    if let Some(run_id) = run_id {
+        CANCELED_LATENCY_BATCHES.lock().await.insert(run_id);
+    }
+
+    let should_cancel_active = {
+        let active_run_id = *ACTIVE_LATENCY_BATCH_ID.lock().await;
+        run_id.is_none() || active_run_id == run_id
+    };
+
+    if should_cancel_active {
+        cancel_and_reset_latency_test_token().await;
+        *ACTIVE_LATENCY_BATCH_ID.lock().await = None;
+    }
+}
+
+async fn is_latency_test_batch_cancelled(run_id: Option<u64>) -> bool {
+    match run_id {
+        Some(run_id) => CANCELED_LATENCY_BATCHES.lock().await.contains(&run_id),
+        None => false,
+    }
+}
+
+async fn first_temp_singbox_tag(original_tag: &str) -> Option<String> {
+    TEMP_SINGBOX_TAG_MAP
+        .lock()
+        .await
+        .get(original_tag)
+        .and_then(|aliases| aliases.first().cloned())
+}
+
+fn take_temp_singbox_tag(
+    tag_map: &mut std::collections::HashMap<String, Vec<String>>,
+    original_tag: &str,
+) -> Option<String> {
+    let should_remove = match tag_map.get(original_tag) {
+        Some(aliases) => aliases.len() <= 1,
+        None => return None,
+    };
+
+    if should_remove {
+        return tag_map.remove(original_tag).and_then(|mut aliases| aliases.drain(..1).next());
+    }
+
+    tag_map.get_mut(original_tag).map(|aliases| aliases.remove(0))
+}
+
+fn make_temp_latency_tag(index: usize) -> String {
+    format!("latency-{:04}", index)
+}
+
 pub(crate) async fn cleanup_temp_singbox(state: &AppState) {
     cleanup_temp_singbox_process().await;
+    clear_temp_singbox_tag_map().await;
+    *TEMP_SINGBOX_ACTIVE_TESTS.lock().await = 0;
+    *TEMP_SINGBOX_OWNER_BATCH_ID.lock().await = None;
     let temp_dir = temp_singbox_dir(state);
     if let Err(err) = remove_temp_singbox_dir(&temp_dir) {
         log::warn!("Failed to clean temp sing-box dir {:?}: {}", temp_dir, err);
@@ -380,7 +520,7 @@ pub async fn node_list_all(state: State<'_, AppState>) -> Result<Vec<NodeWithPro
     Ok(all_nodes)
 }
 
-async fn fetch_subscription(url: &str) -> Result<Vec<SingBoxOutbound>, String> {
+pub(crate) async fn fetch_subscription(url: &str) -> Result<Vec<SingBoxOutbound>, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
@@ -689,6 +829,46 @@ fn parse_ss_link(link: &str) -> Option<SingBoxOutbound> {
     })
 }
 
+fn extract_ech_name_and_dns_server(ech: &str) -> Option<(&str, &str)> {
+    let (_, resolver) = ech.split_once('+')?;
+    let (name, _) = ech.split_once('+')?;
+    let name = name.trim();
+    let resolver = resolver.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let url = url::Url::parse(resolver).ok()?;
+    matches!(url.scheme(), "https" | "h3").then_some((name, resolver))
+}
+
+fn extract_ech_public_name(ech: &str) -> Option<&str> {
+    extract_ech_name_and_dns_server(ech).map(|(name, _)| name)
+}
+
+fn extract_ech_dns_server(ech: &str) -> Option<&str> {
+    extract_ech_name_and_dns_server(ech).map(|(_, resolver)| resolver)
+}
+
+fn parse_ech_config_lines(ech: &str) -> Option<Vec<serde_json::Value>> {
+    let trimmed = ech.trim();
+    if !(trimmed.contains("-----BEGIN") && trimmed.contains("-----END")) {
+        return None;
+    }
+
+    let lines: Vec<serde_json::Value> = trimmed
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::Value::String(line.to_string()))
+        .collect();
+
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines)
+    }
+}
+
 fn parse_vless_link(link: &str) -> Option<SingBoxOutbound> {
     let rest = link.strip_prefix("vless://")?;
     let (main_part, tag) = rest.split_once('#').unwrap_or((rest, "VLESS"));
@@ -715,6 +895,10 @@ fn parse_vless_link(link: &str) -> Option<SingBoxOutbound> {
     let mut extra = std::collections::HashMap::new();
     extra.insert("uuid".to_string(), serde_json::Value::String(uuid.to_string()));
     extra.insert("packet_encoding".to_string(), serde_json::Value::String("xudp".to_string()));
+
+    let ech = params.get("ech").map(|value| value.trim()).filter(|value| !value.is_empty());
+    let ech_public_name = ech.and_then(extract_ech_public_name);
+    let ech_dns_server = ech.and_then(extract_ech_dns_server);
     
     if let Some(flow) = params.get("flow") {
         if !flow.is_empty() {
@@ -730,6 +914,8 @@ fn parse_vless_link(link: &str) -> Option<SingBoxOutbound> {
         
         if let Some(sni) = params.get("sni").or(params.get("servername")) {
             tls.insert("server_name".to_string(), serde_json::Value::String(sni.clone()));
+        } else if let Some(public_name) = ech_public_name {
+            tls.insert("server_name".to_string(), serde_json::Value::String(public_name.to_string()));
         } else {
             tls.insert("server_name".to_string(), serde_json::Value::String(server.to_string()));
         }
@@ -754,6 +940,22 @@ fn parse_vless_link(link: &str) -> Option<SingBoxOutbound> {
                 }));
             }
         }
+
+        if let Some(ech_value) = ech {
+            let mut ech_obj = serde_json::Map::new();
+            ech_obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
+
+            if let Some(config_lines) = parse_ech_config_lines(ech_value) {
+                ech_obj.insert("config".to_string(), serde_json::Value::Array(config_lines));
+            } else if let Some(public_name) = extract_ech_public_name(ech_value) {
+                ech_obj.insert(
+                    "query_server_name".to_string(),
+                    serde_json::Value::String(public_name.to_string()),
+                );
+            }
+
+            tls.insert("ech".to_string(), serde_json::Value::Object(ech_obj));
+        }
         
         if security == "reality" {
             let mut reality = serde_json::Map::new();
@@ -768,6 +970,13 @@ fn parse_vless_link(link: &str) -> Option<SingBoxOutbound> {
         }
         
         extra.insert("tls".to_string(), serde_json::Value::Object(tls));
+    }
+
+    if let Some(dns_server) = ech_dns_server {
+        extra.insert(
+            ECH_DNS_SERVER_META_KEY.to_string(),
+            serde_json::Value::String(dns_server.to_string()),
+        );
     }
     
     // Transport configuration
@@ -1160,7 +1369,24 @@ fn extract_hostname(url: &str) -> String {
 }
 
 #[tauri::command]
-pub async fn node_test_latency(app: AppHandle, state: State<'_, AppState>, tag: String) -> Result<i64, String> {
+pub async fn node_begin_latency_tests(state: State<'_, AppState>, run_id: u64) -> Result<(), String> {
+    cleanup_temp_singbox(&state).await;
+    begin_latency_test_batch(run_id).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn node_test_latency(app: AppHandle, state: State<'_, AppState>, tag: String, run_id: Option<u64>) -> Result<i64, String> {
+    if is_latency_test_batch_cancelled(run_id).await {
+        return Ok(-1);
+    }
+
+    let cancel_token = if run_id.is_some() {
+        current_latency_test_cancel_token().await
+    } else {
+        CancellationToken::new()
+    };
+
     let proxy_state = {
         let proxy_state = state.proxy_state.lock().await;
         (*proxy_state).clone()
@@ -1169,7 +1395,7 @@ pub async fn node_test_latency(app: AppHandle, state: State<'_, AppState>, tag: 
 
     match select_latency_test_backend(&proxy_state, main_api_ready) {
         LatencyTestBackend::Main => {
-            match test_latency_via_clash_api(&tag, MAIN_CLASH_API_PORT).await {
+            match test_latency_via_clash_api_cancellable(&tag, MAIN_CLASH_API_PORT, cancel_token.clone()).await {
                 Ok(v) if v > 0 => return Ok(v),
                 Ok(_) | Err(_) => {
                     log::warn!("Main Clash API latency probe failed for '{}', returning -1", tag);
@@ -1184,14 +1410,36 @@ pub async fn node_test_latency(app: AppHandle, state: State<'_, AppState>, tag: 
         LatencyTestBackend::Temp => {}
     }
 
-    let started = start_temp_singbox(&app, &state).await;
+    let started = start_temp_singbox(&app, &state, &cancel_token).await;
     if !started {
         log::warn!("Temp sing-box not available for latency test: {}", tag);
         return Ok(-1);
     }
 
-    let result = test_latency_via_clash_api(&tag, TEMP_SINGBOX_PORT).await;
-    cleanup_temp_singbox(&state).await;
+    if is_latency_test_batch_cancelled(run_id).await {
+        return Ok(-1);
+    }
+
+    if !acquire_temp_singbox_test_slot(run_id).await {
+        log::debug!("Temp sing-box slot owner changed before testing '{}', skipping stale request", tag);
+        return Ok(-1);
+    }
+
+    let temp_tag = match if run_id.is_some() {
+        take_temp_singbox_tag_for_batch(run_id, &tag).await
+    } else {
+        first_temp_singbox_tag(&tag).await
+    } {
+        Some(temp_tag) => temp_tag,
+        None => {
+            log::warn!("Temp Clash API tag mapping missing for '{}'", tag);
+            release_temp_singbox_test_slot(&state, run_id).await;
+            return Ok(-1);
+        }
+    };
+
+    let result = test_latency_via_clash_api_cancellable(&temp_tag, TEMP_SINGBOX_PORT, cancel_token).await;
+    release_temp_singbox_test_slot(&state, run_id).await;
     match result {
         Ok(v) => Ok(v),
         Err(e) => {
@@ -1203,6 +1451,8 @@ pub async fn node_test_latency(app: AppHandle, state: State<'_, AppState>, tag: 
 
 #[tauri::command]
 pub async fn node_test_all(app: AppHandle, state: State<'_, AppState>) -> Result<std::collections::HashMap<String, i64>, String> {
+    let cancel_token = current_latency_test_cancel_token().await;
+
     let data = load_profiles_data(&state);
     let profile_id = match data.active_profile_id {
         Some(id) => id,
@@ -1228,7 +1478,7 @@ pub async fn node_test_all(app: AppHandle, state: State<'_, AppState>) -> Result
             return Ok(std::collections::HashMap::new());
         }
         LatencyTestBackend::Temp => {
-            let temp_ready = start_temp_singbox(&app, &state).await;
+            let temp_ready = start_temp_singbox(&app, &state, &cancel_token).await;
             if temp_ready {
                 ports.push(TEMP_SINGBOX_PORT);
                 temp_used = true;
@@ -1241,26 +1491,45 @@ pub async fn node_test_all(app: AppHandle, state: State<'_, AppState>) -> Result
     }
 
     let mut results = std::collections::HashMap::new();
+    let mut temp_tag_map = if temp_used {
+        Some(read_temp_singbox_tag_map().await)
+    } else {
+        None
+    };
     
     // Test in chunks for concurrency
     let chunk_size = 5;
     for chunk in nodes.chunks(chunk_size) {
+        if cancel_token.is_cancelled() {
+            break;
+        }
+
         let futures: Vec<_> = chunk.iter()
             .filter_map(|node| node.tag.clone())
             .map(|tag| {
                 let tag_clone = tag.clone();
+                let cancel_token = cancel_token.clone();
+                let lookup_tag = if let Some(tag_map) = temp_tag_map.as_mut() {
+                    take_temp_singbox_tag(tag_map, &tag).unwrap_or_else(|| tag.clone())
+                } else {
+                    tag.clone()
+                };
                 let ports_clone = ports.clone();
                 async move {
                     let mut latency = -1;
                     for p in ports_clone {
-                        match test_latency_via_clash_api(&tag_clone, p).await {
+                        if cancel_token.is_cancelled() {
+                            break;
+                        }
+
+                        match test_latency_via_clash_api_cancellable(&lookup_tag, p, cancel_token.clone()).await {
                             Ok(v) if v > 0 => {
                                 latency = v;
                                 break;
                             }
                             Ok(_) => {}
                             Err(e) => {
-                                log::debug!("Latency test failed on port {} for '{}': {}", p, tag_clone, e);
+                                log::debug!("Latency test failed on port {} for '{}' via '{}': {}", p, tag_clone, lookup_tag, e);
                             }
                         }
                     }
@@ -1280,6 +1549,24 @@ pub async fn node_test_all(app: AppHandle, state: State<'_, AppState>) -> Result
     }
 
     Ok(results)
+}
+
+#[tauri::command]
+pub async fn node_cancel_latency_tests(state: State<'_, AppState>, run_id: Option<u64>) -> Result<(), String> {
+    let should_cleanup_temp = {
+        let active_run_id = *ACTIVE_LATENCY_BATCH_ID.lock().await;
+        run_id.is_none() || active_run_id == run_id
+    };
+
+    mark_latency_test_batch_cancelled(run_id).await;
+    let still_safe_to_cleanup = {
+        let active_run_id = *ACTIVE_LATENCY_BATCH_ID.lock().await;
+        run_id.is_none() || active_run_id.is_none() || active_run_id == run_id
+    };
+    if should_cleanup_temp && still_safe_to_cleanup {
+        cleanup_temp_singbox(&state).await;
+    }
+    Ok(())
 }
 
 async fn test_latency_via_clash_api(proxy_name: &str, port: u16) -> Result<i64, String> {
@@ -1311,6 +1598,17 @@ async fn test_latency_via_clash_api(proxy_name: &str, port: u16) -> Result<i64, 
     }
 
     Ok(-1)
+}
+
+async fn test_latency_via_clash_api_cancellable(
+    proxy_name: &str,
+    port: u16,
+    cancel_token: CancellationToken,
+) -> Result<i64, String> {
+    tokio::select! {
+        _ = cancel_token.cancelled() => Err("latency test cancelled".to_string()),
+        result = test_latency_via_clash_api(proxy_name, port) => result,
+    }
 }
 
 #[derive(Debug)]
@@ -1361,8 +1659,12 @@ fn get_kernel_path_with_fallback(app: &AppHandle) -> Option<std::path::PathBuf> 
     app.path().resource_dir().ok().map(|dir| dir.join("resources").join("libs").join("sing-box.exe"))
 }
 
-async fn start_temp_singbox(app: &AppHandle, state: &AppState) -> bool {
+async fn start_temp_singbox(app: &AppHandle, state: &AppState, cancel_token: &CancellationToken) -> bool {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
+
+    if cancel_token.is_cancelled() {
+        return false;
+    }
 
     match can_start_temp_singbox(state).await {
         TempStartGuard::Blocked(TempStartBlockReason::ShutdownInProgress) => {
@@ -1445,7 +1747,7 @@ async fn start_temp_singbox(app: &AppHandle, state: &AppState) -> bool {
         return false;
     }
     
-    let config = generate_temp_config_raw(&nodes_raw, TEMP_SINGBOX_PORT);
+    let (config, temp_tag_map) = generate_temp_config_raw(&nodes_raw, TEMP_SINGBOX_PORT);
     let config_path = temp_dir.join("config.json");
     
     let config_str = serde_json::to_string_pretty(&config).unwrap_or_default();
@@ -1456,12 +1758,18 @@ async fn start_temp_singbox(app: &AppHandle, state: &AppState) -> bool {
         let _ = remove_temp_singbox_dir(&temp_dir);
         return false;
     }
+
+    {
+        let mut map_slot = TEMP_SINGBOX_TAG_MAP.lock().await;
+        *map_slot = temp_tag_map;
+    }
     
     // Start temp sing-box
     let config_path_str = match config_path.to_str() {
         Some(s) => s,
         None => {
             log::error!("Config path contains invalid UTF-8 characters");
+            clear_temp_singbox_tag_map().await;
             let _ = remove_temp_singbox_dir(&temp_dir);
             return false;
         }
@@ -1490,6 +1798,10 @@ async fn start_temp_singbox(app: &AppHandle, state: &AppState) -> bool {
             }
 
             for _ in 0..20 {
+                if cancel_token.is_cancelled() {
+                    cleanup_temp_singbox(state).await;
+                    return false;
+                }
                 if check_clash_api_running(TEMP_SINGBOX_PORT).await {
                     log::info!("Started temp sing-box on port {}", TEMP_SINGBOX_PORT);
                     return true;
@@ -1503,6 +1815,7 @@ async fn start_temp_singbox(app: &AppHandle, state: &AppState) -> bool {
         }
         Err(e) => {
             log::error!("Failed to start temp sing-box: {}", e);
+            clear_temp_singbox_tag_map().await;
             let _ = remove_temp_singbox_dir(&temp_dir);
             false
         }
@@ -1523,15 +1836,37 @@ pub(crate) async fn check_clash_api_running(port: u16) -> bool {
     false
 }
 
-fn generate_temp_config_raw(nodes: &[serde_json::Value], api_port: u16) -> serde_json::Value {
+fn generate_temp_config_raw(
+    nodes: &[serde_json::Value],
+    api_port: u16,
+) -> (
+    serde_json::Value,
+    std::collections::HashMap<String, Vec<String>>,
+) {
     // 处理节点，移除不合法字段并添加必要配置
+    let mut tag_map = std::collections::HashMap::new();
     let mut outbounds: Vec<serde_json::Value> = nodes.iter()
-        .map(|node| {
+        .enumerate()
+        .map(|(index, node)| {
             let mut node = node.clone();
             if let Some(obj) = node.as_object_mut() {
                 let node_type = obj.get("type").and_then(|t| t.as_str()).unwrap_or("").to_string();
                 let server = obj.get("server").and_then(|s| s.as_str()).unwrap_or("").to_string();
                 let port = obj.get("server_port").and_then(|p| p.as_u64()).unwrap_or(0);
+                let original_tag = obj
+                    .get("tag")
+                    .and_then(|tag| tag.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let temp_tag = make_temp_latency_tag(index);
+
+                obj.insert("tag".to_string(), serde_json::Value::String(temp_tag.clone()));
+                if !original_tag.is_empty() {
+                    tag_map
+                        .entry(original_tag)
+                        .or_insert_with(Vec::new)
+                        .push(temp_tag);
+                }
                 
                 // vless/vmess/trojan 不需要 method 字段
                 if node_type != "shadowsocks" && node_type != "shadowsocksr" {
@@ -1575,25 +1910,28 @@ fn generate_temp_config_raw(nodes: &[serde_json::Value], api_port: u16) -> serde
     // 添加 direct 出站
     outbounds.push(serde_json::json!({ "type": "direct", "tag": "direct" }));
     
-    serde_json::json!({
-        "log": {
-            "disabled": false,
-            "level": "info",
-            "timestamp": true
-        },
-        "experimental": {
-            "clash_api": {
-                "external_controller": format!("127.0.0.1:{}", api_port),
-                "default_mode": "rule"
+    (
+        serde_json::json!({
+            "log": {
+                "disabled": false,
+                "level": "info",
+                "timestamp": true
+            },
+            "experimental": {
+                "clash_api": {
+                    "external_controller": format!("127.0.0.1:{}", api_port),
+                    "default_mode": "rule"
+                }
+            },
+            "inbounds": [],
+            "outbounds": outbounds,
+            "route": {
+                "final": "direct",
+                "auto_detect_interface": true
             }
-        },
-        "inbounds": [],
-        "outbounds": outbounds,
-        "route": {
-            "final": "direct",
-            "auto_detect_interface": true
-        }
-    })
+        }),
+        tag_map,
+    )
 }
 
 #[tauri::command]
@@ -1927,6 +2265,49 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    #[test]
+    fn generate_temp_config_uses_ascii_unique_tags_and_preserves_mapping() {
+        let nodes = vec![
+            serde_json::json!({
+                "type": "trojan",
+                "tag": "节点🚀",
+                "server": "a.example.com",
+                "server_port": 443,
+                "password": "one"
+            }),
+            serde_json::json!({
+                "type": "trojan",
+                "tag": "节点🚀",
+                "server": "b.example.com",
+                "server_port": 443,
+                "password": "two"
+            }),
+            serde_json::json!({
+                "type": "trojan",
+                "tag": "中文😀",
+                "server": "c.example.com",
+                "server_port": 443,
+                "password": "three"
+            }),
+        ];
+
+        let (config, tag_map) = generate_temp_config_raw(&nodes, TEMP_SINGBOX_PORT);
+        let outbounds = config
+            .get("outbounds")
+            .and_then(|value| value.as_array())
+            .expect("expected outbounds");
+
+        let tags: Vec<&str> = outbounds
+            .iter()
+            .take(3)
+            .filter_map(|outbound| outbound.get("tag").and_then(|value| value.as_str()))
+            .collect();
+
+        assert_eq!(tags, vec!["latency-0000", "latency-0001", "latency-0002"]);
+        assert_eq!(tag_map.get("节点🚀"), Some(&vec!["latency-0000".to_string(), "latency-0001".to_string()]));
+        assert_eq!(tag_map.get("中文😀"), Some(&vec!["latency-0002".to_string()]));
+    }
+
     #[tokio::test]
     async fn cleanup_temp_singbox_process_kills_and_clears_process() {
         let _guard = TEMP_PROCESS_TEST_LOCK.lock().await;
@@ -1982,5 +2363,208 @@ mod tests {
         let slot = TEMP_SINGBOX_PROCESS.lock().await;
         assert!(slot.is_none(), "TEMP_SINGBOX_PROCESS should be None");
         assert!(!temp_dir.exists(), "temp dir should be removed");
+    }
+
+    #[tokio::test]
+    async fn cancel_and_reset_latency_test_token_cancels_existing_waiters() {
+        let _guard = TEMP_PROCESS_TEST_LOCK.lock().await;
+        let old_token = current_latency_test_cancel_token().await;
+        assert!(!old_token.is_cancelled());
+
+        cancel_and_reset_latency_test_token().await;
+
+        let new_token = current_latency_test_cancel_token().await;
+        assert!(old_token.is_cancelled());
+        assert!(!new_token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn cancelled_latency_batch_is_tracked_by_run_id() {
+        let _guard = TEMP_PROCESS_TEST_LOCK.lock().await;
+        begin_latency_test_batch(7).await;
+        assert!(!is_latency_test_batch_cancelled(Some(7)).await);
+
+        mark_latency_test_batch_cancelled(Some(7)).await;
+        assert!(is_latency_test_batch_cancelled(Some(7)).await);
+
+        begin_latency_test_batch(8).await;
+        assert!(!is_latency_test_batch_cancelled(Some(8)).await);
+    }
+
+    #[tokio::test]
+    async fn cancelling_old_batch_does_not_cancel_new_active_batch() {
+        let _guard = TEMP_PROCESS_TEST_LOCK.lock().await;
+        begin_latency_test_batch(10).await;
+        let old_token = current_latency_test_cancel_token().await;
+
+        begin_latency_test_batch(11).await;
+        let new_token = current_latency_test_cancel_token().await;
+        assert!(old_token.is_cancelled());
+        assert!(!new_token.is_cancelled());
+
+        mark_latency_test_batch_cancelled(Some(10)).await;
+        let latest_token = current_latency_test_cancel_token().await;
+        assert!(!new_token.is_cancelled());
+        assert!(!latest_token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn cancelling_old_batch_keeps_new_active_batch_id() {
+        let _guard = TEMP_PROCESS_TEST_LOCK.lock().await;
+        begin_latency_test_batch(20).await;
+        begin_latency_test_batch(21).await;
+
+        mark_latency_test_batch_cancelled(Some(20)).await;
+
+        assert_eq!(*ACTIVE_LATENCY_BATCH_ID.lock().await, Some(21));
+    }
+
+    #[tokio::test]
+    async fn batch_tag_lookup_consumes_unique_aliases_for_duplicate_tags() {
+        let _guard = TEMP_PROCESS_TEST_LOCK.lock().await;
+        *TEMP_SINGBOX_OWNER_BATCH_ID.lock().await = Some(99);
+        {
+            let mut slot = TEMP_SINGBOX_TAG_MAP.lock().await;
+            slot.clear();
+            slot.insert(
+                "dup".to_string(),
+                vec!["latency-0000".to_string(), "latency-0001".to_string()],
+            );
+        }
+
+        assert_eq!(take_temp_singbox_tag_for_batch(Some(99), "dup").await.as_deref(), Some("latency-0000"));
+        assert_eq!(take_temp_singbox_tag_for_batch(Some(99), "dup").await.as_deref(), Some("latency-0001"));
+        assert_eq!(take_temp_singbox_tag_for_batch(Some(99), "dup").await, None);
+    }
+
+    #[tokio::test]
+    async fn stale_release_does_not_decrement_new_batch_temp_slot_owner() {
+        let _guard = TEMP_PROCESS_TEST_LOCK.lock().await;
+        assert!(acquire_temp_singbox_test_slot(Some(30)).await);
+        release_temp_singbox_test_slot(&make_test_state(), Some(30)).await;
+
+        assert!(acquire_temp_singbox_test_slot(Some(31)).await);
+        release_temp_singbox_test_slot(&make_test_state(), Some(30)).await;
+
+        assert_eq!(*TEMP_SINGBOX_OWNER_BATCH_ID.lock().await, Some(31));
+        assert_eq!(*TEMP_SINGBOX_ACTIVE_TESTS.lock().await, 1);
+
+        release_temp_singbox_test_slot(&make_test_state(), Some(31)).await;
+    }
+
+    #[test]
+    fn parse_vless_link_enables_ech_without_invalid_config_for_name_resolver() {
+        let outbound = parse_vless_link("vless://11111111-1111-1111-1111-111111111111@example.com:443?security=tls&ech=cloudflare-ech.com+https%3A%2F%2Fdns.alidns.com%2Fdns-query&sni=example.com&host=ws.example.com&fp=chrome&type=ws&path=%2Fws#ECH")
+            .expect("expected vless outbound");
+
+        let tls = outbound
+            .extra
+            .get("tls")
+            .and_then(|value| value.as_object())
+            .expect("expected tls object");
+
+        assert_eq!(
+            tls.get("server_name").and_then(|value| value.as_str()),
+            Some("example.com")
+        );
+        assert_eq!(
+            tls.get("utls")
+                .and_then(|value| value.get("fingerprint"))
+                .and_then(|value| value.as_str()),
+            Some("chrome")
+        );
+        assert_eq!(
+            tls.get("ech")
+                .and_then(|value| value.get("enabled"))
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            tls.get("ech")
+                .and_then(|value| value.get("query_server_name"))
+                .and_then(|value| value.as_str()),
+            Some("cloudflare-ech.com")
+        );
+        assert!(
+            tls.get("ech")
+                .and_then(|value| value.get("config"))
+                .is_none(),
+            "name+resolver share value must not be serialized as invalid ech.config"
+        );
+        assert_eq!(
+            outbound.extra.get(ECH_DNS_SERVER_META_KEY).and_then(|value| value.as_str()),
+            Some("https://dns.alidns.com/dns-query")
+        );
+
+        let transport = outbound
+            .extra
+            .get("transport")
+            .and_then(|value| value.as_object())
+            .expect("expected transport object");
+
+        assert_eq!(transport.get("type").and_then(|value| value.as_str()), Some("ws"));
+        assert_eq!(transport.get("path").and_then(|value| value.as_str()), Some("/ws"));
+        assert_eq!(
+            transport.get("headers")
+                .and_then(|value| value.get("Host"))
+                .and_then(|value| value.as_str()),
+            Some("ws.example.com")
+        );
+    }
+
+    #[test]
+    fn parse_vless_link_skips_empty_ech_value() {
+        let outbound = parse_vless_link("vless://11111111-1111-1111-1111-111111111111@example.com:443?security=tls&ech=&sni=example.com#ECH-EMPTY")
+            .expect("expected vless outbound");
+
+        let tls = outbound
+            .extra
+            .get("tls")
+            .and_then(|value| value.as_object())
+            .expect("expected tls object");
+
+        assert!(tls.get("ech").is_none(), "empty ech must not create dirty config");
+    }
+
+    #[test]
+    fn parse_vless_link_serializes_pem_ech_config_as_array() {
+        let outbound = parse_vless_link("vless://11111111-1111-1111-1111-111111111111@example.com:443?security=tls&ech=-----BEGIN%20ECHCONFIG-----%0Aabc123%0A-----END%20ECHCONFIG-----#ECH-PEM")
+            .expect("expected vless outbound");
+
+        let tls = outbound
+            .extra
+            .get("tls")
+            .and_then(|value| value.as_object())
+            .expect("expected tls object");
+
+        let config = tls
+            .get("ech")
+            .and_then(|value| value.get("config"))
+            .and_then(|value| value.as_array())
+            .expect("expected ech config array");
+
+        assert_eq!(config.len(), 3);
+        assert_eq!(config[0].as_str(), Some("-----BEGIN ECHCONFIG-----"));
+        assert_eq!(config[1].as_str(), Some("abc123"));
+        assert_eq!(config[2].as_str(), Some("-----END ECHCONFIG-----"));
+    }
+
+    #[test]
+    fn parse_vless_link_does_not_treat_non_url_suffix_as_ech_resolver() {
+        let outbound = parse_vless_link("vless://11111111-1111-1111-1111-111111111111@example.com:443?security=tls&ech=cloudflare-ech.com+not-a-url&sni=example.com#ECH-BAD-RESOLVER")
+            .expect("expected vless outbound");
+
+        let tls = outbound
+            .extra
+            .get("tls")
+            .and_then(|value| value.as_object())
+            .expect("expected tls object");
+
+        assert_eq!(
+            tls.get("ech")
+                .and_then(|value| value.get("query_server_name")),
+            None
+        );
+        assert_eq!(outbound.extra.get(ECH_DNS_SERVER_META_KEY), None);
     }
 }

@@ -139,80 +139,80 @@ export const useNodesStore = create<NodesState>()(
         abortController = new AbortController()
         const signal = abortController.signal
         const runId = ++testAllRunId
+        const queue = nodes
+          .map((node, index) => ({ node, index }))
+          .filter((item): item is { node: NodeItem; index: number } => Boolean(item.node.tag))
 
         set((state) => ({
           isTesting: true,
           testProgress: 0,
-          testTotal: nodes.length,
+          testTotal: queue.length,
           nodes: state.nodes.map(n => ({ ...n, isTesting: true }))
         }))
 
-        const concurrency = 5
-        let currentIndex = 0
-        let completedCount = 0
+        try {
+          await window.api.node.beginLatencyTests(runId)
 
-        const worker = async () => {
-          while (currentIndex < nodes.length) {
+          await Promise.all(queue.map(async (item) => {
             if (signal.aborted || runId !== testAllRunId) return
 
-            const index = currentIndex++
-            const node = nodes[index]
-            const tag = node.tag
+            const tag = item.node.tag
+            if (!tag) return
 
-            if (!tag) {
-              completedCount++
-              set({ testProgress: completedCount })
-              continue
-            }
-
-            const cacheKey = `${activeProfileId}::${tag}`
+            let latencyMs: number | null = null
+            let isTimeout = true
 
             try {
-              const latency = await window.api.node.testLatency(tag)
+              const latency = await window.api.node.testLatency(tag, runId)
               if (signal.aborted || runId !== testAllRunId) return
-
-              const isTimeout = latency <= 0
-              const latencyMs = latency > 0 ? latency : null
-              
-              set((state) => {
-                if (runId !== testAllRunId) return state
-                return {
-                  nodes: state.nodes.map(n => n.tag === tag
-                    ? { ...n, latencyMs, isTimeout, isTesting: false }
-                    : n
-                  ),
-                  latencyCache: {
-                    ...state.latencyCache,
-                    [cacheKey]: { latencyMs, isTimeout, timestamp: Date.now() }
-                  },
-                  testProgress: completedCount + 1
-                }
-              })
+              isTimeout = latency <= 0
+              latencyMs = latency > 0 ? latency : null
             } catch {
               if (signal.aborted || runId !== testAllRunId) return
-              
-              set((state) => {
-                if (runId !== testAllRunId) return state
-                return {
-                  nodes: state.nodes.map(n => n.tag === tag 
-                    ? { ...n, isTesting: false, isTimeout: true, latencyMs: null } 
-                    : n
-                  ),
-                  latencyCache: {
-                    ...state.latencyCache,
-                    [cacheKey]: { latencyMs: null, isTimeout: true, timestamp: Date.now() }
-                  },
-                  testProgress: completedCount + 1
-                }
-              })
             }
-            completedCount++
-          }
-        }
 
-        try {
-          const workers = Array.from({ length: Math.min(concurrency, nodes.length) }, () => worker())
-          await Promise.all(workers)
+            const timestamp = Date.now()
+            set((state) => {
+              if (signal.aborted || runId !== testAllRunId) return state
+
+              return {
+                nodes: state.nodes.map((node, index) => index === item.index
+                  ? { ...node, latencyMs, isTimeout, isTesting: false }
+                  : node
+                ),
+                latencyCache: {
+                  ...state.latencyCache,
+                  [`${activeProfileId}::${tag}`]: { latencyMs, isTimeout, timestamp }
+                },
+                testProgress: Math.min(state.testProgress + 1, queue.length)
+              }
+            })
+          }))
+        } catch {
+          if (signal.aborted || runId !== testAllRunId) return
+
+          const timestamp = Date.now()
+          set((state) => {
+            if (signal.aborted || runId !== testAllRunId) return state
+
+            return {
+              nodes: state.nodes.map(n => n.tag
+                ? { ...n, isTesting: false, isTimeout: true, latencyMs: null }
+                : { ...n, isTesting: false }
+              ),
+              latencyCache: state.nodes.reduce((cache, node) => {
+                if (!node.tag) return cache
+
+                cache[`${activeProfileId}::${node.tag}`] = {
+                  latencyMs: null,
+                  isTimeout: true,
+                  timestamp
+                }
+                return cache
+              }, { ...state.latencyCache } as LatencyCache),
+              testProgress: queue.length
+            }
+          })
         } finally {
           if (runId === testAllRunId) {
             abortController = null
@@ -226,11 +226,13 @@ export const useNodesStore = create<NodesState>()(
       },
 
       cancelTestAllLatency: () => {
+        const cancelledRunId = testAllRunId
         testAllRunId += 1
         if (abortController) {
           abortController.abort()
           abortController = null
         }
+        void window.api.node.cancelLatencyTests(cancelledRunId).catch(() => {})
         set((state) => ({
           isTesting: false,
           testProgress: 0,

@@ -155,8 +155,10 @@ export const api = {
       const profileId = target?.type === 'existing' ? target.profileId : undefined;
       return invoke('node_add', { link, profileId });
     },
-    testLatency: (tag: string): Promise<number> => invoke<number>('node_test_latency', { tag }),
+    beginLatencyTests: (runId: number): Promise<void> => invoke('node_begin_latency_tests', { runId }),
+    testLatency: (tag: string, runId?: number): Promise<number> => invoke<number>('node_test_latency', { tag, runId }),
     testAll: (): Promise<Record<string, number>> => invoke('node_test_all'),
+    cancelLatencyTests: (runId?: number): Promise<void> => invoke('node_cancel_latency_tests', { runId }),
     delete: (tag: string): Promise<void> => invoke('node_delete', { tag }),
     export: (tag: string): Promise<string> => invoke('node_export', { tag }),
     listAll: (): Promise<NodeWithProfile[]> => invoke('node_list_all')
