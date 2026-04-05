@@ -18,6 +18,7 @@ pub struct AppState {
     pub traffic_cancel: Arc<Mutex<Option<CancellationToken>>>,
     pub shutdown_in_progress: Arc<Mutex<bool>>,
     pub lifecycle_lock: Arc<Mutex<()>>,
+    pub clash_api_port: Arc<Mutex<u16>>,
 }
 
 impl AppState {
@@ -37,6 +38,7 @@ impl AppState {
             traffic_cancel: Arc::new(Mutex::new(None)),
             shutdown_in_progress: Arc::new(Mutex::new(false)),
             lifecycle_lock: Arc::new(Mutex::new(())),
+            clash_api_port: Arc::new(Mutex::new(9090)),
         }
     }
 

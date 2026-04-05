@@ -32,7 +32,6 @@ static CANCELED_LATENCY_BATCHES: once_cell::sync::Lazy<Arc<Mutex<HashSet<u64>>>>
     once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(HashSet::new())));
 pub(crate) const ECH_DNS_SERVER_META_KEY: &str = "x_kunbox_ech_dns_server";
 const TEMP_SINGBOX_PORT: u16 = 19090;
-const MAIN_CLASH_API_PORT: u16 = 9090;
 
 #[derive(Debug, PartialEq, Eq)]
 enum LatencyTestBackend {
@@ -1391,11 +1390,12 @@ pub async fn node_test_latency(app: AppHandle, state: State<'_, AppState>, tag: 
         let proxy_state = state.proxy_state.lock().await;
         (*proxy_state).clone()
     };
-    let main_api_ready = check_clash_api_running(MAIN_CLASH_API_PORT).await;
+    let main_api_port = *state.clash_api_port.lock().await;
+    let main_api_ready = check_clash_api_running(main_api_port).await;
 
     match select_latency_test_backend(&proxy_state, main_api_ready) {
         LatencyTestBackend::Main => {
-            match test_latency_via_clash_api_cancellable(&tag, MAIN_CLASH_API_PORT, cancel_token.clone()).await {
+            match test_latency_via_clash_api_cancellable(&tag, main_api_port, cancel_token.clone()).await {
                 Ok(v) if v > 0 => return Ok(v),
                 Ok(_) | Err(_) => {
                     log::warn!("Main Clash API latency probe failed for '{}', returning -1", tag);
@@ -1465,13 +1465,14 @@ pub async fn node_test_all(app: AppHandle, state: State<'_, AppState>) -> Result
         let proxy_state = state.proxy_state.lock().await;
         (*proxy_state).clone()
     };
-    let main_api_ready = check_clash_api_running(MAIN_CLASH_API_PORT).await;
+    let main_api_port = *state.clash_api_port.lock().await;
+    let main_api_ready = check_clash_api_running(main_api_port).await;
     
     let mut ports: Vec<u16> = Vec::new();
     let mut temp_used = false;
     match select_latency_test_backend(&proxy_state, main_api_ready) {
         LatencyTestBackend::Main => {
-            ports.push(MAIN_CLASH_API_PORT);
+            ports.push(main_api_port);
         }
         LatencyTestBackend::Skip => {
             log::debug!("Batch latency test skipped: main sing-box not ready for state {:?}", proxy_state);

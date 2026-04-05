@@ -107,6 +107,7 @@ export default function Dashboard() {
             void testLatency()
           }, 1000)
         } else {
+          toast.clear()
           toast.error(result.error || '连接失败')
         }
       }
@@ -124,6 +125,7 @@ export default function Dashboard() {
     try {
       const stopResult = await disconnect()
       if (!stopResult.success) {
+        toast.clear()
         toast.error(stopResult.error || '停止失败')
         return
       }
@@ -133,6 +135,7 @@ export default function Dashboard() {
         toast.success('已重新连接')
         testLatency()
       } else {
+        toast.clear()
         toast.error(startResult.error || '重启失败')
       }
     } catch (err) {
@@ -168,6 +171,7 @@ export default function Dashboard() {
     if (state === 'error') {
       if (!errorToastGuardRef.current) {
         errorToastGuardRef.current = true
+        toast.clear()
         toast.error(lastError || '连接出错，请检查配置')
       }
       return

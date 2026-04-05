@@ -34,6 +34,18 @@ fn append_startup_diagnostic(state: &AppState, message: &str) {
 }
 
 #[cfg(windows)]
+fn extract_singbox_fatal_error(line: &str) -> Option<String> {
+    let stripped = line.replace('\u{1b}', "");
+    if let Some(index) = stripped.find("FATAL") {
+        let detail = stripped[index + "FATAL".len()..].trim();
+        if !detail.is_empty() {
+            return Some(detail.to_string());
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
 #[allow(unused_imports)]
 use std::os::windows::process::CommandExt;
 
@@ -41,6 +53,7 @@ use std::os::windows::process::CommandExt;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 const SELECTOR_LATENCY_CONCURRENCY_LIMIT: usize = 8;
+const DEFAULT_CLASH_API_PORT: u16 = 9090;
 
 #[cfg(windows)]
 async fn kill_stray_singbox_processes(state: &AppState) -> Result<(), String> {
@@ -71,6 +84,29 @@ async fn kill_stray_singbox_processes(state: &AppState) -> Result<(), String> {
 
     append_startup_diagnostic(state, &format!("startup cleanup: taskkill failed: {}", combined));
     Err(format!("清理残留 sing-box 进程失败: {}", combined))
+}
+
+async fn find_available_tcp_port() -> Result<u16, String> {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .map_err(|e| e.to_string())?
+        .local_addr()
+        .map(|addr| addr.port())
+        .map_err(|e| e.to_string())
+}
+
+async fn allocate_clash_api_port(state: &AppState) -> Result<u16, String> {
+    let default_port_available = std::net::TcpListener::bind(("127.0.0.1", DEFAULT_CLASH_API_PORT)).is_ok();
+    let port = if !default_port_available || crate::commands::profiles::check_clash_api_running(DEFAULT_CLASH_API_PORT).await {
+        find_available_tcp_port().await?
+    } else {
+        DEFAULT_CLASH_API_PORT
+    };
+    *state.clash_api_port.lock().await = port;
+    Ok(port)
+}
+
+async fn get_clash_api_port(state: &AppState) -> u16 {
+    *state.clash_api_port.lock().await
 }
 
 #[cfg(windows)]
@@ -140,6 +176,8 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
     kill_stray_singbox_processes(state).await?;
 
     // Generate config
+    let clash_api_port = allocate_clash_api_port(state).await?;
+    append_startup_diagnostic(state, &format!("selected clash api port: {}", clash_api_port));
     let config_result = generate_config(&state).await?;
     if !config_result.success {
         return Ok(config_result);
@@ -213,14 +251,24 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
     write_proxy_session_marker(state, ProxySessionFlag::Active)?;
     append_startup_diagnostic(state, "sing-box process spawned successfully");
 
+    let startup_error_message = Arc::new(tokio::sync::Mutex::new(None::<String>));
+
     // Capture stderr for logging
     if let Some(stderr) = child.stderr.take() {
         let app_clone = app.clone();
         let settings_ref = state.settings.clone();
+        let startup_error_message = startup_error_message.clone();
         tokio::spawn(async move {
             let reader = BufReader::new(stderr);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
+                #[cfg(windows)]
+                if let Some(detail) = extract_singbox_fatal_error(&line) {
+                    let mut guard = startup_error_message.lock().await;
+                    if guard.is_none() {
+                        *guard = Some(detail);
+                    }
+                }
                 let enable_runtime_logs = settings_ref.lock().await.enable_runtime_logs;
                 if enable_runtime_logs {
                     let _ = app_clone.emit("singbox:log", serde_json::json!({
@@ -319,7 +367,7 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
 
     let mut clash_api_ready = false;
     for _ in 0..20 {
-        if crate::commands::profiles::check_clash_api_running(9090).await {
+        if crate::commands::profiles::check_clash_api_running(clash_api_port).await {
             clash_api_ready = true;
             break;
         }
@@ -335,7 +383,12 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
         *state.start_time.lock().await = None;
         append_startup_diagnostic(state, "main Clash API not ready in time");
         let _ = app.emit("singbox:state", "error");
-        return Ok(CommandResult::err("主核心 Clash API 启动超时，请重试。"));
+        let startup_detail = startup_error_message.lock().await.clone();
+        let message = startup_detail
+            .filter(|detail| !detail.is_empty())
+            .map(|detail| format!("内核启动失败: {}", detail))
+            .unwrap_or_else(|| "主核心 Clash API 启动超时，请重试。".to_string());
+        return Ok(CommandResult::err(message));
     }
 
     *state.proxy_state.lock().await = ProxyState::Connected;
@@ -364,7 +417,7 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
     let app_for_traffic = app.clone();
     let traffic_stats = state.traffic_stats.clone();
     tokio::spawn(async move {
-        start_traffic_polling(app_for_traffic, traffic_stats, start_time_val, cancel_token).await;
+        start_traffic_polling(app_for_traffic, clash_api_port, traffic_stats, start_time_val, cancel_token).await;
     });
 
     // Enable system proxy
@@ -509,7 +562,7 @@ pub async fn singbox_switch_node(app: AppHandle, state: State<'_, AppState>, nod
 
     let client = reqwest::Client::new();
     let res = client
-        .put("http://127.0.0.1:9090/proxies/PROXY")
+        .put(format!("http://127.0.0.1:{}/proxies/PROXY", get_clash_api_port(&state).await))
         .json(&serde_json::json!({ "name": node_tag }))
         .send()
         .await
@@ -1191,6 +1244,7 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
         },
     };
 
+    let clash_api_port = get_clash_api_port(state).await;
     let mut config = serde_json::json!({
         "log": {
             "disabled": false,
@@ -1199,7 +1253,7 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
         },
         "experimental": {
             "clash_api": {
-                "external_controller": "127.0.0.1:9090",
+                "external_controller": format!("127.0.0.1:{}", clash_api_port),
                 "default_mode": "rule"
             },
             "cache_file": {
@@ -2394,6 +2448,7 @@ async fn disable_system_proxy_internal(mode: ProxyCleanupMode) -> Result<(), Str
 
 async fn start_traffic_polling(
     app: AppHandle,
+    clash_api_port: u16,
     traffic_stats: Arc<tokio::sync::Mutex<TrafficStats>>,
     start_time: u64,
     cancel: CancellationToken,
@@ -2420,7 +2475,7 @@ async fn start_traffic_polling(
             }
             _ = tokio::time::sleep(poll_interval) => {
                 // Fetch connections from Clash API to get total traffic
-                match client.get("http://127.0.0.1:9090/connections")
+                match client.get(format!("http://127.0.0.1:{}/connections", clash_api_port))
                     .timeout(std::time::Duration::from_secs(2))
                     .send()
                     .await
@@ -2525,11 +2580,12 @@ async fn collect_referenced_profile_selector_tags(state: &AppState) -> Vec<Strin
 
 async fn switch_selector_to_node(
     client: &reqwest::Client,
+    clash_api_port: u16,
     selector_tag: &str,
     node_tag: &str,
 ) {
     if let Err(err) = client
-        .put(format!("http://127.0.0.1:9090/proxies/{}", urlencoding::encode(selector_tag)))
+        .put(format!("http://127.0.0.1:{}/proxies/{}", clash_api_port, urlencoding::encode(selector_tag)))
         .json(&serde_json::json!({ "name": node_tag }))
         .send()
         .await
@@ -2545,11 +2601,12 @@ async fn switch_selector_to_node(
 
 async fn probe_selector_node_latency(
     client: reqwest::Client,
+    clash_api_port: u16,
     tag: String,
     test_url: String,
 ) -> (String, Option<u32>) {
     let result = client
-        .get(format!("http://127.0.0.1:9090/proxies/{}/delay", urlencoding::encode(&tag)))
+        .get(format!("http://127.0.0.1:{}/proxies/{}/delay", clash_api_port, urlencoding::encode(&tag)))
         .query(&[("url", test_url.as_str()), ("timeout", "5000")])
         .timeout(std::time::Duration::from_secs(6))
         .send()
@@ -2609,11 +2666,13 @@ async fn test_selector_latency_internal(
     selector_tag: String,
     test_url: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    let state = app.state::<AppState>();
+    let clash_api_port = get_clash_api_port(&state).await;
     let client = reqwest::Client::new();
     let test_url = test_url.unwrap_or_else(|| "https://www.gstatic.com/generate_204".to_string());
 
     let resp = client
-        .get(format!("http://127.0.0.1:9090/proxies/{}", urlencoding::encode(&selector_tag)))
+        .get(format!("http://127.0.0.1:{}/proxies/{}", clash_api_port, urlencoding::encode(&selector_tag)))
         .timeout(std::time::Duration::from_secs(5))
         .send()
         .await
@@ -2642,7 +2701,7 @@ async fn test_selector_latency_internal(
         |tag| {
             let client = client.clone();
             let test_url = test_url.clone();
-            async move { probe_selector_node_latency(client, tag, test_url).await }
+            async move { probe_selector_node_latency(client, clash_api_port, tag, test_url).await }
         },
     )
     .await;
@@ -2665,7 +2724,7 @@ async fn test_selector_latency_internal(
         if !first_switch_done && valid_count >= first_switch_threshold {
             if let Some((best_tag, best_delay)) = &best_node {
                 log::info!("First phase done, switching '{}' to '{}' ({}ms)", selector_tag, best_tag, best_delay);
-                switch_selector_to_node(&client, &selector_tag, best_tag).await;
+                switch_selector_to_node(&client, clash_api_port, &selector_tag, best_tag).await;
                 let _ = app.emit(
                     "singbox:selector-switch",
                     serde_json::json!({
@@ -2682,7 +2741,7 @@ async fn test_selector_latency_internal(
 
     if let Some((best_tag, best_delay)) = &best_node {
         log::info!("Final switch '{}' to '{}' ({}ms)", selector_tag, best_tag, best_delay);
-        switch_selector_to_node(&client, &selector_tag, best_tag).await;
+        switch_selector_to_node(&client, clash_api_port, &selector_tag, best_tag).await;
         let _ = app.emit(
             "singbox:selector-switch",
             serde_json::json!({

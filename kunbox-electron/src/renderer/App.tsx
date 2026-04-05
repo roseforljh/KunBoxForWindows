@@ -412,7 +412,7 @@ function AppContent() {
   const stateRef = useRef(state)
   const connectRef = useRef(connect)
   const disconnectRef = useRef(disconnect)
-  const { warning } = useToast()
+  const { warning, clear } = useToast()
   useTheme()
 
   useEffect(() => {
@@ -446,6 +446,7 @@ function AppContent() {
           warning('检测到开机自启，已延迟自动连接 8 秒以避免首启失败')
         }
         await new Promise(resolve => setTimeout(resolve, startupDelay))
+        clear()
         if (cancelled) return
 
         const currentState = useConnectionStore.getState().state

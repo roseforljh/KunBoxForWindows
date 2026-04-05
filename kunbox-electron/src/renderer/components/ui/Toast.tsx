@@ -21,6 +21,7 @@ interface ToastMessage {
 interface ToastContextValue {
   showToast: (message: string, type?: ToastType, action?: ToastAction) => void
   showRestartToast: (message: string) => void
+  clear: () => void
   success: (message: string) => void
   error: (message: string) => void
   warning: (message: string) => void
@@ -55,6 +56,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     setToasts(prev => prev.filter(t => t.id !== id))
   }, [])
 
+  const clearToasts = useCallback(() => {
+    setToasts([])
+  }, [])
+
   const getIcon = (type: ToastType) => {
     switch (type) {
       case 'success':
@@ -84,6 +89,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastProviderInner
       showToast={showToast}
+      clearToasts={clearToasts}
       isRestarting={isRestarting}
       setIsRestarting={setIsRestarting}
     >
@@ -128,11 +134,13 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 function ToastProviderInner({ 
   children, 
   showToast,
+  clearToasts,
   isRestarting,
   setIsRestarting
 }: { 
   children: ReactNode
   showToast: (message: string, type?: ToastType, action?: ToastAction) => void
+  clearToasts: () => void
   isRestarting: boolean
   setIsRestarting: (v: boolean) => void
 }) {
@@ -171,10 +179,11 @@ function ToastProviderInner({
   const error = useCallback((message: string) => showToast(message, 'error'), [showToast])
   const warning = useCallback((message: string) => showToast(message, 'warning'), [showToast])
   const info = useCallback((message: string) => showToast(message, 'info'), [showToast])
+  const clear = useCallback(() => clearToasts(), [clearToasts])
 
   const contextValue = useMemo(
-    () => ({ showToast, showRestartToast, success, error, warning, info }),
-    [showToast, showRestartToast, success, error, warning, info]
+    () => ({ showToast, showRestartToast, clear, success, error, warning, info }),
+    [showToast, showRestartToast, clear, success, error, warning, info]
   )
 
   return (
