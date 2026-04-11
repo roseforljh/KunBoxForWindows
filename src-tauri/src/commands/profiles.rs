@@ -519,6 +519,25 @@ pub async fn node_list_all(state: State<'_, AppState>) -> Result<Vec<NodeWithPro
     Ok(all_nodes)
 }
 
+fn normalize_duplicate_node_tags(nodes: Vec<SingBoxOutbound>) -> Vec<SingBoxOutbound> {
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+    nodes
+        .into_iter()
+        .map(|mut node| {
+            let original_tag = node.tag.clone().unwrap_or_else(|| "Node".to_string());
+            let counter = seen.entry(original_tag.clone()).or_insert(0);
+            *counter += 1;
+            node.tag = Some(if *counter == 1 {
+                original_tag
+            } else {
+                format!("{} #{}", original_tag, *counter)
+            });
+            node
+        })
+        .collect()
+}
+
 pub(crate) async fn fetch_subscription(url: &str) -> Result<Vec<SingBoxOutbound>, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
@@ -541,7 +560,7 @@ pub(crate) async fn fetch_subscription(url: &str) -> Result<Vec<SingBoxOutbound>
         return Err("订阅内容过大，已拒绝加载".to_string());
     }
 
-    parse_subscription_content(&content)
+    parse_subscription_content(&content).map(normalize_duplicate_node_tags)
 }
 
 fn parse_subscription_content(content: &str) -> Result<Vec<SingBoxOutbound>, String> {
@@ -1844,6 +1863,27 @@ fn generate_temp_config_raw(
     serde_json::Value,
     std::collections::HashMap<String, Vec<String>>,
 ) {
+    let inferred_ech_dns_server = nodes
+        .iter()
+        .filter_map(|node| node.get(ECH_DNS_SERVER_META_KEY))
+        .filter_map(|value| value.as_str())
+        .next()
+        .map(|value| value.to_string());
+    let active_node_has_ech = nodes.iter().any(|node| {
+        node.get("tls")
+            .and_then(|value| value.get("ech"))
+            .is_some_and(|ech| {
+                ech.get("enabled").and_then(|value| value.as_bool()) == Some(true)
+                    || ech.get("query_server_name").is_some()
+                    || ech.get("config").is_some()
+            })
+    });
+    let effective_remote_dns = inferred_ech_dns_server
+        .clone()
+        .unwrap_or_else(|| "https://dns.google/dns-query".to_string());
+    let remote_dns_detour = if active_node_has_ech { "direct" } else { "direct" };
+    let remote_dns_domain_resolver = active_node_has_ech.then_some("dns-local");
+
     // 处理节点，移除不合法字段并添加必要配置
     let mut tag_map = std::collections::HashMap::new();
     let mut outbounds: Vec<serde_json::Value> = nodes.iter()
@@ -1868,12 +1908,12 @@ fn generate_temp_config_raw(
                         .or_insert_with(Vec::new)
                         .push(temp_tag);
                 }
-                
+
                 // vless/vmess/trojan 不需要 method 字段
                 if node_type != "shadowsocks" && node_type != "shadowsocksr" {
                     obj.remove("method");
                 }
-                
+
                 // 为需要 TLS 的节点添加配置
                 if !obj.contains_key("tls") {
                     match node_type.as_str() {
@@ -1898,7 +1938,7 @@ fn generate_temp_config_raw(
                         _ => {}
                     }
                 }
-                
+
                 // vless 需要 packet_encoding
                 if node_type == "vless" && !obj.contains_key("packet_encoding") {
                     obj.insert("packet_encoding".to_string(), serde_json::Value::String("xudp".to_string()));
@@ -1907,10 +1947,10 @@ fn generate_temp_config_raw(
             node
         })
         .collect();
-    
+
     // 添加 direct 出站
     outbounds.push(serde_json::json!({ "type": "direct", "tag": "direct" }));
-    
+
     (
         serde_json::json!({
             "log": {
@@ -1924,11 +1964,28 @@ fn generate_temp_config_raw(
                     "default_mode": "rule"
                 }
             },
+            "dns": {
+                "servers": [
+                    {
+                        "type": "local",
+                        "tag": "dns-local",
+                        "detour": "direct"
+                    },
+                    {
+                        "type": if effective_remote_dns.starts_with("https://") { "https" } else if effective_remote_dns.starts_with("h3://") { "h3" } else { "udp" },
+                        "tag": "dns-remote",
+                        "address": effective_remote_dns,
+                        "detour": remote_dns_detour,
+                        "domain_resolver": remote_dns_domain_resolver
+                    }
+                ]
+            },
             "inbounds": [],
             "outbounds": outbounds,
             "route": {
                 "final": "direct",
-                "auto_detect_interface": true
+                "auto_detect_interface": true,
+                "default_domain_resolver": if active_node_has_ech { "dns-local" } else { "dns-remote" }
             }
         }),
         tag_map,
@@ -1944,7 +2001,7 @@ pub async fn profile_import_content(
     dns_pre_resolve: Option<bool>,
     dns_server: Option<String>,
 ) -> Result<Profile, String> {
-    let nodes = parse_subscription_content(&content)?;
+    let nodes = normalize_duplicate_node_tags(parse_subscription_content(&content)?);
 
     if nodes.is_empty() {
         return Err("No valid nodes found in content".to_string());
@@ -2190,6 +2247,48 @@ mod tests {
         let _ = state.singbox_process.lock().await.take().unwrap().kill().await;
     }
 
+    #[test]
+    fn normalize_duplicate_node_tags_keeps_first_and_suffixes_following_duplicates() {
+        let nodes = vec![
+            SingBoxOutbound {
+                tag: Some("SG|官方优选|94ms".to_string()),
+                outbound_type: Some("vless".to_string()),
+                server: Some("a.example.com".to_string()),
+                server_port: Some(443),
+                extra: std::collections::HashMap::new(),
+            },
+            SingBoxOutbound {
+                tag: Some("SG|官方优选|94ms".to_string()),
+                outbound_type: Some("vless".to_string()),
+                server: Some("b.example.com".to_string()),
+                server_port: Some(443),
+                extra: std::collections::HashMap::new(),
+            },
+            SingBoxOutbound {
+                tag: Some("SG|官方优选|94ms".to_string()),
+                outbound_type: Some("vless".to_string()),
+                server: Some("c.example.com".to_string()),
+                server_port: Some(443),
+                extra: std::collections::HashMap::new(),
+            },
+        ];
+
+        let normalized = normalize_duplicate_node_tags(nodes);
+        let tags: Vec<&str> = normalized
+            .iter()
+            .filter_map(|node| node.tag.as_deref())
+            .collect();
+
+        assert_eq!(
+            tags,
+            vec![
+                "SG|官方优选|94ms",
+                "SG|官方优选|94ms #2",
+                "SG|官方优选|94ms #3"
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn temp_start_allowed_when_idle_and_no_main_process() {
         let state = make_test_state();
@@ -2307,6 +2406,45 @@ mod tests {
         assert_eq!(tags, vec!["latency-0000", "latency-0001", "latency-0002"]);
         assert_eq!(tag_map.get("节点🚀"), Some(&vec!["latency-0000".to_string(), "latency-0001".to_string()]));
         assert_eq!(tag_map.get("中文😀"), Some(&vec!["latency-0002".to_string()]));
+    }
+
+    #[test]
+    fn generate_temp_config_adds_dns_for_ech_nodes() {
+        let nodes = vec![serde_json::json!({
+            "type": "vless",
+            "tag": "ECH",
+            "server": "104.19.41.41",
+            "server_port": 443,
+            "uuid": "11111111-1111-1111-1111-111111111111",
+            "packet_encoding": "xudp",
+            "tls": {
+                "enabled": true,
+                "server_name": "cm.5945946.xyz",
+                "ech": {
+                    "enabled": true,
+                    "query_server_name": "cloudflare-ech.com"
+                }
+            },
+            "transport": {
+                "type": "ws",
+                "path": "/",
+                "headers": { "Host": "cm.5945946.xyz" }
+            },
+            ECH_DNS_SERVER_META_KEY: "https://dns.alidns.com/dns-query"
+        })];
+
+        let (config, _) = generate_temp_config_raw(&nodes, TEMP_SINGBOX_PORT);
+
+        let dns = config.get("dns").and_then(|value| value.as_object()).expect("expected dns config");
+        let servers = dns.get("servers").and_then(|value| value.as_array()).expect("expected dns servers");
+        let remote = servers
+            .iter()
+            .find(|server| server.get("tag").and_then(|value| value.as_str()) == Some("dns-remote"))
+            .expect("expected dns-remote server");
+
+        assert_eq!(remote.get("address").and_then(|value| value.as_str()), Some("https://dns.alidns.com/dns-query"));
+        assert_eq!(remote.get("detour").and_then(|value| value.as_str()), Some("direct"));
+        assert_eq!(remote.get("domain_resolver").and_then(|value| value.as_str()), Some("dns-local"));
     }
 
     #[tokio::test]
