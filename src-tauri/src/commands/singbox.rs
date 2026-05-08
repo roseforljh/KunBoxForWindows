@@ -46,6 +46,14 @@ fn extract_singbox_fatal_error(line: &str) -> Option<String> {
 }
 
 #[cfg(windows)]
+fn format_startup_failure_message(detail: Option<String>) -> String {
+    detail
+        .filter(|text| !text.trim().is_empty())
+        .map(|text| format!("内核启动失败: {}", text))
+        .unwrap_or_else(|| "主核心 Clash API 启动超时，请重试。".to_string())
+}
+
+#[cfg(windows)]
 #[allow(unused_imports)]
 use std::os::windows::process::CommandExt;
 
@@ -54,6 +62,75 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 const SELECTOR_LATENCY_CONCURRENCY_LIMIT: usize = 8;
 const DEFAULT_CLASH_API_PORT: u16 = 9090;
+const KUNBOX_TUN_ALIAS: &str = "kunbox-tun";
+
+#[cfg(windows)]
+#[derive(Debug, serde::Deserialize)]
+struct NetAdapterRecord {
+    #[serde(rename = "InterfaceAlias")]
+    interface_alias: Option<String>,
+    #[serde(rename = "InterfaceDescription")]
+    interface_description: Option<String>,
+}
+
+#[cfg(windows)]
+fn parse_foreign_wintun_aliases(json: &str, own_alias: &str) -> Vec<String> {
+    if json.trim().is_empty() {
+        return Vec::new();
+    }
+
+    let value: serde_json::Value = match serde_json::from_str(json) {
+        Ok(value) => value,
+        Err(_) => return Vec::new(),
+    };
+
+    let records: Vec<NetAdapterRecord> = match value {
+        serde_json::Value::Array(items) => items
+            .into_iter()
+            .filter_map(|item| serde_json::from_value::<NetAdapterRecord>(item).ok())
+            .collect(),
+        serde_json::Value::Object(_) => serde_json::from_value::<NetAdapterRecord>(value)
+            .map(|record| vec![record])
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+
+    records
+        .into_iter()
+        .filter_map(|record| {
+            let alias = record.interface_alias?.trim().to_string();
+            if alias.is_empty() || alias.eq_ignore_ascii_case(own_alias) {
+                return None;
+            }
+            let description = record.interface_description.unwrap_or_default();
+            description
+                .to_ascii_lowercase()
+                .contains("wintun")
+                .then_some(alias)
+        })
+        .collect()
+}
+
+#[cfg(windows)]
+async fn detect_foreign_wintun_aliases() -> Result<Vec<String>, String> {
+    let script = format!(
+        "Get-NetAdapter | Where-Object {{ $_.Status -eq 'Up' -and $_.InterfaceDescription -like '*Wintun*' -and $_.InterfaceAlias -ne '{alias}' }} | Select-Object InterfaceAlias, InterfaceDescription | ConvertTo-Json -Compress",
+        alias = KUNBOX_TUN_ALIAS,
+    );
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+
+    let stdout = decode_windows_output(&output.stdout);
+    Ok(parse_foreign_wintun_aliases(&stdout, KUNBOX_TUN_ALIAS))
+}
 
 #[cfg(windows)]
 async fn kill_stray_singbox_processes(state: &AppState) -> Result<(), String> {
@@ -109,6 +186,13 @@ async fn get_clash_api_port(state: &AppState) -> u16 {
     *state.clash_api_port.lock().await
 }
 
+fn build_foreign_wintun_warning(aliases: &[String]) -> String {
+    format!(
+        "检测到外部隧道适配器仍在运行：{}。KunBox 已自动切换为本次非 TUN 本地代理模式，已保存设置不会被修改。",
+        aliases.join(", ")
+    )
+}
+
 #[cfg(windows)]
 fn is_running_as_admin() -> bool {
     use std::process::Command as StdCommand;
@@ -149,7 +233,9 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
     }
 
     // Check if TUN mode is enabled and admin rights are required
-    let settings = state.settings.lock().await;
+    let settings = state.settings.lock().await.clone();
+    let mut effective_settings = settings.clone();
+    let mut startup_warning: Option<String> = None;
     append_startup_diagnostic(
         state,
         &format!(
@@ -163,7 +249,27 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
         append_startup_diagnostic(state, "startup blocked because TUN mode requires admin privileges");
         return Ok(CommandResult::err("TUN 模式需要管理员权限。请右键点击应用图标，选择「以管理员身份运行」后重试。"));
     }
-    drop(settings);
+
+    #[cfg(windows)]
+    if settings.tun_enabled {
+        let foreign_wintun_aliases = detect_foreign_wintun_aliases().await?;
+        if !foreign_wintun_aliases.is_empty() {
+            let warning = build_foreign_wintun_warning(&foreign_wintun_aliases);
+            effective_settings.tun_enabled = false;
+            effective_settings.system_proxy = true;
+            startup_warning = Some(warning.clone());
+            append_startup_diagnostic(
+                state,
+                &format!("startup degraded to non-TUN mode because foreign wintun adapters are active: {}", foreign_wintun_aliases.join(", ")),
+            );
+            let _ = app.emit("singbox:log", serde_json::json!({
+                "timestamp": chrono::Utc::now().timestamp_millis(),
+                "level": "warn",
+                "tag": "sing-box",
+                "message": warning,
+            }));
+        }
+    }
 
     if let Some(mut child) = state.singbox_process.lock().await.take() {
         let _ = child.kill().await;
@@ -178,7 +284,7 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
     // Generate config
     let clash_api_port = allocate_clash_api_port(state).await?;
     append_startup_diagnostic(state, &format!("selected clash api port: {}", clash_api_port));
-    let config_result = generate_config(&state).await?;
+    let config_result = generate_config_with_settings(&state, &effective_settings).await?;
     if !config_result.success {
         return Ok(config_result);
     }
@@ -367,6 +473,19 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
 
     let mut clash_api_ready = false;
     for _ in 0..20 {
+        let startup_detail = startup_error_message.lock().await.clone();
+        if startup_detail.as_deref().is_some_and(|detail| !detail.trim().is_empty()) {
+            if let Some(mut child) = state.singbox_process.lock().await.take() {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+            }
+            *state.proxy_state.lock().await = ProxyState::Error;
+            *state.start_time.lock().await = None;
+            append_startup_diagnostic(state, &format!("fatal startup error detected before Clash API ready: {}", startup_detail.clone().unwrap_or_default()));
+            let _ = app.emit("singbox:state", "error");
+            return Ok(CommandResult::err(format_startup_failure_message(startup_detail)));
+        }
+
         if crate::commands::profiles::check_clash_api_running(clash_api_port).await {
             clash_api_ready = true;
             break;
@@ -384,10 +503,7 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
         append_startup_diagnostic(state, "main Clash API not ready in time");
         let _ = app.emit("singbox:state", "error");
         let startup_detail = startup_error_message.lock().await.clone();
-        let message = startup_detail
-            .filter(|detail| !detail.is_empty())
-            .map(|detail| format!("内核启动失败: {}", detail))
-            .unwrap_or_else(|| "主核心 Clash API 启动超时，请重试。".to_string());
+        let message = format_startup_failure_message(startup_detail);
         return Ok(CommandResult::err(message));
     }
 
@@ -421,16 +537,18 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
     });
 
     // Enable system proxy
-    let settings = state.settings.lock().await;
-    if settings.system_proxy {
-        append_startup_diagnostic(state, &format!("enabling system proxy on port {}", settings.local_port));
-        let _ = enable_system_proxy_for_state(state, settings.local_port).await;
+    if effective_settings.system_proxy {
+        append_startup_diagnostic(state, &format!("enabling system proxy on port {}", effective_settings.local_port));
+        let _ = enable_system_proxy_for_state(state, effective_settings.local_port).await;
     } else {
         append_startup_diagnostic(state, "system proxy disabled in settings, skipping enable step");
     }
 
     append_startup_diagnostic(state, "singbox_start finished successfully");
-    Ok(CommandResult::ok())
+    Ok(match startup_warning {
+        Some(warning) => CommandResult::ok_with_warning(warning),
+        None => CommandResult::ok(),
+    })
 }
 
 pub(crate) async fn singbox_stop_impl(app: AppHandle, state: &AppState) -> Result<CommandResult, String> {
@@ -528,11 +646,6 @@ pub async fn singbox_get_status(state: State<'_, AppState>) -> Result<serde_json
 
 #[tauri::command]
 pub async fn singbox_switch_node(app: AppHandle, state: State<'_, AppState>, node_tag: String) -> Result<CommandResult, String> {
-    let proxy_state = state.proxy_state.lock().await.clone();
-    if !matches!(proxy_state, ProxyState::Connected) {
-        return Ok(CommandResult::err("VPN not running"));
-    }
-
     let mut profiles_data = load_profiles_data_from_file(&state).await;
     let active_profile_id = match profiles_data.active_profile_id.clone() {
         Some(id) => id,
@@ -544,6 +657,11 @@ pub async fn singbox_switch_node(app: AppHandle, state: State<'_, AppState>, nod
     let profiles_content = serde_json::to_string_pretty(&profiles_data).map_err(|e| e.to_string())?;
     fs::write(state.profiles_file(), profiles_content).map_err(|e| e.to_string())?;
     *state.profiles_data.lock().await = profiles_data;
+
+    let proxy_state = state.proxy_state.lock().await.clone();
+    if !matches!(proxy_state, ProxyState::Connected) {
+        return Ok(CommandResult::ok());
+    }
 
     let nodes_file = profile_nodes_path(&state, &active_profile_id)?;
     let raw_nodes: Vec<serde_json::Value> = if nodes_file.exists() {
@@ -923,6 +1041,11 @@ fn load_all_profiles(state: &AppState, profiles_data: &crate::types::ProfilesDat
 }
 
 async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
+    let settings = state.settings.lock().await.clone();
+    generate_config_with_settings(state, &settings).await
+}
+
+async fn generate_config_with_settings(state: &AppState, settings: &crate::types::AppSettings) -> Result<CommandResult, String> {
     // Always reload profiles data from file to ensure we have the latest
     let profiles_file = state.profiles_file();
     let profiles_data: crate::types::ProfilesData = if profiles_file.exists() {
@@ -932,7 +1055,6 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
         return Ok(CommandResult::err("No profiles file found"));
     };
     
-    let settings = state.settings.lock().await;
     let rulesets = state.rulesets.lock().await;
     let custom_rules = state.custom_rules.lock().await;
 
@@ -1002,7 +1124,6 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
             .and_then(|profile| profile.dns_server.clone())
             .unwrap_or_else(|| settings.remote_dns.clone())
     };
-    let remote_dns_detour = if active_node_has_ech { "direct" } else { "PROXY" };
     let remote_dns_domain_resolver = active_node_has_ech.then_some("dns-local");
 
     // 加载所有配置文件信息（用于跨配置分流）
@@ -1041,6 +1162,26 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
             }
         }
     }
+
+    // Pre-scan for tag collisions to avoid conflict with node tags named "PROXY" or "auto"
+    let will_proxy_collide = nodes.iter().any(|n| n.get("tag").and_then(|t| t.as_str()) == Some("PROXY"))
+        || referenced_profile_scoped_node_refs.iter().any(|r| {
+            parse_profile_scoped_node_ref(r)
+                .map(|(_, node_tag)| node_tag == "PROXY")
+                .unwrap_or(false)
+        })
+        || referenced_profile_ids.iter().any(|id| profile_selector_tag(id) == "PROXY");
+    let will_auto_collide = nodes.iter().any(|n| n.get("tag").and_then(|t| t.as_str()) == Some("auto"))
+        || referenced_profile_scoped_node_refs.iter().any(|r| {
+            parse_profile_scoped_node_ref(r)
+                .map(|(_, node_tag)| node_tag == "auto")
+                .unwrap_or(false)
+        })
+        || referenced_profile_ids.iter().any(|id| profile_selector_tag(id) == "auto");
+
+    let proxy_tag = if will_proxy_collide { "PROXY-kb" } else { "PROXY" };
+    let auto_tag = if will_auto_collide { "auto-kb" } else { "auto" };
+    let remote_dns_detour = if active_node_has_ech { "direct" } else { proxy_tag };
 
     // Build config - 使用 sing-box 1.11+ 新格式
     let listen_addr = if settings.allow_lan { "0.0.0.0" } else { "127.0.0.1" };
@@ -1235,10 +1376,10 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
     // 避免 1.13+ 硬错误，始终不生成已弃用 outbound DNS rule item
 
     let route_final = match routing_mode {
-        "global-proxy" => "PROXY",
+        "global-proxy" => proxy_tag,
         "global-direct" => "direct",
         _ => match settings.default_rule.as_str() {
-            "proxy" => "PROXY",
+            "proxy" => proxy_tag,
             "block" => "direct",
             other => other,
         },
@@ -1342,11 +1483,24 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
 
             // 创建 selector 类型（由应用层管理延迟测试和切换）
             if !profile_proxy_tags.is_empty() {
+                let selector_default = profiles_data
+                    .node_selections
+                    .get(&profile.id)
+                    .filter(|saved_tag| profile_proxy_tags.iter().any(|tag| tag == *saved_tag))
+                    .cloned()
+                    .or_else(|| {
+                        (profiles_data.active_profile_id.as_deref() == Some(profile.id.as_str()))
+                            .then(|| profiles_data.active_node_tag.clone())
+                            .flatten()
+                            .filter(|active_tag| profile_proxy_tags.iter().any(|tag| tag == active_tag))
+                    })
+                    .or_else(|| profile_proxy_tags.first().cloned());
+
                 outbounds.push(serde_json::json!({
                     "type": "selector",
                     "tag": selector_tag,
                     "outbounds": profile_proxy_tags,
-                    "default": profile_proxy_tags.first(),
+                    "default": selector_default,
                     "interrupt_exist_connections": false
                 }));
                 existing_tags.insert(selector_tag.clone());
@@ -1359,26 +1513,29 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
     // 4. 添加 PROXY selector（主选择器）
     let default_tag = active_node_tag.clone();
     if !proxy_tags.is_empty() {
+        let proxy_outbounds: Vec<String> = proxy_tags.iter().cloned().collect();
         outbounds.insert(0, serde_json::json!({
             "type": "selector",
-            "tag": "PROXY",
-            "outbounds": proxy_tags,
+            "tag": proxy_tag,
+            "outbounds": proxy_outbounds.clone(),
             "default": default_tag,
             "interrupt_exist_connections": false
         }));
+        existing_tags.insert(proxy_tag.to_string());
     }
 
     // 5. 添加 auto urltest（如果有多个节点）
     if proxy_tags.len() > 1 {
         outbounds.push(serde_json::json!({
             "type": "urltest",
-            "tag": "auto",
+            "tag": auto_tag,
             "outbounds": proxy_tags,
             "url": settings.latency_test_url,
             "interval": "10m",
             "idle_timeout": "30m",
             "tolerance": 50
         }));
+        existing_tags.insert(auto_tag.to_string());
     }
 
     // 6. 添加基础出站
@@ -1411,7 +1568,7 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
     if routing_mode == "rule" {
         for rule in custom_rules.domain_rules.iter().filter(|r| r.enabled) {
             let outbound = match rule.outbound_mode.as_str() {
-                "proxy" => "PROXY".to_string(),
+                "proxy" => proxy_tag.to_string(),
                 "direct" => "direct".to_string(),
                 "block" => "block".to_string(),
                 "node" => {
@@ -1419,11 +1576,11 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
                         if let Some(node_tag) = resolve_node_route_outbound(node_ref, &available_outbound_tags) {
                             node_tag
                         } else {
-                            log::warn!("Node '{}' not found for domain rule '{}', falling back to PROXY", node_ref, rule.value);
-                            "PROXY".to_string()
+                            log::warn!("Node '{}' not found for domain rule '{}', falling back to {}", node_ref, rule.value, proxy_tag);
+                            proxy_tag.to_string()
                         }
                     } else {
-                        "PROXY".to_string()
+                        proxy_tag.to_string()
                     }
                 },
                 "profile" => {
@@ -1432,15 +1589,15 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
                             if available_outbound_tags.contains(selector_tag) {
                                 selector_tag.clone()
                             } else {
-                                log::warn!("Profile selector '{}' not found for domain rule '{}', falling back to PROXY", selector_tag, rule.value);
-                                "PROXY".to_string()
+                                log::warn!("Profile selector '{}' not found for domain rule '{}', falling back to {}", selector_tag, rule.value, proxy_tag);
+                                proxy_tag.to_string()
                             }
                         } else {
-                            log::warn!("Profile '{}' not found for domain rule '{}', falling back to PROXY", profile_id, rule.value);
-                            "PROXY".to_string()
+                            log::warn!("Profile '{}' not found for domain rule '{}', falling back to {}", profile_id, rule.value, proxy_tag);
+                            proxy_tag.to_string()
                         }
                     } else {
-                        "PROXY".to_string()
+                        proxy_tag.to_string()
                     }
                 },
                 other => other.to_string()
@@ -1493,7 +1650,7 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
 
         // 映射 outbound_mode 到正确的出站名称
         let outbound = match rs.outbound_mode.as_str() {
-            "proxy" => "PROXY".to_string(),
+            "proxy" => proxy_tag.to_string(),
             "direct" => "direct".to_string(),
             "block" => "block".to_string(),
             // node 模式：验证节点是否存在
@@ -1502,11 +1659,11 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
                     if let Some(node_tag) = resolve_node_route_outbound(node_ref, &available_outbound_tags) {
                         node_tag
                     } else {
-                        log::warn!("Node '{}' not found for ruleset '{}', falling back to PROXY", node_ref, rs.tag);
-                        "PROXY".to_string()
+                        log::warn!("Node '{}' not found for ruleset '{}', falling back to {}", node_ref, rs.tag, proxy_tag);
+                        proxy_tag.to_string()
                     }
                 } else {
-                    "PROXY".to_string()
+                    proxy_tag.to_string()
                 }
             },
             // profile 模式：使用配置的 urltest selector
@@ -1516,15 +1673,15 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
                         if available_outbound_tags.contains(selector_tag) {
                             selector_tag.clone()
                         } else {
-                            log::warn!("Profile selector '{}' not found for ruleset '{}', falling back to PROXY", selector_tag, rs.tag);
-                            "PROXY".to_string()
+                            log::warn!("Profile selector '{}' not found for ruleset '{}', falling back to {}", selector_tag, rs.tag, proxy_tag);
+                            proxy_tag.to_string()
                         }
                     } else {
-                        log::warn!("Profile '{}' not found for ruleset '{}', falling back to PROXY", profile_id, rs.tag);
-                        "PROXY".to_string()
+                        log::warn!("Profile '{}' not found for ruleset '{}', falling back to {}", profile_id, rs.tag, proxy_tag);
+                        proxy_tag.to_string()
                     }
                 } else {
-                    "PROXY".to_string()
+                    proxy_tag.to_string()
                 }
             },
             other => other.to_string()
@@ -2108,6 +2265,25 @@ mod tests {
         assert_ne!(ProxyCleanupMode::RestoreSnapshot, ProxyCleanupMode::ForceClear);
     }
 
+    #[test]
+    fn parse_foreign_wintun_aliases_ignores_kunbox_tun_and_keeps_foreign_aliases() {
+        let json = r#"[
+            {"InterfaceAlias":"kunbox-tun","InterfaceDescription":"Wintun Userspace Tunnel"},
+            {"InterfaceAlias":"vgate0","InterfaceDescription":"Rust Wintun Tunnel Tunnel"},
+            {"InterfaceAlias":"Ethernet","InterfaceDescription":"Realtek PCIe GbE Family Controller"}
+        ]"#;
+
+        let aliases = parse_foreign_wintun_aliases(json, KUNBOX_TUN_ALIAS);
+        assert_eq!(aliases, vec!["vgate0".to_string()]);
+    }
+
+    #[test]
+    fn parse_foreign_wintun_aliases_handles_single_object_payload() {
+        let json = r#"{"InterfaceAlias":"vgate0","InterfaceDescription":"Wintun Userspace Tunnel"}"#;
+        let aliases = parse_foreign_wintun_aliases(json, KUNBOX_TUN_ALIAS);
+        assert_eq!(aliases, vec!["vgate0".to_string()]);
+    }
+
     #[tokio::test]
     async fn generate_config_uses_profile_ids_for_selector_tags() {
         let data_dir = unique_test_dir("duplicate-profile-selector");
@@ -2145,6 +2321,41 @@ mod tests {
         assert!(tags.contains("P:profile-a"));
         assert!(tags.contains("P:profile-b"));
         assert!(!tags.contains("P:Same Name"));
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn generate_config_uses_saved_profile_node_selection_for_profile_selector_default() {
+        let data_dir = unique_test_dir("profile-selector-default");
+        let state = AppState::new(data_dir.clone());
+
+        let profiles_data = ProfilesData {
+            profiles: vec![make_profile("profile-a", "Profile A")],
+            active_profile_id: Some("profile-a".to_string()),
+            active_node_tag: Some("node-b".to_string()),
+            node_selections: HashMap::from([("profile-a".to_string(), "node-b".to_string())]),
+        };
+
+        write_json_file(&state.profiles_file(), &profiles_data);
+        write_json_file(
+            &state.configs_dir().join("profile-a.json"),
+            &vec![make_node("node-a"), make_node("node-b")],
+        );
+
+        *state.rulesets.lock().await = vec![make_ruleset("rs-a", "profile", Some("profile-a"))];
+
+        let result = generate_config(&state).await.unwrap();
+        assert!(result.success);
+
+        let config = read_generated_config(&state);
+        let outbounds = config["outbounds"].as_array().unwrap();
+        let selector = outbounds
+            .iter()
+            .find(|outbound| outbound.get("tag").and_then(|tag| tag.as_str()) == Some("P:profile-a"))
+            .expect("expected profile selector");
+
+        assert_eq!(selector.get("default").and_then(|value| value.as_str()), Some("node-b"));
 
         let _ = fs::remove_dir_all(data_dir);
     }

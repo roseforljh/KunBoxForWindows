@@ -6,7 +6,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use crate::state::AppState;
-use crate::types::{Profile, ProfilesData, ProxyState, SingBoxOutbound};
+use crate::types::{AppSettings, NodeLatencyResult, NodeLatencyStatus, Profile, ProfilesData, ProxyState, SingBoxOutbound};
 
 #[cfg(windows)]
 #[allow(unused_imports)]
@@ -37,16 +37,17 @@ const TEMP_SINGBOX_PORT: u16 = 19090;
 enum LatencyTestBackend {
     Main,
     Temp,
-    Skip,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LatencyProbeError {
+    Timeout,
+    Failed,
 }
 
 fn select_latency_test_backend(proxy_state: &ProxyState, main_api_ready: bool) -> LatencyTestBackend {
-    if main_api_ready {
+    if main_api_ready || matches!(proxy_state, ProxyState::Connected | ProxyState::Connecting) {
         return LatencyTestBackend::Main;
-    }
-
-    if matches!(proxy_state, ProxyState::Connected | ProxyState::Connecting) {
-        return LatencyTestBackend::Skip;
     }
 
     LatencyTestBackend::Temp
@@ -54,6 +55,86 @@ fn select_latency_test_backend(proxy_state: &ProxyState, main_api_ready: bool) -
 
 fn temp_singbox_dir(state: &AppState) -> std::path::PathBuf {
     state.data_dir.join("temp_test")
+}
+
+fn normalize_latency_test_settings(settings: &AppSettings) -> (String, u32) {
+    let test_url = if settings.latency_test_url.trim().is_empty() {
+        "https://www.gstatic.com/generate_204".to_string()
+    } else {
+        settings.latency_test_url.trim().to_string()
+    };
+    let timeout_ms = settings.latency_test_timeout.max(1);
+    (test_url, timeout_ms)
+}
+
+async fn current_latency_test_settings(state: &AppState) -> (String, u32) {
+    let settings = state.settings.lock().await.clone();
+    normalize_latency_test_settings(&settings)
+}
+
+fn map_latency_probe_result(
+    result: Result<i64, LatencyProbeError>,
+    failure_status: NodeLatencyStatus,
+) -> NodeLatencyResult {
+    match result {
+        Ok(latency) if latency > 0 => NodeLatencyResult::success(latency),
+        Ok(_) | Err(LatencyProbeError::Timeout) => NodeLatencyResult::timeout(),
+        Err(LatencyProbeError::Failed) => match failure_status {
+            NodeLatencyStatus::ControllerUnavailable => NodeLatencyResult::controller_unavailable(),
+            NodeLatencyStatus::LocalTestFailed => NodeLatencyResult::local_test_failed(),
+            NodeLatencyStatus::Timeout => NodeLatencyResult::timeout(),
+            NodeLatencyStatus::Success => NodeLatencyResult::local_test_failed(),
+        },
+    }
+}
+
+async fn test_latency_via_temp_backend(
+    app: &AppHandle,
+    state: &AppState,
+    tag: &str,
+    run_id: Option<u64>,
+    test_url: &str,
+    timeout_ms: u32,
+    cancel_token: CancellationToken,
+    allow_main_process_alive: bool,
+) -> NodeLatencyResult {
+    let started = start_temp_singbox(app, state, &cancel_token, allow_main_process_alive).await;
+    if !started {
+        log::warn!("Temp sing-box not available for latency test: {}", tag);
+        return NodeLatencyResult::local_test_failed();
+    }
+
+    if is_latency_test_batch_cancelled(run_id).await {
+        return NodeLatencyResult::local_test_failed();
+    }
+
+    if !acquire_temp_singbox_test_slot(run_id).await {
+        log::debug!("Temp sing-box slot owner changed before testing '{}', skipping stale request", tag);
+        return NodeLatencyResult::local_test_failed();
+    }
+
+    let temp_tag = match if run_id.is_some() {
+        take_temp_singbox_tag_for_batch(run_id, tag).await
+    } else {
+        first_temp_singbox_tag(tag).await
+    } {
+        Some(temp_tag) => temp_tag,
+        None => {
+            log::warn!("Temp Clash API tag mapping missing for '{}'", tag);
+            release_temp_singbox_test_slot(state, run_id).await;
+            return NodeLatencyResult::local_test_failed();
+        }
+    };
+
+    let result = test_latency_via_clash_api_cancellable(
+        &temp_tag,
+        TEMP_SINGBOX_PORT,
+        test_url,
+        timeout_ms,
+        cancel_token,
+    ).await;
+    release_temp_singbox_test_slot(state, run_id).await;
+    map_latency_probe_result(result, NodeLatencyStatus::LocalTestFailed)
 }
 
 fn remove_temp_singbox_dir(path: &std::path::Path) -> Result<(), String> {
@@ -201,6 +282,12 @@ pub(crate) async fn cleanup_temp_singbox(state: &AppState) {
     let temp_dir = temp_singbox_dir(state);
     if let Err(err) = remove_temp_singbox_dir(&temp_dir) {
         log::warn!("Failed to clean temp sing-box dir {:?}: {}", temp_dir, err);
+    }
+    let temp_test_dir = state.data_dir.join("temp_test");
+    if temp_test_dir.exists() {
+        if let Err(err) = fs::remove_dir_all(&temp_test_dir) {
+            log::warn!("Failed to clean temp_test dir {:?}: {}", temp_test_dir, err);
+        }
     }
 }
 
@@ -1394,9 +1481,9 @@ pub async fn node_begin_latency_tests(state: State<'_, AppState>, run_id: u64) -
 }
 
 #[tauri::command]
-pub async fn node_test_latency(app: AppHandle, state: State<'_, AppState>, tag: String, run_id: Option<u64>) -> Result<i64, String> {
+pub async fn node_test_latency(app: AppHandle, state: State<'_, AppState>, tag: String, run_id: Option<u64>) -> Result<NodeLatencyResult, String> {
     if is_latency_test_batch_cancelled(run_id).await {
-        return Ok(-1);
+        return Ok(NodeLatencyResult::local_test_failed());
     }
 
     let cancel_token = if run_id.is_some() {
@@ -1404,6 +1491,8 @@ pub async fn node_test_latency(app: AppHandle, state: State<'_, AppState>, tag: 
     } else {
         CancellationToken::new()
     };
+
+    let (test_url, timeout_ms) = current_latency_test_settings(&state).await;
 
     let proxy_state = {
         let proxy_state = state.proxy_state.lock().await;
@@ -1414,56 +1503,42 @@ pub async fn node_test_latency(app: AppHandle, state: State<'_, AppState>, tag: 
 
     match select_latency_test_backend(&proxy_state, main_api_ready) {
         LatencyTestBackend::Main => {
-            match test_latency_via_clash_api_cancellable(&tag, main_api_port, cancel_token.clone()).await {
-                Ok(v) if v > 0 => return Ok(v),
-                Ok(_) | Err(_) => {
-                    log::warn!("Main Clash API latency probe failed for '{}', returning -1", tag);
-                    return Ok(-1);
-                }
+            let result = test_latency_via_clash_api_cancellable(
+                &tag,
+                main_api_port,
+                &test_url,
+                timeout_ms,
+                cancel_token.clone(),
+            ).await;
+            let mapped = map_latency_probe_result(result, NodeLatencyStatus::ControllerUnavailable);
+            if mapped.status == NodeLatencyStatus::Success {
+                return Ok(mapped);
             }
+            log::warn!("Main Clash API latency probe did not produce success for '{}', falling back to temp backend", tag);
+            let temp_result = test_latency_via_temp_backend(
+                &app,
+                &state,
+                &tag,
+                run_id,
+                &test_url,
+                timeout_ms,
+                cancel_token,
+                true,
+            ).await;
+            return Ok(temp_result);
         }
-        LatencyTestBackend::Skip => {
-            log::debug!("Latency test skipped: main sing-box not ready for state {:?}", proxy_state);
-            return Ok(-1);
-        }
-        LatencyTestBackend::Temp => {}
-    }
-
-    let started = start_temp_singbox(&app, &state, &cancel_token).await;
-    if !started {
-        log::warn!("Temp sing-box not available for latency test: {}", tag);
-        return Ok(-1);
-    }
-
-    if is_latency_test_batch_cancelled(run_id).await {
-        return Ok(-1);
-    }
-
-    if !acquire_temp_singbox_test_slot(run_id).await {
-        log::debug!("Temp sing-box slot owner changed before testing '{}', skipping stale request", tag);
-        return Ok(-1);
-    }
-
-    let temp_tag = match if run_id.is_some() {
-        take_temp_singbox_tag_for_batch(run_id, &tag).await
-    } else {
-        first_temp_singbox_tag(&tag).await
-    } {
-        Some(temp_tag) => temp_tag,
-        None => {
-            log::warn!("Temp Clash API tag mapping missing for '{}'", tag);
-            release_temp_singbox_test_slot(&state, run_id).await;
-            return Ok(-1);
-        }
-    };
-
-    let result = test_latency_via_clash_api_cancellable(&temp_tag, TEMP_SINGBOX_PORT, cancel_token).await;
-    release_temp_singbox_test_slot(&state, run_id).await;
-    match result {
-        Ok(v) => Ok(v),
-        Err(e) => {
-            log::warn!("Temp Clash API latency test failed for '{}': {}", tag, e);
-            Ok(-1)
+        LatencyTestBackend::Temp => {
+            let temp_result = test_latency_via_temp_backend(
+                &app,
+                &state,
+                &tag,
+                run_id,
+                &test_url,
+                timeout_ms,
+                cancel_token,
+                false,
+            ).await;
+            return Ok(temp_result);
         }
     }
 }
@@ -1471,6 +1546,7 @@ pub async fn node_test_latency(app: AppHandle, state: State<'_, AppState>, tag: 
 #[tauri::command]
 pub async fn node_test_all(app: AppHandle, state: State<'_, AppState>) -> Result<std::collections::HashMap<String, i64>, String> {
     let cancel_token = current_latency_test_cancel_token().await;
+    let (test_url, timeout_ms) = current_latency_test_settings(&state).await;
 
     let data = load_profiles_data(&state);
     let profile_id = match data.active_profile_id {
@@ -1489,19 +1565,25 @@ pub async fn node_test_all(app: AppHandle, state: State<'_, AppState>) -> Result
     
     let mut ports: Vec<u16> = Vec::new();
     let mut temp_used = false;
-    match select_latency_test_backend(&proxy_state, main_api_ready) {
-        LatencyTestBackend::Main => {
-            ports.push(main_api_port);
+    let prefer_temp_backend = matches!(proxy_state, ProxyState::Connected | ProxyState::Connecting) || !main_api_ready;
+
+    if prefer_temp_backend {
+        let temp_ready = start_temp_singbox(&app, &state, &cancel_token, true).await;
+        if temp_ready {
+            ports.push(TEMP_SINGBOX_PORT);
+            temp_used = true;
         }
-        LatencyTestBackend::Skip => {
-            log::debug!("Batch latency test skipped: main sing-box not ready for state {:?}", proxy_state);
-            return Ok(std::collections::HashMap::new());
-        }
-        LatencyTestBackend::Temp => {
-            let temp_ready = start_temp_singbox(&app, &state, &cancel_token).await;
-            if temp_ready {
-                ports.push(TEMP_SINGBOX_PORT);
-                temp_used = true;
+    } else {
+        match select_latency_test_backend(&proxy_state, main_api_ready) {
+            LatencyTestBackend::Main => {
+                ports.push(main_api_port);
+            }
+            LatencyTestBackend::Temp => {
+                let temp_ready = start_temp_singbox(&app, &state, &cancel_token, false).await;
+                if temp_ready {
+                    ports.push(TEMP_SINGBOX_PORT);
+                    temp_used = true;
+                }
             }
         }
     }
@@ -1529,6 +1611,7 @@ pub async fn node_test_all(app: AppHandle, state: State<'_, AppState>) -> Result
             .map(|tag| {
                 let tag_clone = tag.clone();
                 let cancel_token = cancel_token.clone();
+                let test_url = test_url.clone();
                 let lookup_tag = if let Some(tag_map) = temp_tag_map.as_mut() {
                     take_temp_singbox_tag(tag_map, &tag).unwrap_or_else(|| tag.clone())
                 } else {
@@ -1542,14 +1625,14 @@ pub async fn node_test_all(app: AppHandle, state: State<'_, AppState>) -> Result
                             break;
                         }
 
-                        match test_latency_via_clash_api_cancellable(&lookup_tag, p, cancel_token.clone()).await {
+                        match test_latency_via_clash_api_cancellable(&lookup_tag, p, &test_url, timeout_ms, cancel_token.clone()).await {
                             Ok(v) if v > 0 => {
                                 latency = v;
                                 break;
                             }
-                            Ok(_) => {}
-                            Err(e) => {
-                                log::debug!("Latency test failed on port {} for '{}' via '{}': {}", p, tag_clone, lookup_tag, e);
+                            Ok(_) | Err(LatencyProbeError::Timeout) => {}
+                            Err(LatencyProbeError::Failed) => {
+                                log::debug!("Latency test failed on port {} for '{}' via '{}'", p, tag_clone, lookup_tag);
                             }
                         }
                     }
@@ -1589,45 +1672,65 @@ pub async fn node_cancel_latency_tests(state: State<'_, AppState>, run_id: Optio
     Ok(())
 }
 
-async fn test_latency_via_clash_api(proxy_name: &str, port: u16) -> Result<i64, String> {
+async fn test_latency_via_clash_api(
+    proxy_name: &str,
+    port: u16,
+    test_url: &str,
+    timeout_ms: u32,
+) -> Result<i64, LatencyProbeError> {
+    let effective_timeout_ms = timeout_ms.max(1) as u64;
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_millis(effective_timeout_ms.saturating_add(2_000)))
         .build()
-        .map_err(|e| e.to_string())?;
-    
-    let test_url = "https://www.gstatic.com/generate_204";
+        .map_err(|_| LatencyProbeError::Failed)?;
+
     let encoded_name = urlencoding::encode(proxy_name);
     let url = format!(
-        "http://127.0.0.1:{}/proxies/{}/delay?url={}&timeout=10000",
+        "http://127.0.0.1:{}/proxies/{}/delay?url={}&timeout={}",
         port,
         encoded_name,
-        urlencoding::encode(test_url)
+        urlencoding::encode(test_url),
+        effective_timeout_ms
     );
-    
-    let response = client.get(&url).send().await.map_err(|e| e.to_string())?;
+
+    let response = client.get(&url).send().await.map_err(|e| {
+        if e.is_timeout() {
+            LatencyProbeError::Timeout
+        } else {
+            LatencyProbeError::Failed
+        }
+    })?;
 
     if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!("HTTP {}: {}", status, body));
+        if response.status() == reqwest::StatusCode::GATEWAY_TIMEOUT
+            || response.status() == reqwest::StatusCode::REQUEST_TIMEOUT
+        {
+            return Err(LatencyProbeError::Timeout);
+        }
+        return Err(LatencyProbeError::Failed);
     }
 
-    let json: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+    let json: serde_json::Value = response.json().await.map_err(|_| LatencyProbeError::Failed)?;
     if let Some(delay) = json.get("delay").and_then(|d| d.as_i64()) {
-        return Ok(delay);
+        if delay > 0 {
+            return Ok(delay);
+        }
+        return Err(LatencyProbeError::Timeout);
     }
 
-    Ok(-1)
+    Err(LatencyProbeError::Failed)
 }
 
 async fn test_latency_via_clash_api_cancellable(
     proxy_name: &str,
     port: u16,
+    test_url: &str,
+    timeout_ms: u32,
     cancel_token: CancellationToken,
-) -> Result<i64, String> {
+) -> Result<i64, LatencyProbeError> {
     tokio::select! {
-        _ = cancel_token.cancelled() => Err("latency test cancelled".to_string()),
-        result = test_latency_via_clash_api(proxy_name, port) => result,
+        _ = cancel_token.cancelled() => Err(LatencyProbeError::Failed),
+        result = test_latency_via_clash_api(proxy_name, port, test_url, timeout_ms) => result,
     }
 }
 
@@ -1645,7 +1748,7 @@ enum TempStartGuard {
     Blocked(TempStartBlockReason),
 }
 
-async fn can_start_temp_singbox(state: &AppState) -> TempStartGuard {
+async fn can_start_temp_singbox(state: &AppState, allow_main_process_alive: bool) -> TempStartGuard {
     if *state.shutdown_in_progress.lock().await {
         return TempStartGuard::Blocked(TempStartBlockReason::ShutdownInProgress);
     }
@@ -1657,7 +1760,9 @@ async fn can_start_temp_singbox(state: &AppState) -> TempStartGuard {
     if let Some(ref mut child) = *state.singbox_process.lock().await {
         match child.try_wait() {
             Ok(None) => {
-                return TempStartGuard::Blocked(TempStartBlockReason::MainProcessAlive);
+                if !allow_main_process_alive {
+                    return TempStartGuard::Blocked(TempStartBlockReason::MainProcessAlive);
+                }
             }
             Ok(Some(_)) => {}
             Err(_) => {
@@ -1679,14 +1784,19 @@ fn get_kernel_path_with_fallback(app: &AppHandle) -> Option<std::path::PathBuf> 
     app.path().resource_dir().ok().map(|dir| dir.join("resources").join("libs").join("sing-box.exe"))
 }
 
-async fn start_temp_singbox(app: &AppHandle, state: &AppState, cancel_token: &CancellationToken) -> bool {
+async fn start_temp_singbox(
+    app: &AppHandle,
+    state: &AppState,
+    cancel_token: &CancellationToken,
+    allow_main_process_alive: bool,
+) -> bool {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
 
     if cancel_token.is_cancelled() {
         return false;
     }
 
-    match can_start_temp_singbox(state).await {
+    match can_start_temp_singbox(state, allow_main_process_alive).await {
         TempStartGuard::Blocked(TempStartBlockReason::ShutdownInProgress) => {
             log::debug!("start_temp_singbox refused: shutdown in progress");
             return false;
@@ -2200,7 +2310,7 @@ mod tests {
     async fn temp_start_forbidden_when_shutdown_in_progress() {
         let state = make_test_state();
         *state.shutdown_in_progress.lock().await = true;
-        let guard = can_start_temp_singbox(&state).await;
+        let guard = can_start_temp_singbox(&state, false).await;
         match guard {
             TempStartGuard::Blocked(TempStartBlockReason::ShutdownInProgress) => {}
             other => panic!("expected ShutdownInProgress block, got {:?}", other),
@@ -2211,7 +2321,7 @@ mod tests {
     async fn temp_start_forbidden_when_proxy_state_connecting() {
         let state = make_test_state();
         *state.proxy_state.lock().await = ProxyState::Connecting;
-        let guard = can_start_temp_singbox(&state).await;
+        let guard = can_start_temp_singbox(&state, false).await;
         match guard {
             TempStartGuard::Blocked(TempStartBlockReason::ProxyStateTransitional(s)) => {
                 assert!(matches!(s, ProxyState::Connecting));
@@ -2224,7 +2334,7 @@ mod tests {
     async fn temp_start_forbidden_when_proxy_state_disconnecting() {
         let state = make_test_state();
         *state.proxy_state.lock().await = ProxyState::Disconnecting;
-        let guard = can_start_temp_singbox(&state).await;
+        let guard = can_start_temp_singbox(&state, false).await;
         match guard {
             TempStartGuard::Blocked(TempStartBlockReason::ProxyStateTransitional(s)) => {
                 assert!(matches!(s, ProxyState::Disconnecting));
@@ -2239,10 +2349,24 @@ mod tests {
         let state = make_test_state();
         let child = Command::new("cmd").args(["/C", "sleep", "10"]).spawn().unwrap();
         *state.singbox_process.lock().await = Some(child);
-        let guard = can_start_temp_singbox(&state).await;
+        let guard = can_start_temp_singbox(&state, false).await;
         match guard {
             TempStartGuard::Blocked(TempStartBlockReason::MainProcessAlive) => {}
             other => panic!("expected MainProcessAlive block, got {:?}", other),
+        }
+        let _ = state.singbox_process.lock().await.take().unwrap().kill().await;
+    }
+
+    #[tokio::test]
+    async fn temp_start_allowed_when_main_process_alive_if_explicitly_permitted() {
+        use tokio::process::Command;
+        let state = make_test_state();
+        let child = Command::new("cmd").args(["/C", "sleep", "10"]).spawn().unwrap();
+        *state.singbox_process.lock().await = Some(child);
+        let guard = can_start_temp_singbox(&state, true).await;
+        match guard {
+            TempStartGuard::Allowed => {}
+            other => panic!("expected Allowed when main process reuse is permitted, got {:?}", other),
         }
         let _ = state.singbox_process.lock().await.take().unwrap().kill().await;
     }
@@ -2294,7 +2418,7 @@ mod tests {
         let state = make_test_state();
         *state.proxy_state.lock().await = ProxyState::Idle;
         assert!(state.singbox_process.lock().await.is_none());
-        let guard = can_start_temp_singbox(&state).await;
+        let guard = can_start_temp_singbox(&state, false).await;
         match guard {
             TempStartGuard::Allowed => {}
             other => panic!("expected Allowed, got {:?}", other),
@@ -2306,7 +2430,7 @@ mod tests {
         let state = make_test_state();
         *state.proxy_state.lock().await = ProxyState::Error;
         assert!(state.singbox_process.lock().await.is_none());
-        let guard = can_start_temp_singbox(&state).await;
+        let guard = can_start_temp_singbox(&state, false).await;
         match guard {
             TempStartGuard::Allowed => {}
             other => panic!("expected Allowed, got {:?}", other),
@@ -2320,7 +2444,7 @@ mod tests {
         let child = Command::new("cmd").args(["/C", "echo", "done"]).spawn().unwrap();
         *state.singbox_process.lock().await = Some(child);
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-        let guard = can_start_temp_singbox(&state).await;
+        let guard = can_start_temp_singbox(&state, false).await;
         match guard {
             TempStartGuard::Allowed => {}
             other => panic!("expected Allowed after main process exits, got {:?}", other),
@@ -2334,9 +2458,9 @@ mod tests {
     }
 
     #[test]
-    fn latency_skips_temp_when_connected_but_main_api_not_ready() {
-        assert_eq!(select_latency_test_backend(&ProxyState::Connected, false), LatencyTestBackend::Skip);
-        assert_eq!(select_latency_test_backend(&ProxyState::Connecting, false), LatencyTestBackend::Skip);
+    fn latency_uses_main_when_connected_even_if_readiness_probe_fails() {
+        assert_eq!(select_latency_test_backend(&ProxyState::Connected, false), LatencyTestBackend::Main);
+        assert_eq!(select_latency_test_backend(&ProxyState::Connecting, false), LatencyTestBackend::Main);
     }
 
     #[test]

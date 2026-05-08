@@ -101,7 +101,11 @@ export default function Dashboard() {
       } else {
         const result = await connect()
         if (result.success) {
-          toast.success('已连接')
+          if (result.warning) {
+            toast.warning(result.warning)
+          } else {
+            toast.success('已连接')
+          }
           // Auto test latency after connect
           setManagedTimeout(() => {
             void testLatency()
@@ -132,7 +136,11 @@ export default function Dashboard() {
       await new Promise(resolve => setTimeout(resolve, 500))
       const startResult = await connect()
       if (startResult.success) {
-        toast.success('已重新连接')
+        if (startResult.warning) {
+          toast.warning(startResult.warning)
+        } else {
+          toast.success('已重新连接')
+        }
         testLatency()
       } else {
         toast.clear()

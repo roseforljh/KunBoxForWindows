@@ -1,0 +1,304 @@
+[
+  {
+    "kind": "docs",
+    "files": [
+      "AGENTS.md",
+      "AUDIT_REPORT.md",
+      "README.md"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "app-icon.svg"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\128x128.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\128x128@2x.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\32x32.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\64x64.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\icon.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\Square107x107Logo.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\Square142x142Logo.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\Square150x150Logo.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\Square284x284Logo.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\Square30x30Logo.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\Square310x310Logo.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\Square44x44Logo.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\Square71x71Logo.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\Square89x89Logo.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\StoreLogo.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\android\\mipmap-hdpi\\ic_launcher.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\android\\mipmap-hdpi\\ic_launcher_foreground.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\android\\mipmap-hdpi\\ic_launcher_round.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\android\\mipmap-mdpi\\ic_launcher.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\android\\mipmap-mdpi\\ic_launcher_foreground.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\android\\mipmap-mdpi\\ic_launcher_round.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\android\\mipmap-xhdpi\\ic_launcher.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\android\\mipmap-xhdpi\\ic_launcher_foreground.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\android\\mipmap-xhdpi\\ic_launcher_round.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\android\\mipmap-xxhdpi\\ic_launcher.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\android\\mipmap-xxhdpi\\ic_launcher_foreground.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\android\\mipmap-xxhdpi\\ic_launcher_round.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\android\\mipmap-xxxhdpi\\ic_launcher.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\android\\mipmap-xxxhdpi\\ic_launcher_foreground.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\android\\mipmap-xxxhdpi\\ic_launcher_round.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\ios\\AppIcon-20x20@1x.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\ios\\AppIcon-20x20@2x-1.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\ios\\AppIcon-20x20@2x.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\ios\\AppIcon-20x20@3x.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\ios\\AppIcon-29x29@1x.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\ios\\AppIcon-29x29@2x-1.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\ios\\AppIcon-29x29@2x.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\ios\\AppIcon-29x29@3x.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\ios\\AppIcon-40x40@1x.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\ios\\AppIcon-40x40@2x-1.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\ios\\AppIcon-40x40@2x.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\ios\\AppIcon-40x40@3x.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\ios\\AppIcon-512@2x.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\ios\\AppIcon-60x60@2x.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\ios\\AppIcon-60x60@3x.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\ios\\AppIcon-76x76@1x.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\ios\\AppIcon-76x76@2x.png"
+    ]
+  },
+  {
+    "kind": "image",
+    "files": [
+      "src-tauri\\icons\\ios\\AppIcon-83.5x83.5@2x.png"
+    ]
+  }
+]

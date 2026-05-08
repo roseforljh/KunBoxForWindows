@@ -16,7 +16,6 @@ fn decode_windows_output(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).trim().to_string()
 }
 
-#[cfg(windows)]
 fn ensure_u16_in_range(value: u64, field: &str) -> Result<u16, String> {
     if value == 0 || value > u16::MAX as u64 {
         return Err(format!("{} 超出有效范围", field));
@@ -24,12 +23,18 @@ fn ensure_u16_in_range(value: u64, field: &str) -> Result<u16, String> {
     Ok(value as u16)
 }
 
-#[cfg(windows)]
 fn ensure_u32_in_range(value: u64, min: u32, max: u32, field: &str) -> Result<u32, String> {
     if value < min as u64 || value > max as u64 {
         return Err(format!("{} 超出有效范围", field));
     }
     Ok(value as u32)
+}
+
+fn validate_port_pair(settings: &AppSettings) -> Result<(), String> {
+    if settings.local_port == settings.socks_port {
+        return Err("localPort 和 socksPort 不能相同".to_string());
+    }
+    Ok(())
 }
 
 /// Set or remove Windows startup registry entry
@@ -119,6 +124,8 @@ where
         if let Some(v) = obj.get("enableRuntimeLogs").and_then(|v| v.as_bool()) { current.enable_runtime_logs = v; }
     }
 
+    validate_port_pair(&current)?;
+
     let startup_changed = current.start_with_windows != old_start_with_windows;
     if startup_changed {
         set_startup(current.start_with_windows)?;
@@ -148,6 +155,7 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, Str
         let content = fs::read_to_string(&file).map_err(|e| e.to_string())?;
         let settings: AppSettings = serde_json::from_str(&content)
             .map_err(|e| format!("settings.json 格式错误: {}", e))?;
+        validate_port_pair(&settings)?;
         *state.settings.lock().await = settings.clone();
         Ok(settings)
     } else {
@@ -188,6 +196,17 @@ mod tests {
         assert_eq!(ensure_u32_in_range(5000, 1000, 30000, "timeout").unwrap(), 5000);
         assert!(ensure_u32_in_range(999, 1000, 30000, "timeout").is_err());
         assert!(ensure_u32_in_range(30001, 1000, 30000, "timeout").is_err());
+    }
+
+    #[test]
+    fn rejects_duplicate_local_and_socks_ports() {
+        let mut settings = AppSettings::default();
+        settings.local_port = 5946;
+        settings.socks_port = 5946;
+        assert!(validate_port_pair(&settings).is_err());
+
+        settings.socks_port = 5947;
+        assert!(validate_port_pair(&settings).is_ok());
     }
 
     #[tokio::test]

@@ -183,15 +183,67 @@ pub struct CommandResult {
     pub success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 impl CommandResult {
     pub fn ok() -> Self {
-        Self { success: true, error: None }
+        Self { success: true, error: None, warning: None }
+    }
+
+    pub fn ok_with_warning(msg: impl Into<String>) -> Self {
+        Self { success: true, error: None, warning: Some(msg.into()) }
     }
 
     pub fn err(msg: impl Into<String>) -> Self {
-        Self { success: false, error: Some(msg.into()) }
+        Self { success: false, error: Some(msg.into()), warning: None }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeLatencyStatus {
+    Success,
+    Timeout,
+    ControllerUnavailable,
+    LocalTestFailed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NodeLatencyResult {
+    pub status: NodeLatencyStatus,
+    #[serde(rename = "latencyMs", skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<i64>,
+}
+
+impl NodeLatencyResult {
+    pub fn success(latency_ms: i64) -> Self {
+        Self {
+            status: NodeLatencyStatus::Success,
+            latency_ms: Some(latency_ms),
+        }
+    }
+
+    pub fn timeout() -> Self {
+        Self {
+            status: NodeLatencyStatus::Timeout,
+            latency_ms: None,
+        }
+    }
+
+    pub fn controller_unavailable() -> Self {
+        Self {
+            status: NodeLatencyStatus::ControllerUnavailable,
+            latency_ms: None,
+        }
+    }
+
+    pub fn local_test_failed() -> Self {
+        Self {
+            status: NodeLatencyStatus::LocalTestFailed,
+            latency_ms: None,
+        }
     }
 }
 

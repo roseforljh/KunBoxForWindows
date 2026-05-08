@@ -99,6 +99,13 @@ export interface AppSettings {
   enableRuntimeLogs: boolean
 }
 
+export type NodeLatencyStatus = 'success' | 'timeout' | 'controller_unavailable' | 'local_test_failed'
+
+export interface NodeLatencyResult {
+  status: NodeLatencyStatus
+  latencyMs?: number | null
+}
+
 export interface RuleSet {
   id: string
   tag: string

@@ -1,7 +1,7 @@
 // Tauri API adapter - provides the same interface as Electron's window.api
 import { invoke } from '@tauri-apps/api/core';
 import { listen, emit } from '@tauri-apps/api/event';
-import type { AppSettings, Profile, SingBoxOutbound, ProxyState, TrafficStats, LogEntry, DomainRule, CustomRules, NodeWithProfile } from './types';
+import type { AppSettings, Profile, SingBoxOutbound, ProxyState, TrafficStats, LogEntry, DomainRule, CustomRules, NodeWithProfile, NodeLatencyResult } from './types';
 
 function bindUnlisten(unlistenPromise: Promise<() => void>) {
   let cancelled = false;
@@ -30,9 +30,9 @@ function bindUnlisten(unlistenPromise: Promise<() => void>) {
 
 export const api = {
   singbox: {
-    start: () => invoke<{ success: boolean; error?: string }>('singbox_start'),
-    stop: () => invoke<{ success: boolean; error?: string }>('singbox_stop'),
-    restart: () => invoke<{ success: boolean; error?: string }>('singbox_restart'),
+    start: () => invoke<{ success: boolean; error?: string; warning?: string }>('singbox_start'),
+    stop: () => invoke<{ success: boolean; error?: string; warning?: string }>('singbox_stop'),
+    restart: () => invoke<{ success: boolean; error?: string; warning?: string }>('singbox_restart'),
     switchNode: (nodeTag: string) => invoke<{ success: boolean; error?: string }>('singbox_switch_node', { nodeTag }),
     enableSystemProxy: (port?: number) => invoke<{ success: boolean; error?: string }>('singbox_enable_system_proxy', { port }),
     disableSystemProxy: () => invoke<{ success: boolean; error?: string }>('singbox_disable_system_proxy'),
@@ -156,7 +156,7 @@ export const api = {
       return invoke('node_add', { link, profileId });
     },
     beginLatencyTests: (runId: number): Promise<void> => invoke('node_begin_latency_tests', { runId }),
-    testLatency: (tag: string, runId?: number): Promise<number> => invoke<number>('node_test_latency', { tag, runId }),
+    testLatency: (tag: string, runId?: number): Promise<NodeLatencyResult> => invoke<NodeLatencyResult>('node_test_latency', { tag, runId }),
     testAll: (): Promise<Record<string, number>> => invoke('node_test_all'),
     cancelLatencyTests: (runId?: number): Promise<void> => invoke('node_cancel_latency_tests', { runId }),
     delete: (tag: string): Promise<void> => invoke('node_delete', { tag }),

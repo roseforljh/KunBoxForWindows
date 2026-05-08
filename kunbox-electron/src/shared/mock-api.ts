@@ -1,5 +1,5 @@
 // Mock API for browser-only environments (dev/QA testing without Tauri/Electron)
-import type { AppSettings, Profile, SingBoxOutbound, TrafficStats, LogEntry, DomainRule, CustomRules, NodeWithProfile } from './types'
+import type { AppSettings, Profile, SingBoxOutbound, TrafficStats, LogEntry, DomainRule, CustomRules, NodeWithProfile, NodeLatencyResult } from './types'
 
 const noop = () => {}
 const noopUnlisten = () => noop
@@ -133,7 +133,10 @@ export const mockApi = {
     setActive: (_tag: string): Promise<void> => Promise.resolve(),
     add: (_link: string, _target?: any): Promise<SingBoxOutbound> =>
       Promise.resolve({ tag: '新节点', type: 'shadowsocks', server: 'new.example.com', server_port: 443 }),
-    testLatency: (_tag: string): Promise<number> => Promise.resolve(Math.floor(Math.random() * 200) + 50),
+    testLatency: (_tag: string): Promise<NodeLatencyResult> => Promise.resolve({
+      status: 'success',
+      latencyMs: Math.floor(Math.random() * 200) + 50,
+    }),
     testAll: (): Promise<Record<string, number>> => {
       const result: Record<string, number> = {}
       mockNodes.forEach((n) => {

@@ -153,7 +153,11 @@ function ToastProviderInner({
       const result = await window.api.singbox.restart()
       if (result.success) {
         setNeedsRestart(false)
-        showToast('VPN 已重启', 'success')
+        if (result.warning) {
+          showToast(result.warning, 'warning')
+        } else {
+          showToast('VPN 已重启', 'success')
+        }
       } else {
         showToast(`重启失败: ${result.error}`, 'error')
       }

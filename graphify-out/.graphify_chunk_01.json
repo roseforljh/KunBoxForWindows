@@ -1,0 +1,820 @@
+{
+  "nodes": [
+    {
+      "id": "graph_report_kunbox",
+      "label": "KunBox Graph Report",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "concept_kunbox_logo_system",
+      "label": "KunBox Logo System",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "concept_generate_config",
+      "label": "generate_config()",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "concept_load_profiles_data",
+      "label": "load_profiles_data()",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "brand_ios_icon_set",
+      "label": "iOS App Icon Set",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "concept_singbox_start_impl",
+      "label": "singbox_start_impl()",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "brand_app_icon_set",
+      "label": "App Icon Asset Set",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "concept_start_temp_singbox",
+      "label": "start_temp_singbox()",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "concept_kernel_download",
+      "label": "kernel_download()",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "concept_cleanup_temp_singbox",
+      "label": "cleanup_temp_singbox()",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "concept_save_profiles_data",
+      "label": "save_profiles_data()",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "issue_wrong_cache_clear_path",
+      "label": "Wrong Cache Clear Path",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "concept_graphify_knowledge_graph",
+      "label": "graphify Knowledge Graph",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "concept_windows_powershell_workflow",
+      "label": "Windows PowerShell Workflow",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "concept_tauri_react_stack",
+      "label": "Tauri React Stack",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "concept_frontend_backend_split",
+      "label": "Frontend Backend Split",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "issue_stale_latency_cache",
+      "label": "Stale Persisted Latency Cache",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "concept_node_management",
+      "label": "Node Management",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "concept_profile_management",
+      "label": "Profile Management",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "concept_rule_management",
+      "label": "Rule Management",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "concept_tun_mode",
+      "label": "Tun Mode",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "issue_settings_state_drift",
+      "label": "Settings State Drift",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "concept_kunbox_audit_findings",
+      "label": "KunBox Audit Findings",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "concept_graph_rebuild_rule",
+      "label": "Graph Rebuild Rule",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "concept_singbox_proxy_client",
+      "label": "sing-box Proxy Client",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "community_profiles_subscription_flow",
+      "label": "Profiles Subscription Flow",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "community_singbox_runtime_control",
+      "label": "Singbox Runtime Control",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "community_node_ui_shared_types",
+      "label": "Node UI And Shared Types",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "community_kernel_download_cache",
+      "label": "Kernel Download And Cache",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "community_app_shell_dashboard",
+      "label": "App Shell And Dashboard",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "community_rule_commands_persistence",
+      "label": "Rule Commands And Persistence",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "community_icon_asset_system",
+      "label": "Icon Asset System",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "community_ruleset_management",
+      "label": "Ruleset Management Flow",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "community_project_docs_audit",
+      "label": "Project Docs And Audit",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "community_tauri_app_bootstrap",
+      "label": "Tauri App Bootstrap",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "community_profile_import_modal",
+      "label": "Profile Import Modal",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "entity_proxy_state",
+      "label": "ProxyState",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "entity_traffic_stats",
+      "label": "TrafficStats",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "entity_profile",
+      "label": "Profile",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "entity_singbox_outbound",
+      "label": "SingBoxOutbound",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "entity_ruleset",
+      "label": "RuleSet",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "brand_android_icon_set",
+      "label": "Android Launcher Icon Set",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "concept_kunbox",
+      "label": "KunBox",
+      "file_type": "document",
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": "2026-04-12",
+      "author": null,
+      "contributor": null
+    }
+  ],
+  "edges": [
+    {
+      "source": "graph_report_kunbox",
+      "target": "concept_kunbox_logo_system",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "graph_report_kunbox",
+      "target": "concept_generate_config",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "graph_report_kunbox",
+      "target": "concept_load_profiles_data",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "graph_report_kunbox",
+      "target": "brand_ios_icon_set",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "graph_report_kunbox",
+      "target": "concept_singbox_start_impl",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "graph_report_kunbox",
+      "target": "brand_app_icon_set",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "graph_report_kunbox",
+      "target": "concept_start_temp_singbox",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "graph_report_kunbox",
+      "target": "concept_kernel_download",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "graph_report_kunbox",
+      "target": "concept_cleanup_temp_singbox",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "graph_report_kunbox",
+      "target": "concept_save_profiles_data",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "issue_wrong_cache_clear_path",
+      "target": "concept_kunbox",
+      "relation": "rationale_for",
+      "confidence": "INFERRED",
+      "confidence_score": 0.8,
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "concept_graphify_knowledge_graph",
+      "target": "concept_kunbox",
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.7,
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "concept_windows_powershell_workflow",
+      "target": "concept_kunbox",
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.7,
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "concept_tauri_react_stack",
+      "target": "concept_frontend_backend_split",
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.7,
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "issue_stale_latency_cache",
+      "target": "concept_node_management",
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.7,
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "community_profiles_subscription_flow",
+      "target": "concept_profile_management",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "community_singbox_runtime_control",
+      "target": "concept_singbox_start_impl",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "community_singbox_runtime_control",
+      "target": "concept_start_temp_singbox",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "community_kernel_download_cache",
+      "target": "concept_kernel_download",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "community_icon_asset_system",
+      "target": "concept_kunbox_logo_system",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "community_icon_asset_system",
+      "target": "brand_app_icon_set",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "community_icon_asset_system",
+      "target": "brand_android_icon_set",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "community_icon_asset_system",
+      "target": "brand_ios_icon_set",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "community_project_docs_audit",
+      "target": "concept_kunbox_audit_findings",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "community_project_docs_audit",
+      "target": "concept_graphify_knowledge_graph",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "community_tauri_app_bootstrap",
+      "target": "concept_tauri_react_stack",
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.8,
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "entity_proxy_state",
+      "target": "community_singbox_runtime_control",
+      "relation": "conceptually_related_to",
+      "confidence": "AMBIGUOUS",
+      "confidence_score": 0.2,
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "entity_traffic_stats",
+      "target": "community_singbox_runtime_control",
+      "relation": "conceptually_related_to",
+      "confidence": "AMBIGUOUS",
+      "confidence_score": 0.2,
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "entity_profile",
+      "target": "community_profiles_subscription_flow",
+      "relation": "conceptually_related_to",
+      "confidence": "AMBIGUOUS",
+      "confidence_score": 0.2,
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "entity_singbox_outbound",
+      "target": "community_singbox_runtime_control",
+      "relation": "conceptually_related_to",
+      "confidence": "AMBIGUOUS",
+      "confidence_score": 0.2,
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "entity_ruleset",
+      "target": "community_ruleset_management",
+      "relation": "conceptually_related_to",
+      "confidence": "AMBIGUOUS",
+      "confidence_score": 0.2,
+      "source_file": "graphify-out/GRAPH_REPORT.md",
+      "source_location": null,
+      "weight": 1.0
+    }
+  ],
+  "hyperedges": [
+    {
+      "id": "core_feature_set",
+      "label": "Core Feature Set",
+      "nodes": ["concept_profile_management", "concept_node_management", "concept_rule_management", "concept_tun_mode"],
+      "relation": "participate_in",
+      "confidence": "INFERRED",
+      "confidence_score": 0.82,
+      "source_file": "graphify-out/GRAPH_REPORT.md"
+    },
+    {
+      "id": "audit_risk_cluster",
+      "label": "Audit Risk Cluster",
+      "nodes": ["issue_wrong_cache_clear_path", "issue_stale_latency_cache", "issue_settings_state_drift"],
+      "relation": "form",
+      "confidence": "INFERRED",
+      "confidence_score": 0.79,
+      "source_file": "graphify-out/GRAPH_REPORT.md"
+    },
+    {
+      "id": "platform_icon_family",
+      "label": "Platform Icon Family",
+      "nodes": ["concept_kunbox_logo_system", "brand_app_icon_set", "brand_android_icon_set", "brand_ios_icon_set"],
+      "relation": "form",
+      "confidence": "INFERRED",
+      "confidence_score": 0.87,
+      "source_file": "graphify-out/GRAPH_REPORT.md"
+    }
+  ],
+  "input_tokens": 0,
+  "output_tokens": 0
+}

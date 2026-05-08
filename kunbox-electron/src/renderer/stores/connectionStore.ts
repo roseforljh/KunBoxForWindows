@@ -14,8 +14,8 @@ interface ConnectionState {
   setCurrentNode: (name: string | null) => void
   setCurrentProfile: (name: string | null) => void
   setNeedsRestart: (needs: boolean) => void
-  connect: () => Promise<{ success: boolean; error?: string }>
-  disconnect: () => Promise<{ success: boolean; error?: string }>
+  connect: () => Promise<{ success: boolean; error?: string; warning?: string }>
+  disconnect: () => Promise<{ success: boolean; error?: string; warning?: string }>
 }
 
 export const useConnectionStore = create<ConnectionState>((set, get) => ({
@@ -46,7 +46,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
         return { success: false, error: result.error }
       }
       set({ needsRestart: false })
-      return { success: true }
+        return { success: true, warning: result.warning }
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err)
       set({ state: 'error', lastError: error })

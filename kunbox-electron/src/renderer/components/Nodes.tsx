@@ -8,11 +8,12 @@ import { NodeDetailModal } from './ui/NodeDetailModal'
 import { NodeFilterModal } from './ui/NodeFilterModal'
 import { AddNodeModal } from './ui/AddNodeModal'
 import { useToast } from './ui/Toast'
-import type { SingBoxOutbound } from '@shared/types'
+import type { NodeLatencyStatus, SingBoxOutbound } from '@shared/types'
 import { useProfiles } from '../lib/useProfiles'
 
 interface NodeItem extends SingBoxOutbound {
   latencyMs?: number | null
+  latencyStatus?: NodeLatencyStatus
   isTimeout?: boolean
   isTesting?: boolean
 }
@@ -141,8 +142,11 @@ export default function Nodes() {
     return map[type?.toLowerCase() || ''] || type?.toUpperCase() || 'Unknown'
   }
 
-  const getLatencyColor = (latency?: number | null, isTimeout?: boolean) => {
-    if (isTimeout) return 'text-red-400'
+  const getLatencyColor = (latency?: number | null, status?: NodeLatencyStatus, isTimeout?: boolean) => {
+    const effectiveStatus = status ?? (isTimeout ? 'timeout' : undefined)
+    if (effectiveStatus === 'timeout') return 'text-red-400'
+    if (effectiveStatus === 'controller_unavailable') return 'text-orange-400'
+    if (effectiveStatus === 'local_test_failed') return 'text-purple-400'
     if (!latency || latency < 0) return 'text-text-muted'
     if (latency < 500) return 'text-green-400'
     if (latency < 1500) return 'text-yellow-400'
@@ -150,7 +154,10 @@ export default function Nodes() {
   }
 
   const getLatencyDisplay = (node: NodeItem) => {
-    if (node.isTimeout) return '超时'
+    const effectiveStatus = node.latencyStatus ?? (node.isTimeout ? 'timeout' : undefined)
+    if (effectiveStatus === 'timeout') return '超时'
+    if (effectiveStatus === 'controller_unavailable') return '控制器异常'
+    if (effectiveStatus === 'local_test_failed') return '本地失败'
     if (node.latencyMs && node.latencyMs > 0) return `${node.latencyMs}ms`
     return '延迟'
   }
@@ -373,7 +380,7 @@ export default function Nodes() {
                       className={cn(
                         'text-xs font-bold font-mono flex items-center gap-1 px-2 py-1 rounded-lg transition-all duration-200',
                         'hover:bg-[var(--bg-elevated)] active:scale-95',
-                        getLatencyColor(node.latencyMs, node.isTimeout)
+                        getLatencyColor(node.latencyMs, node.latencyStatus, node.isTimeout)
                       )}
                     >
                       <Zap className="w-3 h-3" />

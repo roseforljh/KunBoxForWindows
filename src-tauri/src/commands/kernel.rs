@@ -102,7 +102,7 @@ fn resolve_kernel_dir(app: &AppHandle) -> Result<PathBuf, String> {
         return Ok(bundle_dir);
     }
 
-    Ok(data_dir)
+    Err("未检测到 sing-box 内核，请先到【设置 → 内核】下载并安装。".to_string())
 }
 
 fn get_kernel_dir_for_install(app: &AppHandle) -> Result<PathBuf, String> {
