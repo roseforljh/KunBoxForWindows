@@ -223,6 +223,37 @@ export const api = {
     }
   },
 
+  plugin: {
+    getXrayLocalVersion: () => invoke<{ version: string; versionDetail: string } | null>('plugin_get_xray_local_version'),
+    getXrayRemoteReleases: () => invoke<Array<{
+      version: string;
+      tagName: string;
+      publishedAt: string;
+      isPrerelease: boolean;
+      downloadUrl: string;
+      assetName: string;
+    }>>('plugin_get_xray_remote_releases', { includePrerelease: false }),
+    downloadXray: (tagName: string) => invoke<{ success: boolean }>('plugin_download_xray', { tagName }),
+    openDirectory: () => invoke('plugin_open_directory'),
+    openXrayReleasesPage: () => invoke('plugin_open_xray_releases_page'),
+    onDownloadProgress: (callback: (progress: { downloaded: number; total: number; percent: number }) => void) => {
+      const unlisten = listen<{ downloaded: number; total: number; percent: number }>('plugin:download-progress', (event) => {
+        callback(event.payload);
+      });
+      return bindUnlisten(unlisten);
+    },
+    onDownloadComplete: (callback: () => void) => {
+      const unlisten = listen('plugin:download-complete', () => callback());
+      return bindUnlisten(unlisten);
+    },
+    onDownloadError: (callback: (error: string) => void) => {
+      const unlisten = listen<string>('plugin:download-error', (event) => {
+        callback(event.payload);
+      });
+      return bindUnlisten(unlisten);
+    }
+  },
+
   ruleset: {
     list: () => invoke<any[]>('ruleset_list'),
     save: (ruleSets: any[]) => invoke('ruleset_save', { rulesets: ruleSets }),

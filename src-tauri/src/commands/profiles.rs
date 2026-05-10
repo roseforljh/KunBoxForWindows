@@ -1,6 +1,7 @@
 use tauri::{AppHandle, Manager, State};
 use std::collections::HashSet;
 use std::fs;
+use std::io::Write;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -16,8 +17,10 @@ use std::os::windows::process::CommandExt;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 // Temporary sing-box for latency testing
-static TEMP_SINGBOX_PROCESS: once_cell::sync::Lazy<Arc<Mutex<Option<tokio::process::Child>>>> = 
+static TEMP_SINGBOX_PROCESS: once_cell::sync::Lazy<Arc<Mutex<Option<tokio::process::Child>>>> =
     once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(None)));
+static TEMP_XRAY_PROCESSES: once_cell::sync::Lazy<Arc<Mutex<Vec<tokio::process::Child>>>> =
+    once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(Vec::new())));
 static TEMP_SINGBOX_TAG_MAP: once_cell::sync::Lazy<Arc<Mutex<std::collections::HashMap<String, Vec<String>>>>> =
     once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(std::collections::HashMap::new())));
 static TEMP_SINGBOX_ACTIVE_TESTS: once_cell::sync::Lazy<Arc<Mutex<usize>>> =
@@ -32,6 +35,7 @@ static CANCELED_LATENCY_BATCHES: once_cell::sync::Lazy<Arc<Mutex<HashSet<u64>>>>
     once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(HashSet::new())));
 pub(crate) const ECH_DNS_SERVER_META_KEY: &str = "x_kunbox_ech_dns_server";
 const TEMP_SINGBOX_PORT: u16 = 19090;
+const TEMP_XRAY_BRIDGE_PORT_BASE: u16 = 19180;
 
 #[derive(Debug, PartialEq, Eq)]
 enum LatencyTestBackend {
@@ -98,18 +102,26 @@ async fn test_latency_via_temp_backend(
     cancel_token: CancellationToken,
     allow_main_process_alive: bool,
 ) -> NodeLatencyResult {
-    let started = start_temp_singbox(app, state, &cancel_token, allow_main_process_alive).await;
-    if !started {
-        log::warn!("Temp sing-box not available for latency test: {}", tag);
-        return NodeLatencyResult::local_test_failed();
-    }
-
+    append_latency_diagnostic(state, &format!("latency test requested for tag='{}', test_url='{}', timeout_ms={}", tag, test_url, timeout_ms));
     if is_latency_test_batch_cancelled(run_id).await {
         return NodeLatencyResult::local_test_failed();
     }
 
     if !acquire_temp_singbox_test_slot(run_id).await {
         log::debug!("Temp sing-box slot owner changed before testing '{}', skipping stale request", tag);
+        return NodeLatencyResult::local_test_failed();
+    }
+
+    let started = start_temp_singbox(app, state, &cancel_token, allow_main_process_alive).await;
+    if !started {
+        append_latency_diagnostic(state, &format!("temp sing-box failed to start for tag='{}'", tag));
+        log::warn!("Temp sing-box not available for latency test: {}", tag);
+        release_temp_singbox_test_slot(state, run_id).await;
+        return NodeLatencyResult::local_test_failed();
+    }
+
+    if is_latency_test_batch_cancelled(run_id).await {
+        release_temp_singbox_test_slot(state, run_id).await;
         return NodeLatencyResult::local_test_failed();
     }
 
@@ -120,6 +132,7 @@ async fn test_latency_via_temp_backend(
     } {
         Some(temp_tag) => temp_tag,
         None => {
+            append_latency_diagnostic(state, &format!("temp tag mapping missing for tag='{}'", tag));
             log::warn!("Temp Clash API tag mapping missing for '{}'", tag);
             release_temp_singbox_test_slot(state, run_id).await;
             return NodeLatencyResult::local_test_failed();
@@ -133,6 +146,7 @@ async fn test_latency_via_temp_backend(
         timeout_ms,
         cancel_token,
     ).await;
+    append_latency_diagnostic(state, &format!("latency raw result for tag='{}', temp_tag='{}': {:?}", tag, temp_tag, result));
     release_temp_singbox_test_slot(state, run_id).await;
     map_latency_probe_result(result, NodeLatencyStatus::LocalTestFailed)
 }
@@ -144,7 +158,65 @@ fn remove_temp_singbox_dir(path: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
+fn append_latency_diagnostic(state: &AppState, message: &str) {
+    let _ = fs::create_dir_all(&state.data_dir);
+    let path = state.data_dir.join("latency-diagnostics.log");
+    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
+        let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+        let _ = writeln!(file, "[{}] {}", ts, message);
+    }
+}
+
+fn append_temp_latency_logs(state: &AppState) {
+    let temp_dir = temp_singbox_dir(state);
+    if !temp_dir.exists() {
+        return;
+    }
+
+    append_latency_diagnostic(state, &format!("collecting temp latency logs from {:?}", temp_dir));
+    let log_names = [
+        "temp-singbox.out.log",
+        "temp-singbox.err.log",
+        "plugin_bridges.json",
+        "config.json",
+    ];
+
+    for name in log_names {
+        let path = temp_dir.join(name);
+        if let Ok(content) = fs::read_to_string(&path) {
+            append_latency_diagnostic(
+                state,
+                &format!("===== {} =====\n{}\n===== end {} =====", name, content, name),
+            );
+        }
+    }
+
+    if let Ok(entries) = fs::read_dir(&temp_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if !file_name.starts_with("plugin-xray-temp-") {
+                continue;
+            }
+            if let Ok(content) = fs::read_to_string(&path) {
+                append_latency_diagnostic(
+                    state,
+                    &format!("===== {} =====\n{}\n===== end {} =====", file_name, content, file_name),
+                );
+            }
+        }
+    }
+}
+
 async fn cleanup_temp_singbox_process() {
+    let mut xray_processes = TEMP_XRAY_PROCESSES.lock().await;
+    for mut child in xray_processes.drain(..) {
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+    }
+
     let mut process = TEMP_SINGBOX_PROCESS.lock().await;
     if let Some(mut child) = process.take() {
         let _ = child.kill().await;
@@ -162,6 +234,8 @@ async fn acquire_temp_singbox_test_slot(run_id: Option<u64>) -> bool {
 
     if *active == 0 {
         *owner = run_id;
+    } else if run_id.is_none() {
+        return false;
     }
 
     if *owner != run_id {
@@ -274,8 +348,13 @@ fn make_temp_latency_tag(index: usize) -> String {
     format!("latency-{:04}", index)
 }
 
+fn temp_xray_bridge_port(index: usize) -> u16 {
+    TEMP_XRAY_BRIDGE_PORT_BASE.saturating_add(index as u16)
+}
+
 pub(crate) async fn cleanup_temp_singbox(state: &AppState) {
     cleanup_temp_singbox_process().await;
+    append_temp_latency_logs(state);
     clear_temp_singbox_tag_map().await;
     *TEMP_SINGBOX_ACTIVE_TESTS.lock().await = 0;
     *TEMP_SINGBOX_OWNER_BATCH_ID.lock().await = None;
@@ -380,7 +459,7 @@ pub async fn profile_add(
     dns_server: Option<String>,
 ) -> Result<Profile, String> {
     let nodes = fetch_subscription(&url).await?;
-    
+
     let profile = Profile {
         id: Uuid::new_v4().to_string(),
         name: name.unwrap_or_else(|| extract_hostname(&url)),
@@ -415,13 +494,13 @@ pub async fn profile_update(state: State<'_, AppState>, id: String) -> Result<Pr
 
     let url = data.profiles[profile_idx].url.clone();
     let nodes = fetch_subscription(&url).await?;
-    
+
     data.profiles[profile_idx].last_update = Some(chrono::Utc::now().timestamp_millis() as u64);
     data.profiles[profile_idx].node_count = nodes.len() as u32;
-    
+
     save_profile_nodes(&state, &id, &nodes)?;
     save_profiles_data(&state, &data)?;
-    
+
     let profile = data.profiles[profile_idx].clone();
     *state.profiles_data.lock().await = data;
     Ok(profile)
@@ -431,7 +510,7 @@ pub async fn profile_update(state: State<'_, AppState>, id: String) -> Result<Pr
 pub async fn profile_delete(state: State<'_, AppState>, id: String) -> Result<(), String> {
     let mut data = load_profiles_data(&state);
     data.profiles.retain(|p| p.id != id);
-    
+
     let config_file = profile_nodes_path(&state, &id)?;
     let _ = fs::remove_file(config_file);
 
@@ -457,15 +536,15 @@ pub async fn profile_set_active(state: State<'_, AppState>, id: String) -> Resul
     if !data.profiles.iter().any(|p| p.id == id) {
         return Err("Profile not found".to_string());
     }
-    
+
     // Save current profile's node selection before switching
     if let (Some(old_id), Some(old_tag)) = (&data.active_profile_id, &data.active_node_tag) {
         data.node_selections.insert(old_id.clone(), old_tag.clone());
     }
-    
+
     data.active_profile_id = Some(id.clone());
     let nodes = load_profile_nodes(&state, &id);
-    
+
     // Restore saved node selection if the node still exists, otherwise fallback to first node
     data.active_node_tag = data.node_selections.get(&id)
         .and_then(|saved_tag| {
@@ -473,7 +552,7 @@ pub async fn profile_set_active(state: State<'_, AppState>, id: String) -> Resul
                 .then(|| saved_tag.clone())
         })
         .or_else(|| nodes.first().and_then(|n| n.tag.clone()));
-    
+
     save_profiles_data(&state, &data)?;
     *state.profiles_data.lock().await = data;
     Ok(())
@@ -549,11 +628,11 @@ pub async fn node_set_active(state: State<'_, AppState>, tag: String) -> Result<
 pub async fn node_delete(state: State<'_, AppState>, tag: String) -> Result<(), String> {
     let mut data = load_profiles_data(&state);
     let profile_id = data.active_profile_id.clone().ok_or("No active profile")?;
-    
+
     let mut nodes = load_profile_nodes(&state, &profile_id);
     let original_len = nodes.len();
     nodes.retain(|n| n.tag.as_ref() != Some(&tag));
-    
+
     if nodes.len() == original_len {
         return Err("Node not found".to_string());
     }
@@ -588,7 +667,7 @@ pub struct NodeWithProfile {
 pub async fn node_list_all(state: State<'_, AppState>) -> Result<Vec<NodeWithProfile>, String> {
     let data = load_profiles_data(&state);
     let mut all_nodes = Vec::new();
-    
+
     for profile in &data.profiles {
         if !profile.enabled {
             continue;
@@ -602,7 +681,7 @@ pub async fn node_list_all(state: State<'_, AppState>) -> Result<Vec<NodeWithPro
             });
         }
     }
-    
+
     Ok(all_nodes)
 }
 
@@ -686,7 +765,7 @@ fn parse_subscription_content(content: &str) -> Result<Vec<SingBoxOutbound>, Str
         .lines()
         .filter_map(|line| parse_node_link(line.trim()))
         .collect();
-    
+
     if nodes.is_empty() {
         Err("No valid nodes found".to_string())
     } else {
@@ -704,7 +783,7 @@ fn parse_clash_proxies(proxies: &[serde_json::Value]) -> Result<Vec<SingBoxOutbo
             let port = p.get("port")?.as_u64()? as u16;
 
             let mut extra = serde_json::Map::new();
-            
+
             // Basic fields
             if let Some(username) = p.get("username").and_then(|v| v.as_str()) {
                 extra.insert("username".to_string(), serde_json::Value::String(username.to_string()));
@@ -718,14 +797,14 @@ fn parse_clash_proxies(proxies: &[serde_json::Value]) -> Result<Vec<SingBoxOutbo
             if let Some(flow) = p.get("flow").and_then(|v| v.as_str()) {
                 extra.insert("flow".to_string(), serde_json::Value::String(flow.to_string()));
             }
-            
+
             // Method only for shadowsocks
             if proxy_type == "shadowsocks" || proxy_type == "shadowsocksr" {
                 if let Some(method) = p.get("method").or(p.get("cipher")).and_then(|v| v.as_str()) {
                     extra.insert("method".to_string(), serde_json::Value::String(method.to_string()));
                 }
             }
-            
+
             // VMess specific
             if proxy_type == "vmess" {
                 extra.insert("security".to_string(), serde_json::Value::String(
@@ -735,12 +814,20 @@ fn parse_clash_proxies(proxies: &[serde_json::Value]) -> Result<Vec<SingBoxOutbo
                     extra.insert("alter_id".to_string(), serde_json::Value::Number(aid.into()));
                 }
             }
-            
+
             // VLESS specific
             if proxy_type == "vless" {
                 extra.insert("packet_encoding".to_string(), serde_json::Value::String("xudp".to_string()));
+                if let Some(encryption) = p
+                    .get("extra")
+                    .and_then(|value| value.get("encryption"))
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty())
+                {
+                    extra.insert("encryption".to_string(), serde_json::Value::String(encryption.to_string()));
+                }
             }
-            
+
             // TLS configuration
             let network = p.get("network").and_then(|v| v.as_str()).unwrap_or("tcp");
             let tls_enabled = p.get("tls").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -760,12 +847,12 @@ fn parse_clash_proxies(proxies: &[serde_json::Value]) -> Result<Vec<SingBoxOutbo
                     servername.unwrap_or(&server).to_string()
                 ));
                 tls.insert("insecure".to_string(), serde_json::Value::Bool(skip_cert));
-                
+
                 // ALPN
                 if let Some(alpn) = p.get("alpn").and_then(|v| v.as_array()) {
                     tls.insert("alpn".to_string(), serde_json::Value::Array(alpn.clone()));
                 }
-                
+
                 // Client fingerprint (uTLS)
                 if let Some(fp) = p.get("client-fingerprint").and_then(|v| v.as_str()) {
                     tls.insert("utls".to_string(), serde_json::json!({
@@ -773,7 +860,7 @@ fn parse_clash_proxies(proxies: &[serde_json::Value]) -> Result<Vec<SingBoxOutbo
                         "fingerprint": fp
                     }));
                 }
-                
+
                 // Reality
                 if let Some(reality_opts) = p.get("reality-opts").and_then(|v| v.as_object()) {
                     let mut reality = serde_json::Map::new();
@@ -786,10 +873,10 @@ fn parse_clash_proxies(proxies: &[serde_json::Value]) -> Result<Vec<SingBoxOutbo
                     }
                     tls.insert("reality".to_string(), serde_json::Value::Object(reality));
                 }
-                
+
                 extra.insert("tls".to_string(), serde_json::Value::Object(tls));
             }
-            
+
             // Transport configuration
             match network {
                 "ws" => {
@@ -843,6 +930,34 @@ fn parse_clash_proxies(proxies: &[serde_json::Value]) -> Result<Vec<SingBoxOutbo
                     }
                     extra.insert("transport".to_string(), serde_json::Value::Object(transport));
                 }
+                "xhttp" => {
+                    let xhttp_opts = p.get("xhttp-opts").and_then(|v| v.as_object());
+                    let mut transport = serde_json::Map::new();
+                    transport.insert("type".to_string(), serde_json::Value::String("xhttp".to_string()));
+
+                    if let Some(path) = xhttp_opts.and_then(|o| o.get("path")).and_then(|v| v.as_str()) {
+                        transport.insert("path".to_string(), serde_json::Value::String(path.to_string()));
+                    }
+                    if let Some(mode) = xhttp_opts.and_then(|o| o.get("mode")).and_then(|v| v.as_str()) {
+                        transport.insert("mode".to_string(), serde_json::Value::String(mode.to_string()));
+                    }
+                    if let Some(extra_field) = xhttp_opts.and_then(|o| o.get("extra")) {
+                        if let Some(extra_obj) = extra_field.as_object() {
+                            let mut transport_extra = extra_obj.clone();
+                            transport_extra.remove("encryption");
+                            if !transport_extra.is_empty() {
+                                transport.insert("extra".to_string(), serde_json::Value::Object(transport_extra));
+                            }
+                        } else {
+                            transport.insert("extra".to_string(), extra_field.clone());
+                        }
+                    }
+                    if let Some(headers) = xhttp_opts.and_then(|o| o.get("headers")).and_then(|v| v.as_object()) {
+                        transport.insert("headers".to_string(), serde_json::Value::Object(headers.clone()));
+                    }
+
+                    extra.insert("transport".to_string(), serde_json::Value::Object(transport));
+                }
                 _ => {}
             }
 
@@ -864,7 +979,7 @@ fn parse_clash_proxies(proxies: &[serde_json::Value]) -> Result<Vec<SingBoxOutbo
             })
         })
         .collect();
-    
+
     Ok(nodes)
 }
 
@@ -906,25 +1021,25 @@ fn parse_ss_link(link: &str) -> Option<SingBoxOutbound> {
     let rest = link.strip_prefix("ss://")?;
     let (encoded, tag) = rest.split_once('#').unwrap_or((rest, "SS"));
     let tag = urlencoding::decode(tag).ok()?.to_string();
-    
+
     let parts: Vec<&str> = encoded.split('@').collect();
     if parts.len() != 2 {
         return None;
     }
-    
+
     let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, parts[0]).ok()?;
     let decoded_str = String::from_utf8(decoded).ok()?;
     let (method, password) = decoded_str.split_once(':')?;
-    
+
     let host_port: Vec<&str> = parts[1].split(':').collect();
     if host_port.len() != 2 {
         return None;
     }
-    
+
     let mut extra = std::collections::HashMap::new();
     extra.insert("method".to_string(), serde_json::Value::String(method.to_string()));
     extra.insert("password".to_string(), serde_json::Value::String(password.to_string()));
-    
+
     Some(SingBoxOutbound {
         tag: Some(tag),
         outbound_type: Some("shadowsocks".to_string()),
@@ -978,10 +1093,10 @@ fn parse_vless_link(link: &str) -> Option<SingBoxOutbound> {
     let rest = link.strip_prefix("vless://")?;
     let (main_part, tag) = rest.split_once('#').unwrap_or((rest, "VLESS"));
     let tag = urlencoding::decode(tag).ok()?.to_string();
-    
+
     let (user_host, query) = main_part.split_once('?').unwrap_or((main_part, ""));
     let (uuid, host_port) = user_host.split_once('@')?;
-    
+
     let (server, port_str) = if host_port.starts_with('[') {
         // IPv6
         let end = host_port.find("]:")?;
@@ -990,13 +1105,13 @@ fn parse_vless_link(link: &str) -> Option<SingBoxOutbound> {
         host_port.rsplit_once(':')?
     };
     let port: u16 = port_str.parse().ok()?;
-    
+
     let params: std::collections::HashMap<String, String> = query
         .split('&')
         .filter_map(|p| p.split_once('='))
         .map(|(k, v)| (k.to_string(), urlencoding::decode(v).unwrap_or_default().to_string()))
         .collect();
-    
+
     let mut extra = std::collections::HashMap::new();
     extra.insert("uuid".to_string(), serde_json::Value::String(uuid.to_string()));
     extra.insert("packet_encoding".to_string(), serde_json::Value::String("xudp".to_string()));
@@ -1004,19 +1119,36 @@ fn parse_vless_link(link: &str) -> Option<SingBoxOutbound> {
     let ech = params.get("ech").map(|value| value.trim()).filter(|value| !value.is_empty());
     let ech_public_name = ech.and_then(extract_ech_public_name);
     let ech_dns_server = ech.and_then(extract_ech_dns_server);
-    
+
     if let Some(flow) = params.get("flow") {
         if !flow.is_empty() {
             extra.insert("flow".to_string(), serde_json::Value::String(flow.clone()));
         }
     }
-    
+    if let Some(encryption) = params
+        .get("encryption")
+        .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("none"))
+    {
+        extra.insert("encryption".to_string(), serde_json::Value::String(encryption.clone()));
+    }
+
     // TLS configuration
-    let security = params.get("security").map(|s| s.as_str()).unwrap_or("");
+    let security_param = params.get("security").map(|s| s.as_str()).unwrap_or("");
+    let has_tls_params = params.contains_key("sni")
+        || params.contains_key("servername")
+        || params.contains_key("alpn")
+        || params.contains_key("fp")
+        || params.contains_key("insecure")
+        || ech.is_some();
+    let security = if security_param.is_empty() && has_tls_params {
+        "tls"
+    } else {
+        security_param
+    };
     if security == "tls" || security == "reality" {
         let mut tls = serde_json::Map::new();
         tls.insert("enabled".to_string(), serde_json::Value::Bool(true));
-        
+
         if let Some(sni) = params.get("sni").or(params.get("servername")) {
             tls.insert("server_name".to_string(), serde_json::Value::String(sni.clone()));
         } else if let Some(public_name) = ech_public_name {
@@ -1024,19 +1156,19 @@ fn parse_vless_link(link: &str) -> Option<SingBoxOutbound> {
         } else {
             tls.insert("server_name".to_string(), serde_json::Value::String(server.to_string()));
         }
-        
+
         if let Some(insecure) = params.get("insecure") {
             let allow_insecure = insecure == "1" || insecure.eq_ignore_ascii_case("true");
             tls.insert("insecure".to_string(), serde_json::Value::Bool(allow_insecure));
         }
-        
+
         if let Some(alpn) = params.get("alpn") {
             let alpn_arr: Vec<serde_json::Value> = alpn.split(',')
                 .map(|s| serde_json::Value::String(s.to_string()))
                 .collect();
             tls.insert("alpn".to_string(), serde_json::Value::Array(alpn_arr));
         }
-        
+
         if let Some(fp) = params.get("fp") {
             if !fp.is_empty() {
                 tls.insert("utls".to_string(), serde_json::json!({
@@ -1061,7 +1193,7 @@ fn parse_vless_link(link: &str) -> Option<SingBoxOutbound> {
 
             tls.insert("ech".to_string(), serde_json::Value::Object(ech_obj));
         }
-        
+
         if security == "reality" {
             let mut reality = serde_json::Map::new();
             reality.insert("enabled".to_string(), serde_json::Value::Bool(true));
@@ -1073,7 +1205,7 @@ fn parse_vless_link(link: &str) -> Option<SingBoxOutbound> {
             }
             tls.insert("reality".to_string(), serde_json::Value::Object(reality));
         }
-        
+
         extra.insert("tls".to_string(), serde_json::Value::Object(tls));
     }
 
@@ -1083,13 +1215,13 @@ fn parse_vless_link(link: &str) -> Option<SingBoxOutbound> {
             serde_json::Value::String(dns_server.to_string()),
         );
     }
-    
+
     // Transport configuration
     let transport_type = params.get("type").map(|s| s.as_str()).unwrap_or("tcp");
     if transport_type != "tcp" {
         let mut transport = serde_json::Map::new();
         transport.insert("type".to_string(), serde_json::Value::String(transport_type.to_string()));
-        
+
         match transport_type {
             "ws" => {
                 if let Some(path) = params.get("path") {
@@ -1113,12 +1245,46 @@ fn parse_vless_link(link: &str) -> Option<SingBoxOutbound> {
                     transport.insert("host".to_string(), serde_json::json!([host]));
                 }
             }
+            "xhttp" => {
+                if let Some(path) = params.get("path") {
+                    transport.insert("path".to_string(), serde_json::Value::String(path.clone()));
+                }
+                if let Some(mode) = params.get("mode") {
+                    transport.insert("mode".to_string(), serde_json::Value::String(mode.clone()));
+                }
+                if let Some(host) = params.get("host") {
+                    transport.insert("headers".to_string(), serde_json::json!({ "Host": host }));
+                }
+                if let Some(extra_str) = params.get("extra") {
+                    if let Ok(extra_json) = serde_json::from_str::<serde_json::Value>(extra_str) {
+                        if let Some(encryption) = extra_json
+                            .get("encryption")
+                            .and_then(|value| value.as_str())
+                            .filter(|value| !value.is_empty())
+                        {
+                            extra.insert("encryption".to_string(), serde_json::Value::String(encryption.to_string()));
+                        }
+
+                        if let Some(extra_obj) = extra_json.as_object() {
+                            let mut transport_extra = extra_obj.clone();
+                            transport_extra.remove("encryption");
+                            if !transport_extra.is_empty() {
+                                transport.insert("extra".to_string(), serde_json::Value::Object(transport_extra));
+                            }
+                        } else {
+                            transport.insert("extra".to_string(), extra_json);
+                        }
+                    } else {
+                        transport.insert("extra".to_string(), serde_json::Value::String(extra_str.clone()));
+                    }
+                }
+            }
             _ => {}
         }
-        
+
         extra.insert("transport".to_string(), serde_json::Value::Object(transport));
     }
-    
+
     Some(SingBoxOutbound {
         tag: Some(tag),
         outbound_type: Some("vless".to_string()),
@@ -1133,24 +1299,24 @@ fn parse_vmess_link(link: &str) -> Option<SingBoxOutbound> {
     let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, rest.trim()).ok()?;
     let decoded_str = String::from_utf8(decoded).ok()?;
     let json: serde_json::Value = serde_json::from_str(&decoded_str).ok()?;
-    
+
     let tag = json.get("ps").and_then(|v| v.as_str()).unwrap_or("VMess").to_string();
     let server = json.get("add").and_then(|v| v.as_str())?.to_string();
     let port: u16 = json.get("port").and_then(|v| {
         v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
     })? as u16;
     let uuid = json.get("id").and_then(|v| v.as_str())?.to_string();
-    
+
     let mut extra = std::collections::HashMap::new();
     extra.insert("uuid".to_string(), serde_json::Value::String(uuid));
     extra.insert("security".to_string(), serde_json::Value::String(
         json.get("scy").or(json.get("cipher")).and_then(|v| v.as_str()).unwrap_or("auto").to_string()
     ));
-    
+
     if let Some(aid) = json.get("aid").and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))) {
         extra.insert("alter_id".to_string(), serde_json::Value::Number(aid.into()));
     }
-    
+
     // TLS
     let tls = json.get("tls").and_then(|v| v.as_str()).unwrap_or("");
     if tls == "tls" {
@@ -1163,7 +1329,7 @@ fn parse_vmess_link(link: &str) -> Option<SingBoxOutbound> {
         }
         extra.insert("tls".to_string(), serde_json::Value::Object(tls_obj));
     }
-    
+
     // Transport
     let net = json.get("net").and_then(|v| v.as_str()).unwrap_or("tcp");
     if net != "tcp" {
@@ -1196,7 +1362,7 @@ fn parse_vmess_link(link: &str) -> Option<SingBoxOutbound> {
         }
         extra.insert("transport".to_string(), serde_json::Value::Object(transport));
     }
-    
+
     Some(SingBoxOutbound {
         tag: Some(tag),
         outbound_type: Some("vmess".to_string()),
@@ -1210,23 +1376,23 @@ fn parse_trojan_link(link: &str) -> Option<SingBoxOutbound> {
     let rest = link.strip_prefix("trojan://")?;
     let (main_part, tag) = rest.split_once('#').unwrap_or((rest, "Trojan"));
     let tag = urlencoding::decode(tag).ok()?.to_string();
-    
+
     let (password_host, query) = main_part.split_once('?').unwrap_or((main_part, ""));
     let (password, host_port) = password_host.split_once('@')?;
     let password = urlencoding::decode(password).ok()?.to_string();
-    
+
     let (server, port_str) = host_port.rsplit_once(':')?;
     let port: u16 = port_str.parse().ok()?;
-    
+
     let params: std::collections::HashMap<String, String> = query
         .split('&')
         .filter_map(|p| p.split_once('='))
         .map(|(k, v)| (k.to_string(), urlencoding::decode(v).unwrap_or_default().to_string()))
         .collect();
-    
+
     let mut extra = std::collections::HashMap::new();
     extra.insert("password".to_string(), serde_json::Value::String(password));
-    
+
     // TLS (Trojan always uses TLS)
     let mut tls = serde_json::Map::new();
     tls.insert("enabled".to_string(), serde_json::Value::Bool(true));
@@ -1239,13 +1405,13 @@ fn parse_trojan_link(link: &str) -> Option<SingBoxOutbound> {
         tls.insert("insecure".to_string(), serde_json::Value::Bool(true));
     }
     extra.insert("tls".to_string(), serde_json::Value::Object(tls));
-    
+
     // Transport
     let transport_type = params.get("type").map(|s| s.as_str()).unwrap_or("tcp");
     if transport_type != "tcp" {
         let mut transport = serde_json::Map::new();
         transport.insert("type".to_string(), serde_json::Value::String(transport_type.to_string()));
-        
+
         if transport_type == "ws" {
             if let Some(path) = params.get("path") {
                 transport.insert("path".to_string(), serde_json::Value::String(path.clone()));
@@ -1258,10 +1424,10 @@ fn parse_trojan_link(link: &str) -> Option<SingBoxOutbound> {
                 transport.insert("service_name".to_string(), serde_json::Value::String(sn.clone()));
             }
         }
-        
+
         extra.insert("transport".to_string(), serde_json::Value::Object(transport));
     }
-    
+
     Some(SingBoxOutbound {
         tag: Some(tag),
         outbound_type: Some("trojan".to_string()),
@@ -1275,23 +1441,23 @@ fn parse_hysteria2_link(link: &str) -> Option<SingBoxOutbound> {
     let rest = link.strip_prefix("hysteria2://").or_else(|| link.strip_prefix("hy2://"))?;
     let (main_part, tag) = rest.split_once('#').unwrap_or((rest, "Hysteria2"));
     let tag = urlencoding::decode(tag).ok()?.to_string();
-    
+
     let (password_host, query) = main_part.split_once('?').unwrap_or((main_part, ""));
     let (password, host_port) = password_host.split_once('@')?;
     let password = urlencoding::decode(password).ok()?.to_string();
-    
+
     let (server, port_str) = host_port.rsplit_once(':')?;
     let port: u16 = port_str.parse().ok()?;
-    
+
     let params: std::collections::HashMap<String, String> = query
         .split('&')
         .filter_map(|p| p.split_once('='))
         .map(|(k, v)| (k.to_string(), urlencoding::decode(v).unwrap_or_default().to_string()))
         .collect();
-    
+
     let mut extra = std::collections::HashMap::new();
     extra.insert("password".to_string(), serde_json::Value::String(password));
-    
+
     // TLS (Hysteria2 always uses TLS)
     let mut tls = serde_json::Map::new();
     tls.insert("enabled".to_string(), serde_json::Value::Bool(true));
@@ -1310,7 +1476,7 @@ fn parse_hysteria2_link(link: &str) -> Option<SingBoxOutbound> {
         tls.insert("alpn".to_string(), serde_json::Value::Array(alpn_arr));
     }
     extra.insert("tls".to_string(), serde_json::Value::Object(tls));
-    
+
     // Obfs
     if let Some(obfs_type) = params.get("obfs") {
         let mut obfs = serde_json::Map::new();
@@ -1320,7 +1486,7 @@ fn parse_hysteria2_link(link: &str) -> Option<SingBoxOutbound> {
         }
         extra.insert("obfs".to_string(), serde_json::Value::Object(obfs));
     }
-    
+
     Some(SingBoxOutbound {
         tag: Some(tag),
         outbound_type: Some("hysteria2".to_string()),
@@ -1334,23 +1500,23 @@ fn parse_hysteria_link(link: &str) -> Option<SingBoxOutbound> {
     let rest = link.strip_prefix("hysteria://")?;
     let (main_part, tag) = rest.split_once('#').unwrap_or((rest, "Hysteria"));
     let tag = urlencoding::decode(tag).ok()?.to_string();
-    
+
     let (host_port, query) = main_part.split_once('?').unwrap_or((main_part, ""));
     let (server, port_str) = host_port.rsplit_once(':')?;
     let port: u16 = port_str.parse().ok()?;
-    
+
     let params: std::collections::HashMap<String, String> = query
         .split('&')
         .filter_map(|p| p.split_once('='))
         .map(|(k, v)| (k.to_string(), urlencoding::decode(v).unwrap_or_default().to_string()))
         .collect();
-    
+
     let mut extra = std::collections::HashMap::new();
-    
+
     if let Some(auth) = params.get("auth") {
         extra.insert("auth_str".to_string(), serde_json::Value::String(auth.clone()));
     }
-    
+
     // TLS
     let mut tls = serde_json::Map::new();
     tls.insert("enabled".to_string(), serde_json::Value::Bool(true));
@@ -1369,7 +1535,7 @@ fn parse_hysteria_link(link: &str) -> Option<SingBoxOutbound> {
         tls.insert("alpn".to_string(), serde_json::Value::Array(alpn_arr));
     }
     extra.insert("tls".to_string(), serde_json::Value::Object(tls));
-    
+
     // Up/Down bandwidth
     if let Some(up) = params.get("upmbps") {
         extra.insert("up_mbps".to_string(), serde_json::Value::Number(up.parse::<i64>().unwrap_or(100).into()));
@@ -1377,12 +1543,12 @@ fn parse_hysteria_link(link: &str) -> Option<SingBoxOutbound> {
     if let Some(down) = params.get("downmbps") {
         extra.insert("down_mbps".to_string(), serde_json::Value::Number(down.parse::<i64>().unwrap_or(100).into()));
     }
-    
+
     // Obfs
     if let Some(obfs_type) = params.get("obfs") {
         extra.insert("obfs".to_string(), serde_json::Value::String(obfs_type.clone()));
     }
-    
+
     Some(SingBoxOutbound {
         tag: Some(tag),
         outbound_type: Some("hysteria".to_string()),
@@ -1553,16 +1719,16 @@ pub async fn node_test_all(app: AppHandle, state: State<'_, AppState>) -> Result
         Some(id) => id,
         None => return Ok(std::collections::HashMap::new()),
     };
-    
+
     let nodes = load_profile_nodes(&state, &profile_id);
-    
+
     let proxy_state = {
         let proxy_state = state.proxy_state.lock().await;
         (*proxy_state).clone()
     };
     let main_api_port = *state.clash_api_port.lock().await;
     let main_api_ready = check_clash_api_running(main_api_port).await;
-    
+
     let mut ports: Vec<u16> = Vec::new();
     let mut temp_used = false;
     let prefer_temp_backend = matches!(proxy_state, ProxyState::Connected | ProxyState::Connecting) || !main_api_ready;
@@ -1598,7 +1764,7 @@ pub async fn node_test_all(app: AppHandle, state: State<'_, AppState>) -> Result
     } else {
         None
     };
-    
+
     // Test in chunks for concurrency
     let chunk_size = 5;
     for chunk in nodes.chunks(chunk_size) {
@@ -1640,7 +1806,7 @@ pub async fn node_test_all(app: AppHandle, state: State<'_, AppState>) -> Result
                 }
             })
             .collect();
-        
+
         let chunk_results = futures::future::join_all(futures).await;
         for (tag, latency) in chunk_results {
             results.insert(tag, latency);
@@ -1825,9 +1991,11 @@ async fn start_temp_singbox(
                 Ok(None) => {
                     // Still running, check if API is responsive
                     if check_clash_api_running(TEMP_SINGBOX_PORT).await {
-                        return true;
+                        log::info!("Rebuilding temp sing-box to refresh latency test config and plugin bridges");
+                        cleanup_existing = true;
+                    } else {
+                        cleanup_existing = true;
                     }
-                    cleanup_existing = true;
                 }
                 _ => {
                     // Process exited
@@ -1841,32 +2009,32 @@ async fn start_temp_singbox(
     if cleanup_existing {
         cleanup_temp_singbox(state).await;
     }
-    
+
     // Get kernel path
     let kernel_path = match get_kernel_path_with_fallback(app) {
         Some(path) => path,
         None => return false,
     };
-    
+
     if !kernel_path.exists() {
         log::warn!("Kernel not found for latency testing: {:?}", kernel_path);
         return false;
     }
-    
+
     // Load nodes and generate temp config
     let data = load_profiles_data(state);
     let profile_id = match data.active_profile_id {
         Some(id) => id,
         None => return false,
     };
-    
+
     // 直接读取原始 JSON 节点
     let nodes_raw = load_profile_nodes_raw(state, &profile_id);
     if nodes_raw.is_empty() {
         log::warn!("No nodes found for latency testing");
         return false;
     }
-    
+
     // Create temp config
     let temp_dir = temp_singbox_dir(state);
     if let Err(err) = remove_temp_singbox_dir(&temp_dir) {
@@ -1876,13 +2044,22 @@ async fn start_temp_singbox(
         log::error!("Failed to create temp dir: {}", e);
         return false;
     }
-    
-    let (config, temp_tag_map) = generate_temp_config_raw(&nodes_raw, TEMP_SINGBOX_PORT);
+
+    let (config, temp_tag_map, plugin_bridge_specs) = generate_temp_config_raw(&nodes_raw, TEMP_SINGBOX_PORT);
+    append_latency_diagnostic(
+        state,
+        &format!(
+            "generated temp config: nodes={}, plugin_bridges={}, api_port={}",
+            nodes_raw.len(),
+            plugin_bridge_specs.len(),
+            TEMP_SINGBOX_PORT
+        ),
+    );
     let config_path = temp_dir.join("config.json");
-    
+
     let config_str = serde_json::to_string_pretty(&config).unwrap_or_default();
     log::info!("Temp config: {}", config_str);
-    
+
     if let Err(e) = fs::write(&config_path, &config_str) {
         log::error!("Failed to write temp config: {}", e);
         let _ = remove_temp_singbox_dir(&temp_dir);
@@ -1893,7 +2070,78 @@ async fn start_temp_singbox(
         let mut map_slot = TEMP_SINGBOX_TAG_MAP.lock().await;
         *map_slot = temp_tag_map;
     }
-    
+
+    // Save bridge specs for temp processes if any
+    let bridge_path = temp_dir.join("plugin_bridges.json");
+    if !plugin_bridge_specs.is_empty() {
+        if let Ok(specs_str) = serde_json::to_string(&plugin_bridge_specs) {
+            let _ = fs::write(&bridge_path, specs_str);
+        }
+    }
+
+    // Start xray bridges if needed
+    let mut xray_processes = Vec::new();
+    if !plugin_bridge_specs.is_empty() {
+        if let Ok(xray_path) = crate::commands::singbox::xray_plugin_path(app) {
+            append_latency_diagnostic(state, &format!("resolved temp Xray path: {:?}", xray_path));
+            if xray_path.exists() {
+                for spec in &plugin_bridge_specs {
+                    let port = spec.get("port").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let plugin_config = spec.get("node").cloned().unwrap_or(serde_json::json!({}));
+                    let config_for_xray = match crate::commands::singbox::build_xray_plugin_config(&plugin_config, port as u16) {
+                        Ok(config) => config,
+                        Err(err) => {
+                            append_latency_diagnostic(state, &format!("failed to build temp Xray config port={}: {}", port, err));
+                            log::warn!("Failed to build temp Xray config on port {}: {}", port, err);
+                            continue;
+                        }
+                    };
+                    let config_str = serde_json::to_string_pretty(&config_for_xray).unwrap_or_default();
+
+                    let config_path = temp_dir.join(format!("plugin-xray-temp-{}.json", port));
+                    let _ = fs::write(&config_path, &config_str);
+                    let config_path_str = config_path.to_str().unwrap_or("");
+                    let stdout_path = temp_dir.join(format!("plugin-xray-temp-{}.out.log", port));
+                    let stderr_path = temp_dir.join(format!("plugin-xray-temp-{}.err.log", port));
+                    let stdout = fs::File::create(&stdout_path).ok();
+                    let stderr = fs::File::create(&stderr_path).ok();
+
+                    let mut child_cmd = tokio::process::Command::new(&xray_path);
+                    #[cfg(windows)]
+                    child_cmd.creation_flags(CREATE_NO_WINDOW);
+
+                    child_cmd
+                        .args(["run", "-config", config_path_str])
+                        .current_dir(&temp_dir)
+                        .kill_on_drop(true);
+                    if let Some(stdout) = stdout {
+                        child_cmd.stdout(std::process::Stdio::from(stdout));
+                    }
+                    if let Some(stderr) = stderr {
+                        child_cmd.stderr(std::process::Stdio::from(stderr));
+                    }
+                    let child = child_cmd.spawn();
+
+                    if let Ok(c) = child {
+                        append_latency_diagnostic(state, &format!("started temp Xray bridge port={}, config={:?}", port, config_path));
+                        log::info!("Started temp Xray bridge on port {}, config: {:?}", port, config_path);
+                        xray_processes.push(c);
+                    } else if let Err(err) = child {
+                        append_latency_diagnostic(state, &format!("failed to start temp Xray bridge port={}: {}", port, err));
+                        log::warn!("Failed to start temp Xray bridge on port {}: {}", port, err);
+                    }
+                }
+            }
+        } else if let Err(err) = crate::commands::singbox::xray_plugin_path(app) {
+            append_latency_diagnostic(state, &format!("failed to resolve temp Xray path: {}", err));
+        }
+    }
+
+    {
+        let mut global_xray = TEMP_XRAY_PROCESSES.lock().await;
+        *global_xray = xray_processes;
+    }
+
     // Start temp sing-box
     let config_path_str = match config_path.to_str() {
         Some(s) => s,
@@ -1906,20 +2154,42 @@ async fn start_temp_singbox(
     };
 
     #[cfg(windows)]
-    let result = tokio::process::Command::new(&kernel_path)
-        .args(["run", "-c", config_path_str])
-        .current_dir(&temp_dir)
-        .creation_flags(CREATE_NO_WINDOW)
-        .kill_on_drop(true)
-        .spawn();
+    let result = {
+        let stdout = fs::File::create(temp_dir.join("temp-singbox.out.log")).ok();
+        let stderr = fs::File::create(temp_dir.join("temp-singbox.err.log")).ok();
+        let mut command = tokio::process::Command::new(&kernel_path);
+        command
+            .args(["run", "-c", config_path_str])
+            .current_dir(&temp_dir)
+            .creation_flags(CREATE_NO_WINDOW)
+            .kill_on_drop(true);
+        if let Some(stdout) = stdout {
+            command.stdout(std::process::Stdio::from(stdout));
+        }
+        if let Some(stderr) = stderr {
+            command.stderr(std::process::Stdio::from(stderr));
+        }
+        command.spawn()
+    };
 
     #[cfg(not(windows))]
-    let result = tokio::process::Command::new(&kernel_path)
-        .args(["run", "-c", config_path_str])
-        .current_dir(&temp_dir)
-        .kill_on_drop(true)
-        .spawn();
-    
+    let result = {
+        let stdout = fs::File::create(temp_dir.join("temp-singbox.out.log")).ok();
+        let stderr = fs::File::create(temp_dir.join("temp-singbox.err.log")).ok();
+        let mut command = tokio::process::Command::new(&kernel_path);
+        command
+            .args(["run", "-c", config_path_str])
+            .current_dir(&temp_dir)
+            .kill_on_drop(true);
+        if let Some(stdout) = stdout {
+            command.stdout(std::process::Stdio::from(stdout));
+        }
+        if let Some(stderr) = stderr {
+            command.stderr(std::process::Stdio::from(stderr));
+        }
+        command.spawn()
+    };
+
     match result {
         Ok(child) => {
             {
@@ -1956,7 +2226,7 @@ pub(crate) async fn check_clash_api_running(port: u16) -> bool {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(500))
         .build();
-    
+
     if let Ok(client) = client {
         let url = format!("http://127.0.0.1:{}/", port);
         if let Ok(resp) = client.get(&url).send().await {
@@ -1972,6 +2242,7 @@ fn generate_temp_config_raw(
 ) -> (
     serde_json::Value,
     std::collections::HashMap<String, Vec<String>>,
+    Vec<serde_json::Value>
 ) {
     let inferred_ech_dns_server = nodes
         .iter()
@@ -1992,14 +2263,27 @@ fn generate_temp_config_raw(
         .clone()
         .unwrap_or_else(|| "https://dns.google/dns-query".to_string());
     let remote_dns_detour = if active_node_has_ech { "direct" } else { "direct" };
-    let remote_dns_domain_resolver = active_node_has_ech.then_some("dns-local");
+    let remote_dns_domain_resolver = Some("dns-local");
 
     // 处理节点，移除不合法字段并添加必要配置
     let mut tag_map = std::collections::HashMap::new();
+    let mut plugin_bridge_specs = Vec::new();
     let mut outbounds: Vec<serde_json::Value> = nodes.iter()
         .enumerate()
         .map(|(index, node)| {
-            let mut node = node.clone();
+            let bridge_index = plugin_bridge_specs.len();
+            let processed_node = crate::commands::singbox::node_for_singbox_with_plugin_bridge(node, &mut plugin_bridge_specs);
+            let mut node = processed_node.clone();
+            if plugin_bridge_specs.len() > bridge_index {
+                let bridge_port = temp_xray_bridge_port(bridge_index);
+                if let Some(spec) = plugin_bridge_specs.last_mut().and_then(|spec| spec.as_object_mut()) {
+                    spec.insert("port".to_string(), serde_json::json!(bridge_port));
+                }
+                if let Some(obj) = node.as_object_mut() {
+                    obj.insert("server_port".to_string(), serde_json::json!(bridge_port));
+                }
+            }
+
             if let Some(obj) = node.as_object_mut() {
                 let node_type = obj.get("type").and_then(|t| t.as_str()).unwrap_or("").to_string();
                 let server = obj.get("server").and_then(|s| s.as_str()).unwrap_or("").to_string();
@@ -2076,18 +2360,13 @@ fn generate_temp_config_raw(
             },
             "dns": {
                 "servers": [
-                    {
-                        "type": "local",
-                        "tag": "dns-local",
-                        "detour": "direct"
-                    },
-                    {
-                        "type": if effective_remote_dns.starts_with("https://") { "https" } else if effective_remote_dns.starts_with("h3://") { "h3" } else { "udp" },
-                        "tag": "dns-remote",
-                        "address": effective_remote_dns,
-                        "detour": remote_dns_detour,
-                        "domain_resolver": remote_dns_domain_resolver
-                    }
+                    crate::commands::singbox::build_dns_server("local", "dns-local", "direct"),
+                    crate::commands::singbox::build_dns_server_with_resolver(
+                        &effective_remote_dns,
+                        "dns-remote",
+                        remote_dns_detour,
+                        remote_dns_domain_resolver,
+                    )
                 ]
             },
             "inbounds": [],
@@ -2099,6 +2378,7 @@ fn generate_temp_config_raw(
             }
         }),
         tag_map,
+        plugin_bridge_specs
     )
 }
 
@@ -2202,27 +2482,27 @@ pub async fn node_add(
 pub async fn node_export(state: State<'_, AppState>, tag: String) -> Result<String, String> {
     let data = load_profiles_data(&state);
     let profile_id = data.active_profile_id.ok_or("No active profile")?;
-    
+
     let nodes = load_profile_nodes(&state, &profile_id);
     let node = nodes.iter().find(|n| n.tag.as_ref() == Some(&tag)).ok_or("Node not found")?;
-    
+
     export_node_to_link(node)
 }
 
 fn export_node_to_link(node: &SingBoxOutbound) -> Result<String, String> {
     let default_tag = "Node".to_string();
     let default_server = String::new();
-    
+
     let tag = urlencoding::encode(node.tag.as_ref().unwrap_or(&default_tag));
     let node_type = node.outbound_type.as_ref().map(|s| s.as_str()).unwrap_or("");
     let server = node.server.as_ref().unwrap_or(&default_server);
     let port = node.server_port.unwrap_or(0);
-    
+
     match node_type.to_lowercase().as_str() {
         "shadowsocks" => {
             let method = node.extra.get("method").and_then(|v| v.as_str()).unwrap_or("aes-256-gcm");
             let password = node.extra.get("password").and_then(|v| v.as_str()).unwrap_or("");
-            
+
             let user_info = base64::Engine::encode(
                 &base64::engine::general_purpose::STANDARD,
                 format!("{}:{}", method, password)
@@ -2231,7 +2511,7 @@ fn export_node_to_link(node: &SingBoxOutbound) -> Result<String, String> {
         }
         "vmess" => {
             let uuid = node.extra.get("uuid").and_then(|v| v.as_str()).unwrap_or("");
-            
+
             let config = serde_json::json!({
                 "v": "2",
                 "ps": node.tag,
@@ -2243,7 +2523,7 @@ fn export_node_to_link(node: &SingBoxOutbound) -> Result<String, String> {
                 "type": "none",
                 "tls": ""
             });
-            
+
             let encoded = base64::Engine::encode(
                 &base64::engine::general_purpose::STANDARD,
                 config.to_string()
@@ -2253,17 +2533,54 @@ fn export_node_to_link(node: &SingBoxOutbound) -> Result<String, String> {
         "vless" => {
             let uuid = node.extra.get("uuid").and_then(|v| v.as_str()).unwrap_or("");
             let flow = node.extra.get("flow").and_then(|v| v.as_str()).unwrap_or("");
-            
-            Ok(format!("vless://{}@{}:{}?flow={}&type=tcp#{}", uuid, server, port, flow, tag))
+            let transport = node.extra.get("transport").and_then(|v| v.as_object());
+            let net_type = transport.and_then(|t| t.get("type").and_then(|v| v.as_str())).unwrap_or("tcp");
+
+            let mut query = format!("flow={}&type={}", flow, net_type);
+
+            if let Some(t) = transport {
+                if let Some(path) = t.get("path").and_then(|v| v.as_str()) {
+                    query.push_str(&format!("&path={}", urlencoding::encode(path)));
+                }
+                if net_type == "xhttp" {
+                    if let Some(mode) = t.get("mode").and_then(|v| v.as_str()) {
+                        query.push_str(&format!("&mode={}", urlencoding::encode(mode)));
+                    }
+                    if let Some(extra) = t.get("extra") {
+                        let extra_str = if let Some(s) = extra.as_str() {
+                            s.to_string()
+                        } else {
+                            serde_json::to_string(extra).unwrap_or_default()
+                        };
+                        if !extra_str.is_empty() {
+                            query.push_str(&format!("&extra={}", urlencoding::encode(&extra_str)));
+                        }
+                    }
+                }
+                if let Some(headers) = t.get("headers").and_then(|v| v.as_object()) {
+                    if let Some(host) = headers.get("Host").and_then(|v| v.as_str()) {
+                        query.push_str(&format!("&host={}", urlencoding::encode(host)));
+                    }
+                }
+            }
+
+            // Add SNI/server_name from TLS if present
+            if let Some(tls) = node.extra.get("tls").and_then(|v| v.as_object()) {
+                if let Some(sni) = tls.get("server_name").and_then(|v| v.as_str()) {
+                    query.push_str(&format!("&sni={}", urlencoding::encode(sni)));
+                }
+            }
+
+            Ok(format!("vless://{}@{}:{}?{}#{}", uuid, server, port, query, tag))
         }
         "trojan" => {
             let password = node.extra.get("password").and_then(|v| v.as_str()).unwrap_or("");
-            
+
             Ok(format!("trojan://{}@{}:{}#{}", password, server, port, tag))
         }
         "hysteria2" => {
             let password = node.extra.get("password").and_then(|v| v.as_str()).unwrap_or("");
-            
+
             Ok(format!("hysteria2://{}@{}:{}#{}", password, server, port, tag))
         }
         _ => {
@@ -2515,7 +2832,7 @@ mod tests {
             }),
         ];
 
-        let (config, tag_map) = generate_temp_config_raw(&nodes, TEMP_SINGBOX_PORT);
+        let (config, tag_map, _) = generate_temp_config_raw(&nodes, TEMP_SINGBOX_PORT);
         let outbounds = config
             .get("outbounds")
             .and_then(|value| value.as_array())
@@ -2557,7 +2874,7 @@ mod tests {
             ECH_DNS_SERVER_META_KEY: "https://dns.alidns.com/dns-query"
         })];
 
-        let (config, _) = generate_temp_config_raw(&nodes, TEMP_SINGBOX_PORT);
+        let (config, _, _) = generate_temp_config_raw(&nodes, TEMP_SINGBOX_PORT);
 
         let dns = config.get("dns").and_then(|value| value.as_object()).expect("expected dns config");
         let servers = dns.get("servers").and_then(|value| value.as_array()).expect("expected dns servers");
@@ -2566,8 +2883,10 @@ mod tests {
             .find(|server| server.get("tag").and_then(|value| value.as_str()) == Some("dns-remote"))
             .expect("expected dns-remote server");
 
-        assert_eq!(remote.get("address").and_then(|value| value.as_str()), Some("https://dns.alidns.com/dns-query"));
-        assert_eq!(remote.get("detour").and_then(|value| value.as_str()), Some("direct"));
+        assert_eq!(remote.get("type").and_then(|value| value.as_str()), Some("https"));
+        assert_eq!(remote.get("server").and_then(|value| value.as_str()), Some("dns.alidns.com"));
+        assert_eq!(remote.get("server_port").and_then(|value| value.as_u64()), Some(443));
+        assert_eq!(remote.get("path").and_then(|value| value.as_str()), Some("/dns-query"));
         assert_eq!(remote.get("domain_resolver").and_then(|value| value.as_str()), Some("dns-local"));
     }
 
@@ -2715,6 +3034,18 @@ mod tests {
         release_temp_singbox_test_slot(&make_test_state(), Some(31)).await;
     }
 
+    #[tokio::test]
+    async fn standalone_temp_latency_rejects_concurrent_none_owner() {
+        let _guard = TEMP_PROCESS_TEST_LOCK.lock().await;
+        assert!(acquire_temp_singbox_test_slot(None).await);
+        assert!(!acquire_temp_singbox_test_slot(None).await);
+
+        assert_eq!(*TEMP_SINGBOX_OWNER_BATCH_ID.lock().await, None);
+        assert_eq!(*TEMP_SINGBOX_ACTIVE_TESTS.lock().await, 1);
+
+        release_temp_singbox_test_slot(&make_test_state(), None).await;
+    }
+
     #[test]
     fn parse_vless_link_enables_ech_without_invalid_config_for_name_resolver() {
         let outbound = parse_vless_link("vless://11111111-1111-1111-1111-111111111111@example.com:443?security=tls&ech=cloudflare-ech.com+https%3A%2F%2Fdns.alidns.com%2Fdns-query&sni=example.com&host=ws.example.com&fp=chrome&type=ws&path=%2Fws#ECH")
@@ -2829,5 +3160,41 @@ mod tests {
             None
         );
         assert_eq!(outbound.extra.get(ECH_DNS_SERVER_META_KEY), None);
+    }
+
+    #[test]
+    fn parse_vless_link_xhttp() {
+        let link = "vless://2edd765b-a895-46ab-a01c-c4719947546b@35.194.192.123:13324?flow=xtls-rprx-vision&type=xhttp&path=%2F2edd765b-a895-46ab-a01c-c4719947546b-xh&mode=auto&extra=%7B%22encryption%22%3A%22mlkem768x25519plus.native.0rtt.test%22%2C%22noGRPCHeader%22%3Atrue%7D&sni=apple.com#%F0%9F%87%B9%F0%9F%87%BC%20%E5%8F%B0%E6%B9%BE%20GCP-xhttp";
+        let outbound = parse_vless_link(link).expect("expected vless outbound");
+
+        assert_eq!(outbound.tag.unwrap(), "🇹🇼 台湾 GCP-xhttp");
+        assert_eq!(outbound.outbound_type.unwrap(), "vless");
+        assert_eq!(outbound.server.unwrap(), "35.194.192.123");
+        assert_eq!(outbound.server_port.unwrap(), 13324);
+        assert_eq!(outbound.extra.get("flow").and_then(|v| v.as_str()), Some("xtls-rprx-vision"));
+        assert_eq!(
+            outbound.extra.get("encryption").and_then(|v| v.as_str()),
+            Some("mlkem768x25519plus.native.0rtt.test")
+        );
+
+        let tls = outbound.extra.get("tls")
+            .and_then(|v| v.as_object())
+            .expect("expected inferred tls object");
+        assert_eq!(tls.get("server_name").and_then(|v| v.as_str()), Some("apple.com"));
+
+        let transport = outbound.extra.get("transport")
+            .and_then(|v| v.as_object())
+            .expect("expected transport object");
+
+        assert_eq!(transport.get("type").and_then(|v| v.as_str()), Some("xhttp"));
+        assert_eq!(transport.get("path").and_then(|v| v.as_str()), Some("/2edd765b-a895-46ab-a01c-c4719947546b-xh"));
+        assert_eq!(transport.get("mode").and_then(|v| v.as_str()), Some("auto"));
+        assert!(transport.get("extra").and_then(|v| v.get("encryption")).is_none());
+        assert_eq!(
+            transport.get("extra")
+                .and_then(|v| v.get("noGRPCHeader"))
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
     }
 }

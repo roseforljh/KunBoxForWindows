@@ -56,19 +56,17 @@ if ($hasSigningKey) {
     Write-Host "Signing key detected: release build will include updater artifacts." -ForegroundColor Green
 } else {
     Write-Host "No TAURI_SIGNING_PRIVATE_KEY detected." -ForegroundColor Yellow
-    Write-Host "Release build will continue WITHOUT updater signing artifacts." -ForegroundColor Yellow
+    Write-Host "Build will continue WITHOUT updater signing artifacts." -ForegroundColor Yellow
 
-    if (-not $isDebug) {
-        $baseConfigPath = Join-Path $PSScriptRoot "src-tauri\tauri.conf.json"
-        $tempConfigPath = Join-Path $env:TEMP "kunbox.tauri.unsigned.$PID.json"
-        $config = Get-Content $baseConfigPath -Raw | ConvertFrom-Json
-        if (-not $config.bundle) {
-            $config | Add-Member -NotePropertyName bundle -NotePropertyValue ([pscustomobject]@{})
-        }
-        $config.bundle.createUpdaterArtifacts = $false
-        $config | ConvertTo-Json -Depth 100 | Set-Content $tempConfigPath -Encoding UTF8
-        $tauriArgs += @("--config", $tempConfigPath)
+    $baseConfigPath = Join-Path $PSScriptRoot "src-tauri\tauri.conf.json"
+    $tempConfigPath = Join-Path $env:TEMP "kunbox.tauri.unsigned.$PID.json"
+    $config = Get-Content $baseConfigPath -Raw | ConvertFrom-Json
+    if (-not $config.bundle) {
+        $config | Add-Member -NotePropertyName bundle -NotePropertyValue ([pscustomobject]@{})
     }
+    $config.bundle.createUpdaterArtifacts = $false
+    $config | ConvertTo-Json -Depth 100 | Set-Content $tempConfigPath -Encoding UTF8
+    $tauriArgs += @("--config", $tempConfigPath)
 }
 
 # Step 1: Build frontend

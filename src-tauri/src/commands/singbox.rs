@@ -63,6 +63,8 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 const SELECTOR_LATENCY_CONCURRENCY_LIMIT: usize = 8;
 const DEFAULT_CLASH_API_PORT: u16 = 9090;
 const KUNBOX_TUN_ALIAS: &str = "kunbox-tun";
+const PLUGIN_BRIDGES_FILE: &str = "plugin-bridges.json";
+const XRAY_PLUGIN_FILENAME: &str = "xray.exe";
 
 #[cfg(windows)]
 #[derive(Debug, serde::Deserialize)]
@@ -275,6 +277,7 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
         let _ = child.kill().await;
         let _ = child.wait().await;
     }
+    stop_plugin_bridges(state).await;
 
     crate::commands::profiles::cleanup_temp_singbox(state).await;
 
@@ -287,6 +290,11 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
     let config_result = generate_config_with_settings(&state, &effective_settings).await?;
     if !config_result.success {
         return Ok(config_result);
+    }
+
+    if let Err(err) = start_plugin_bridges(&app, state).await {
+        stop_plugin_bridges(state).await;
+        return Ok(CommandResult::err(err));
     }
 
     let config_path = state.config_dir.join("config.json");
@@ -313,6 +321,7 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
         .map_err(|e| e.to_string())?;
 
     if !check_output.status.success() {
+        stop_plugin_bridges(state).await;
         let stderr = decode_windows_output(&check_output.stderr);
         let stdout = decode_windows_output(&check_output.stdout);
         let detail = if !stderr.is_empty() { stderr } else { stdout };
@@ -479,6 +488,7 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
                 let _ = child.kill().await;
                 let _ = child.wait().await;
             }
+        stop_plugin_bridges(state).await;
             *state.proxy_state.lock().await = ProxyState::Error;
             *state.start_time.lock().await = None;
             append_startup_diagnostic(state, &format!("fatal startup error detected before Clash API ready: {}", startup_detail.clone().unwrap_or_default()));
@@ -498,6 +508,7 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
             let _ = child.kill().await;
             let _ = child.wait().await;
         }
+            stop_plugin_bridges(state).await;
         *state.proxy_state.lock().await = ProxyState::Error;
         *state.start_time.lock().await = None;
         append_startup_diagnostic(state, "main Clash API not ready in time");
@@ -589,6 +600,7 @@ pub(crate) async fn singbox_stop_impl(app: AppHandle, state: &AppState) -> Resul
     } else {
         append_startup_diagnostic(state, "singbox_stop: no managed child handle present");
     }
+    stop_plugin_bridges(state).await;
 
     // Managed process has already been stopped above if present
 
@@ -759,7 +771,288 @@ fn process_node(node: &serde_json::Value) -> serde_json::Value {
     node
 }
 
-fn build_dns_server(address: &str, tag: &str, detour: &str) -> serde_json::Value {
+fn is_xray_bridge_node(node: &serde_json::Value) -> bool {
+    node.get("type").and_then(|value| value.as_str()) == Some("vless")
+        && node
+            .get("transport")
+            .and_then(|value| value.get("type"))
+            .and_then(|value| value.as_str())
+            .is_some_and(|transport_type| transport_type.eq_ignore_ascii_case("xhttp"))
+}
+
+fn plugin_bridge_port(index: usize) -> u16 {
+    18080 + index as u16
+}
+
+fn plugin_bridge_path(state: &AppState) -> PathBuf {
+    state.config_dir.join(PLUGIN_BRIDGES_FILE)
+}
+
+pub(crate) fn node_for_singbox_with_plugin_bridge(
+    node: &serde_json::Value,
+    bridge_specs: &mut Vec<serde_json::Value>,
+) -> serde_json::Value {
+    let processed = process_node(node);
+    if !is_xray_bridge_node(&processed) {
+        return processed;
+    }
+
+    let tag = processed
+        .get("tag")
+        .and_then(|value| value.as_str())
+        .unwrap_or("xray-plugin");
+    let port = plugin_bridge_port(bridge_specs.len());
+
+    bridge_specs.push(serde_json::json!({
+        "core": "xray",
+        "tag": tag,
+        "listen": "127.0.0.1",
+        "port": port,
+        "node": processed
+    }));
+
+    serde_json::json!({
+        "type": "socks",
+        "tag": tag,
+        "server": "127.0.0.1",
+        "server_port": port,
+        "version": "5"
+    })
+}
+
+pub(crate) fn xray_plugin_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let data_plugin = app_data_dir.join("libs").join(XRAY_PLUGIN_FILENAME);
+    if data_plugin.exists() {
+        return Ok(data_plugin);
+    }
+
+    let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
+    Ok(resource_dir.join("resources").join("libs").join(XRAY_PLUGIN_FILENAME))
+}
+
+fn xray_tls_settings(tls: &serde_json::Value) -> serde_json::Value {
+    let mut settings = serde_json::Map::new();
+
+    if let Some(server_name) = tls.get("server_name").and_then(|value| value.as_str()) {
+        settings.insert("serverName".to_string(), serde_json::Value::String(server_name.to_string()));
+    }
+    if let Some(insecure) = tls.get("insecure").and_then(|value| value.as_bool()) {
+        settings.insert("allowInsecure".to_string(), serde_json::Value::Bool(insecure));
+    }
+    if let Some(alpn) = tls.get("alpn").and_then(|value| value.as_array()) {
+        settings.insert("alpn".to_string(), serde_json::Value::Array(alpn.clone()));
+    }
+    if let Some(fingerprint) = tls
+        .get("utls")
+        .and_then(|value| value.get("fingerprint"))
+        .and_then(|value| value.as_str())
+    {
+        settings.insert("fingerprint".to_string(), serde_json::Value::String(fingerprint.to_string()));
+    }
+
+    if let Some(reality) = tls.get("reality").and_then(|value| value.as_object()) {
+        if let Some(public_key) = reality.get("public_key").and_then(|value| value.as_str()) {
+            settings.insert("publicKey".to_string(), serde_json::Value::String(public_key.to_string()));
+        }
+        if let Some(short_id) = reality.get("short_id").and_then(|value| value.as_str()) {
+            settings.insert("shortId".to_string(), serde_json::Value::String(short_id.to_string()));
+        }
+    }
+
+    serde_json::Value::Object(settings)
+}
+
+fn vless_encryption(node: &serde_json::Value) -> &str {
+    node
+        .get("encryption")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            node.get("transport")
+                .and_then(|value| value.get("extra"))
+                .and_then(|value| value.get("encryption"))
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or("none")
+}
+
+fn xray_stream_settings(node: &serde_json::Value) -> serde_json::Value {
+    let mut stream = serde_json::Map::new();
+
+    let transport = node.get("transport").and_then(|value| value.as_object());
+    let network = transport
+        .and_then(|value| value.get("type"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("tcp");
+    stream.insert("network".to_string(), serde_json::Value::String(network.to_string()));
+
+    if network.eq_ignore_ascii_case("xhttp") {
+        let mut xhttp = serde_json::Map::new();
+        if let Some(transport) = transport {
+            for (key, value) in transport {
+                if key == "type" {
+                    continue;
+                }
+                if key == "extra" {
+                    if let Some(extra) = value.as_object() {
+                        let mut cleaned = extra.clone();
+                        cleaned.remove("encryption");
+                        if !cleaned.is_empty() {
+                            xhttp.insert(key.clone(), serde_json::Value::Object(cleaned));
+                        }
+                    } else {
+                        xhttp.insert(key.clone(), value.clone());
+                    }
+                } else {
+                    xhttp.insert(key.clone(), value.clone());
+                }
+            }
+        }
+        stream.insert("xhttpSettings".to_string(), serde_json::Value::Object(xhttp));
+    }
+
+    if let Some(tls) = node.get("tls").filter(|value| {
+        value.get("enabled").and_then(|enabled| enabled.as_bool()).unwrap_or(false)
+    }) {
+        let security = if tls
+            .get("reality")
+            .and_then(|value| value.get("enabled"))
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+        {
+            "reality"
+        } else {
+            "tls"
+        };
+        stream.insert("security".to_string(), serde_json::Value::String(security.to_string()));
+        stream.insert(format!("{}Settings", security), xray_tls_settings(tls));
+    } else {
+        stream.insert("security".to_string(), serde_json::Value::String("none".to_string()));
+    }
+
+    serde_json::Value::Object(stream)
+}
+
+pub(crate) fn build_xray_plugin_config(node: &serde_json::Value, port: u16) -> Result<serde_json::Value, String> {
+    let server = node.get("server").and_then(|value| value.as_str()).ok_or("Xray plugin node missing server")?;
+    let server_port = node.get("server_port").and_then(|value| value.as_u64()).ok_or("Xray plugin node missing server_port")?;
+    let uuid = node.get("uuid").and_then(|value| value.as_str()).ok_or("Xray plugin node missing uuid")?;
+
+    let encryption = vless_encryption(node);
+    let mut user = serde_json::json!({
+        "id": uuid,
+        "encryption": encryption
+    });
+    if let Some(flow) = node.get("flow").and_then(|value| value.as_str()).filter(|value| !value.is_empty()) {
+        user["flow"] = serde_json::Value::String(flow.to_string());
+    }
+
+    Ok(serde_json::json!({
+        "log": {
+            "loglevel": "warning"
+        },
+        "inbounds": [
+            {
+                "listen": "127.0.0.1",
+                "port": port,
+                "protocol": "socks",
+                "settings": {
+                    "udp": true,
+                    "auth": "noauth"
+                }
+            }
+        ],
+        "outbounds": [
+            {
+                "protocol": "vless",
+                "settings": {
+                    "vnext": [
+                        {
+                            "address": server,
+                            "port": server_port,
+                            "users": [user]
+                        }
+                    ]
+                },
+                "streamSettings": xray_stream_settings(node)
+            }
+        ]
+    }))
+}
+
+async fn stop_plugin_bridges(state: &AppState) {
+    let mut processes = state.plugin_processes.lock().await;
+    for mut child in processes.drain(..) {
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+    }
+}
+
+async fn start_plugin_bridges(app: &AppHandle, state: &AppState) -> Result<(), String> {
+    stop_plugin_bridges(state).await;
+
+    let bridge_path = plugin_bridge_path(state);
+    if !bridge_path.exists() {
+        return Ok(());
+    }
+
+    let content = fs::read_to_string(&bridge_path).map_err(|e| e.to_string())?;
+    let specs: Vec<serde_json::Value> = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    if specs.is_empty() {
+        return Ok(());
+    }
+
+    let xray_path = xray_plugin_path(app)?;
+    if !xray_path.exists() {
+        return Err("检测到 xhttp 节点，但未找到 Xray 插件核心。请将 xray.exe 放到应用数据目录的 libs 目录。".to_string());
+    }
+
+    let mut started = Vec::new();
+    for (index, spec) in specs.iter().enumerate() {
+        let core = spec.get("core").and_then(|value| value.as_str()).unwrap_or("");
+        if core != "xray" {
+            continue;
+        }
+
+        let port = spec.get("port").and_then(|value| value.as_u64()).ok_or("Plugin bridge missing port")? as u16;
+        let node = spec.get("node").ok_or("Plugin bridge missing node")?;
+        let config = build_xray_plugin_config(node, port)?;
+        let config_path = state.config_dir.join(format!("plugin-xray-{}.json", index));
+        let config_str = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+        fs::write(&config_path, config_str).map_err(|e| e.to_string())?;
+        let config_path_str = config_path.to_str().ok_or("Xray plugin config path contains invalid UTF-8")?;
+
+        #[cfg(windows)]
+        let child = Command::new(&xray_path)
+            .args(["run", "-config", config_path_str])
+            .current_dir(&state.config_dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .creation_flags(CREATE_NO_WINDOW)
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+
+        #[cfg(not(windows))]
+        let child = Command::new(&xray_path)
+            .args(["run", "-config", config_path_str])
+            .current_dir(&state.config_dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+
+        started.push(child);
+    }
+
+    *state.plugin_processes.lock().await = started;
+    Ok(())
+}
+
+pub(crate) fn build_dns_server(address: &str, tag: &str, detour: &str) -> serde_json::Value {
     let value = address.trim();
     if value.eq_ignore_ascii_case("local") {
         return serde_json::json!({ "tag": tag, "type": "local" });
@@ -845,7 +1138,7 @@ fn build_dns_server(address: &str, tag: &str, detour: &str) -> serde_json::Value
     server_obj
 }
 
-fn build_dns_server_with_resolver(
+pub(crate) fn build_dns_server_with_resolver(
     address: &str,
     tag: &str,
     detour: &str,
@@ -944,6 +1237,49 @@ fn apply_route_target(mut rule: serde_json::Value, target: &str) -> serde_json::
     rule
 }
 
+fn plugin_bridge_remote_direct_rule(spec: &serde_json::Value) -> Option<serde_json::Value> {
+    let server = spec
+        .get("node")
+        .and_then(|node| node.get("server"))
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+
+    if let Ok(ip) = server.parse::<std::net::IpAddr>() {
+        let cidr = match ip {
+            std::net::IpAddr::V4(_) => format!("{server}/32"),
+            std::net::IpAddr::V6(_) => format!("{server}/128"),
+        };
+        return Some(serde_json::json!({
+            "ip_cidr": [cidr],
+            "outbound": "direct"
+        }));
+    }
+
+    Some(serde_json::json!({
+        "domain": [server],
+        "outbound": "direct"
+    }))
+}
+
+fn plugin_bridge_remote_dns_rule(spec: &serde_json::Value) -> Option<serde_json::Value> {
+    let server = spec
+        .get("node")
+        .and_then(|node| node.get("server"))
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+
+    if server.parse::<std::net::IpAddr>().is_ok() {
+        return None;
+    }
+
+    Some(serde_json::json!({
+        "domain": [server],
+        "server": "dns-local"
+    }))
+}
+
 fn profile_selector_tag(profile_id: &str) -> String {
     format!("P:{}", profile_id)
 }
@@ -1040,6 +1376,7 @@ fn load_all_profiles(state: &AppState, profiles_data: &crate::types::ProfilesDat
     result
 }
 
+#[cfg(test)]
 async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
     let settings = state.settings.lock().await.clone();
     generate_config_with_settings(state, &settings).await
@@ -1415,12 +1752,13 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
     let mut outbounds: Vec<serde_json::Value> = Vec::new();
     let mut proxy_tags: Vec<String> = Vec::new();
     let mut existing_tags = std::collections::HashSet::new();
+    let mut plugin_bridge_specs: Vec<serde_json::Value> = Vec::new();
 
     // 1. 添加当前配置的节点
     for node in &nodes {
         let node_type = node.get("type").and_then(|t| t.as_str()).unwrap_or("");
         if is_proxy_type(node_type) {
-            outbounds.push(node.clone());
+            outbounds.push(node_for_singbox_with_plugin_bridge(node, &mut plugin_bridge_specs));
             if let Some(tag) = node.get("tag").and_then(|t| t.as_str()) {
                 proxy_tags.push(tag.to_string());
                 existing_tags.insert(tag.to_string());
@@ -1443,7 +1781,8 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
             }) {
                 let node_type = node.get("type").and_then(|t| t.as_str()).unwrap_or("");
                 if is_proxy_type(node_type) {
-                    outbounds.push(with_outbound_tag(process_node(node), &outbound_tag));
+                    let scoped_node = with_outbound_tag(process_node(node), &outbound_tag);
+                    outbounds.push(node_for_singbox_with_plugin_bridge(&scoped_node, &mut plugin_bridge_specs));
                     existing_tags.insert(outbound_tag.clone());
                     log::info!(
                         "Added profile-scoped node: {} from profile {}",
@@ -1473,7 +1812,7 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
                     if let Some(tag) = node.get("tag").and_then(|t| t.as_str()) {
                         // 如果节点不存在，添加到 outbounds
                         if !existing_tags.contains(tag) {
-                            outbounds.push(process_node(node));
+                            outbounds.push(node_for_singbox_with_plugin_bridge(node, &mut plugin_bridge_specs));
                             existing_tags.insert(tag.to_string());
                         }
                         profile_proxy_tags.push(tag.to_string());
@@ -1542,6 +1881,14 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
     outbounds.push(serde_json::json!({ "type": "direct", "tag": "direct" }));
     config["outbounds"] = serde_json::Value::Array(outbounds.clone());
 
+    if let Some(dns_rules) = config["dns"]["rules"].as_array_mut() {
+        for spec in &plugin_bridge_specs {
+            if let Some(rule) = plugin_bridge_remote_dns_rule(spec) {
+                dns_rules.insert(0, rule);
+            }
+        }
+    }
+
     // 收集所有可用的 outbound tags
     let available_outbound_tags: std::collections::HashSet<String> = outbounds.iter()
         .filter_map(|o| o.get("tag").and_then(|t| t.as_str()).map(|s| s.to_string()))
@@ -1562,6 +1909,12 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
 
     if settings.bypass_lan {
         rules.push(serde_json::json!({ "ip_is_private": true, "outbound": "direct" }));
+    }
+
+    for spec in &plugin_bridge_specs {
+        if let Some(rule) = plugin_bridge_remote_direct_rule(spec) {
+            rules.push(rule);
+        }
     }
 
     // ========== 添加自定义域名分流规则 ==========
@@ -1709,6 +2062,8 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
     let config_path = state.config_dir.join("config.json");
     let config_str = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
     fs::write(&config_path, config_str).map_err(|e| e.to_string())?;
+    let plugin_bridge_str = serde_json::to_string_pretty(&plugin_bridge_specs).map_err(|e| e.to_string())?;
+    fs::write(plugin_bridge_path(state), plugin_bridge_str).map_err(|e| e.to_string())?;
 
     Ok(CommandResult::ok())
 }
@@ -2213,6 +2568,33 @@ mod tests {
         })
     }
 
+    fn make_xhttp_node(tag: &str) -> serde_json::Value {
+        serde_json::json!({
+            "tag": tag,
+            "type": "vless",
+            "server": "edge.example.com",
+            "server_port": 443,
+            "uuid": "00000000-0000-0000-0000-000000000000",
+            "encryption": "mlkem768x25519plus.native.0rtt.test",
+            "flow": "xtls-rprx-vision",
+            "packet_encoding": "xudp",
+            "tls": {
+                "enabled": true,
+                "server_name": "edge.example.com",
+                "utls": {
+                    "enabled": true,
+                    "fingerprint": "chrome"
+                }
+            },
+            "transport": {
+                "type": "xhttp",
+                "path": "/proxy",
+                "host": "cdn.example.com",
+                "mode": "auto"
+            }
+        })
+    }
+
     fn make_ruleset(id: &str, outbound_mode: &str, outbound_value: Option<&str>) -> RuleSet {
         RuleSet {
             id: id.to_string(),
@@ -2608,6 +2990,131 @@ mod tests {
         assert!(dns_remote.get("domain_resolver").is_none());
 
         let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn generate_config_bridges_xhttp_nodes_through_local_xray_plugin() {
+        let data_dir = unique_test_dir("xhttp-plugin-bridge");
+        let state = AppState::new(data_dir.clone());
+
+        let profiles_data = ProfilesData {
+            profiles: vec![make_profile("profile-xhttp", "XHTTP Profile")],
+            active_profile_id: Some("profile-xhttp".to_string()),
+            active_node_tag: Some("XHTTP Node".to_string()),
+            node_selections: HashMap::new(),
+        };
+
+        write_json_file(&state.profiles_file(), &profiles_data);
+        write_json_file(&state.configs_dir().join("profile-xhttp.json"), &vec![make_xhttp_node("XHTTP Node")]);
+
+        let result = generate_config(&state).await.unwrap();
+        assert!(result.success);
+
+        let config = read_generated_config(&state);
+        let outbound = config["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node.get("tag").and_then(|value| value.as_str()) == Some("XHTTP Node"))
+            .unwrap();
+
+        assert_eq!(outbound.get("type").and_then(|value| value.as_str()), Some("socks"));
+        assert_eq!(outbound.get("server").and_then(|value| value.as_str()), Some("127.0.0.1"));
+        assert!(outbound.get("server_port").and_then(|value| value.as_u64()).is_some());
+
+        let plugin_specs: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(state.config_dir.join("plugin-bridges.json")).unwrap()
+        ).unwrap();
+        let spec = plugin_specs.as_array().unwrap().first().unwrap();
+
+        assert_eq!(spec["tag"].as_str(), Some("XHTTP Node"));
+        assert_eq!(spec["core"].as_str(), Some("xray"));
+        assert_eq!(spec["node"]["transport"]["type"].as_str(), Some("xhttp"));
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn generate_config_routes_xray_plugin_remote_direct_in_tun_mode() {
+        let data_dir = unique_test_dir("xhttp-plugin-tun-direct");
+        let state = AppState::new(data_dir.clone());
+
+        state.settings.lock().await.tun_enabled = true;
+
+        let profiles_data = ProfilesData {
+            profiles: vec![make_profile("profile-xhttp", "XHTTP Profile")],
+            active_profile_id: Some("profile-xhttp".to_string()),
+            active_node_tag: Some("XHTTP Node".to_string()),
+            node_selections: HashMap::new(),
+        };
+
+        let mut node = make_xhttp_node("XHTTP Node");
+        node["server"] = serde_json::Value::String("35.194.192.123".to_string());
+        write_json_file(&state.profiles_file(), &profiles_data);
+        write_json_file(&state.configs_dir().join("profile-xhttp.json"), &vec![node]);
+
+        let result = generate_config(&state).await.unwrap();
+        assert!(result.success);
+
+        let config = read_generated_config(&state);
+        let rules = config["route"]["rules"].as_array().unwrap();
+        let remote_rule = rules
+            .iter()
+            .find(|rule| {
+                rule.get("ip_cidr")
+                    .and_then(|values| values.as_array())
+                    .map(|values| values.iter().any(|value| value.as_str() == Some("35.194.192.123/32")))
+                    .unwrap_or(false)
+            })
+            .expect("xray plugin remote server must bypass TUN proxy loop");
+
+        assert_eq!(remote_rule.get("outbound").and_then(|value| value.as_str()), Some("direct"));
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn build_xray_plugin_config_preserves_vless_xhttp_transport() {
+        let node = make_xhttp_node("XHTTP Node");
+        let config = build_xray_plugin_config(&node, 18080).unwrap();
+
+        let inbound = config["inbounds"].as_array().unwrap().first().unwrap();
+        assert_eq!(inbound["protocol"].as_str(), Some("socks"));
+        assert_eq!(inbound["port"].as_u64(), Some(18080));
+
+        let outbound = config["outbounds"].as_array().unwrap().first().unwrap();
+        assert_eq!(outbound["protocol"].as_str(), Some("vless"));
+        assert_eq!(
+            outbound["settings"]["vnext"][0]["users"][0]["encryption"].as_str(),
+            Some("mlkem768x25519plus.native.0rtt.test")
+        );
+        assert_eq!(outbound["settings"]["vnext"][0]["users"][0]["flow"].as_str(), Some("xtls-rprx-vision"));
+        assert_eq!(outbound["streamSettings"]["network"].as_str(), Some("xhttp"));
+        assert_eq!(outbound["streamSettings"]["xhttpSettings"]["path"].as_str(), Some("/proxy"));
+        assert_eq!(outbound["streamSettings"]["xhttpSettings"]["host"].as_str(), Some("cdn.example.com"));
+    }
+
+    #[test]
+    fn build_xray_plugin_config_hoists_legacy_xhttp_extra_encryption() {
+        let mut node = make_xhttp_node("Legacy XHTTP Node");
+        node.as_object_mut().unwrap().remove("encryption");
+        node["transport"]["extra"] = serde_json::json!({
+            "encryption": "mlkem768x25519plus.native.0rtt.legacy",
+            "noGRPCHeader": true
+        });
+
+        let config = build_xray_plugin_config(&node, 18080).unwrap();
+        let outbound = config["outbounds"].as_array().unwrap().first().unwrap();
+
+        assert_eq!(
+            outbound["settings"]["vnext"][0]["users"][0]["encryption"].as_str(),
+            Some("mlkem768x25519plus.native.0rtt.legacy")
+        );
+        assert!(outbound["streamSettings"]["xhttpSettings"]["extra"].get("encryption").is_none());
+        assert_eq!(
+            outbound["streamSettings"]["xhttpSettings"]["extra"]["noGRPCHeader"].as_bool(),
+            Some(true)
+        );
     }
 
     #[tokio::test]

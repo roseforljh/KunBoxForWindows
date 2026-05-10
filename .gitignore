@@ -2,6 +2,7 @@ LinJun/
 node_modules/
 dist/
 out/
+src-tauri/target-alt-release/
 *.log
 .env
 .DS_Store

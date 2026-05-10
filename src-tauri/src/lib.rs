@@ -275,6 +275,12 @@ pub fn run() {
             commands::kernel_open_releases_page,
             commands::kernel_open_directory,
             commands::kernel_get_installed_versions,
+            // Plugins
+            commands::plugin_get_xray_local_version,
+            commands::plugin_get_xray_remote_releases,
+            commands::plugin_download_xray,
+            commands::plugin_open_directory,
+            commands::plugin_open_xray_releases_page,
             // Updater
             commands::updater_get_current_version,
             commands::updater_check,

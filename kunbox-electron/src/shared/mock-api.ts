@@ -195,6 +195,31 @@ export const mockApi = {
     onDownloadError: (_callback: (error: string) => void) => noopUnlisten(),
   },
 
+  plugin: {
+    getXrayLocalVersion: () =>
+      Promise.resolve({
+        version: '25.5.16',
+        versionDetail: 'Xray 25.5.16 (mock)',
+      }),
+    getXrayRemoteReleases: () =>
+      Promise.resolve([
+        {
+          version: '25.5.16',
+          tagName: 'v25.5.16',
+          publishedAt: new Date().toISOString(),
+          isPrerelease: false,
+          downloadUrl: 'https://example.com/xray',
+          assetName: 'Xray-windows-64.zip',
+        },
+      ]),
+    downloadXray: (_tagName: string) => Promise.resolve({ success: true }),
+    openDirectory: () => Promise.resolve(),
+    openXrayReleasesPage: () => Promise.resolve(),
+    onDownloadProgress: (_callback: (progress: { downloaded: number; total: number; percent: number }) => void) => noopUnlisten(),
+    onDownloadComplete: (_callback: () => void) => noopUnlisten(),
+    onDownloadError: (_callback: (error: string) => void) => noopUnlisten(),
+  },
+
   ruleset: {
     list: () => Promise.resolve([]),
     save: (_ruleSets: any[]) => Promise.resolve(),
