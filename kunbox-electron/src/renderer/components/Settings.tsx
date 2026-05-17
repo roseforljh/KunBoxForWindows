@@ -179,7 +179,7 @@ export default function Settings() {
                   <SettingRow label="启用 TUN 模式">
                     <Toggle checked={settings.tunEnabled} onChange={(v) => updateSetting('tunEnabled', v)} />
                   </SettingRow>
-                  <SettingRow label="网络栈" isLast>
+                  <SettingRow label="网络栈">
                     <Dropdown
                       value={settings.tunStack}
                       options={[
@@ -189,6 +189,9 @@ export default function Settings() {
                       ]}
                       onChange={(v) => updateSetting('tunStack', v as AppSettings['tunStack'])}
                     />
+                  </SettingRow>
+                  <SettingRow label="严格路由" isLast>
+                    <Toggle checked={settings.tunStrictRoute} onChange={(v) => updateSetting('tunStrictRoute', v)} />
                   </SettingRow>
                 </SettingCard>
 

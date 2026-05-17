@@ -79,6 +79,8 @@ pub struct AppSettings {
     pub tun_enabled: bool,
     #[serde(rename = "tunStack")]
     pub tun_stack: String,
+    #[serde(rename = "tunStrictRoute", default)]
+    pub tun_strict_route: bool,
     #[serde(rename = "localDns")]
     pub local_dns: String,
     #[serde(rename = "remoteDns")]
@@ -128,6 +130,7 @@ impl Default for AppSettings {
             system_proxy: true,
             tun_enabled: false,
             tun_stack: "mixed".to_string(),
+            tun_strict_route: false,
             local_dns: "223.5.5.5".to_string(),
             remote_dns: "https://dns.google/dns-query".to_string(),
             fake_dns: false,

@@ -80,6 +80,7 @@ export interface AppSettings {
   systemProxy: boolean
   tunEnabled: boolean
   tunStack: 'system' | 'gvisor' | 'mixed'
+  tunStrictRoute: boolean
   localDns: string
   remoteDns: string
   fakeDns: boolean

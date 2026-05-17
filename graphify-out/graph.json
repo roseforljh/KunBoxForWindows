@@ -9,7 +9,7 @@
       "source_file": "src-tauri\\build.rs",
       "source_location": "L1",
       "id": "build",
-      "community": 12
+      "community": 13
     },
     {
       "label": "manual_test.rs",
@@ -17,7 +17,7 @@
       "source_file": "manual_test.rs",
       "source_location": "L1",
       "id": "manual_test",
-      "community": 13
+      "community": 14
     },
     {
       "label": "main()",
@@ -25,7 +25,7 @@
       "source_file": "manual_test.rs",
       "source_location": "L3",
       "id": "manual_test_main",
-      "community": 13
+      "community": 14
     },
     {
       "label": "ast_extract.py",
@@ -33,7 +33,7 @@
       "source_file": "graphify-out\\ast_extract.py",
       "source_location": "L1",
       "id": "ast_extract",
-      "community": 14
+      "community": 15
     },
     {
       "label": "semantic_fallback.py",
@@ -41,7 +41,7 @@
       "source_file": "graphify-out\\semantic_fallback.py",
       "source_location": "L1",
       "id": "semantic_fallback",
-      "community": 9
+      "community": 10
     },
     {
       "label": "node()",
@@ -49,7 +49,7 @@
       "source_file": "graphify-out\\semantic_fallback.py",
       "source_location": "L10",
       "id": "semantic_fallback_node",
-      "community": 9
+      "community": 10
     },
     {
       "label": "edge()",
@@ -57,7 +57,7 @@
       "source_file": "graphify-out\\semantic_fallback.py",
       "source_location": "L24",
       "id": "semantic_fallback_edge",
-      "community": 9
+      "community": 10
     },
     {
       "label": "load_uncached_files()",
@@ -65,7 +65,7 @@
       "source_file": "graphify-out\\semantic_fallback.py",
       "source_location": "L37",
       "id": "semantic_fallback_load_uncached_files",
-      "community": 9
+      "community": 10
     },
     {
       "label": "build_shared_doc_graph()",
@@ -73,7 +73,7 @@
       "source_file": "graphify-out\\semantic_fallback.py",
       "source_location": "L49",
       "id": "semantic_fallback_build_shared_doc_graph",
-      "community": 9
+      "community": 10
     },
     {
       "label": "build_icon_nodes()",
@@ -81,7 +81,7 @@
       "source_file": "graphify-out\\semantic_fallback.py",
       "source_location": "L125",
       "id": "semantic_fallback_build_icon_nodes",
-      "community": 9
+      "community": 10
     },
     {
       "label": "main()",
@@ -89,7 +89,7 @@
       "source_file": "graphify-out\\semantic_fallback.py",
       "source_location": "L150",
       "id": "semantic_fallback_main",
-      "community": 9
+      "community": 10
     },
     {
       "label": "postcss.config.js",
@@ -97,7 +97,7 @@
       "source_file": "kunbox-electron\\postcss.config.js",
       "source_location": "L1",
       "id": "postcss_config",
-      "community": 15
+      "community": 16
     },
     {
       "label": "tailwind.config.js",
@@ -105,7 +105,7 @@
       "source_file": "kunbox-electron\\tailwind.config.js",
       "source_location": "L1",
       "id": "tailwind_config",
-      "community": 16
+      "community": 17
     },
     {
       "label": "vite.config.ts",
@@ -113,7 +113,7 @@
       "source_file": "kunbox-electron\\vite.config.ts",
       "source_location": "L1",
       "id": "vite_config",
-      "community": 17
+      "community": 18
     },
     {
       "label": "App.tsx",
@@ -769,7 +769,7 @@
       "source_file": "src-tauri\\src\\commands\\rulesets.rs",
       "source_location": "L1",
       "id": "rulesets",
-      "community": 6
+      "community": 5
     },
     {
       "label": "toggleRuleSet()",
@@ -777,7 +777,7 @@
       "source_file": "kunbox-electron\\src\\renderer\\components\\RuleSets.tsx",
       "source_location": "L462",
       "id": "rulesets_toggleruleset",
-      "community": 6
+      "community": 5
     },
     {
       "label": "changeOutboundMode()",
@@ -785,7 +785,7 @@
       "source_file": "kunbox-electron\\src\\renderer\\components\\RuleSets.tsx",
       "source_location": "L509",
       "id": "rulesets_changeoutboundmode",
-      "community": 6
+      "community": 5
     },
     {
       "label": "confirmDelete()",
@@ -793,7 +793,7 @@
       "source_file": "kunbox-electron\\src\\renderer\\components\\RuleSets.tsx",
       "source_location": "L515",
       "id": "rulesets_confirmdelete",
-      "community": 6
+      "community": 5
     },
     {
       "label": "deleteRuleSet()",
@@ -801,7 +801,7 @@
       "source_file": "kunbox-electron\\src\\renderer\\components\\RuleSets.tsx",
       "source_location": "L520",
       "id": "rulesets_deleteruleset",
-      "community": 6
+      "community": 5
     },
     {
       "label": "openEditDialog()",
@@ -809,7 +809,7 @@
       "source_file": "kunbox-electron\\src\\renderer\\components\\RuleSets.tsx",
       "source_location": "L530",
       "id": "rulesets_openeditdialog",
-      "community": 6
+      "community": 5
     },
     {
       "label": "openAddDialog()",
@@ -817,7 +817,7 @@
       "source_file": "kunbox-electron\\src\\renderer\\components\\RuleSets.tsx",
       "source_location": "L544",
       "id": "rulesets_openadddialog",
-      "community": 6
+      "community": 5
     },
     {
       "label": "saveRuleSet()",
@@ -825,7 +825,7 @@
       "source_file": "kunbox-electron\\src\\renderer\\components\\RuleSets.tsx",
       "source_location": "L558",
       "id": "rulesets_saveruleset",
-      "community": 6
+      "community": 5
     },
     {
       "label": "openHubAddConfirm()",
@@ -833,7 +833,7 @@
       "source_file": "kunbox-electron\\src\\renderer\\components\\RuleSets.tsx",
       "source_location": "L607",
       "id": "rulesets_openhubaddconfirm",
-      "community": 6
+      "community": 5
     },
     {
       "label": "confirmAddFromHub()",
@@ -841,7 +841,7 @@
       "source_file": "kunbox-electron\\src\\renderer\\components\\RuleSets.tsx",
       "source_location": "L612",
       "id": "rulesets_confirmaddfromhub",
-      "community": 6
+      "community": 5
     },
     {
       "label": "resetToDefaults()",
@@ -849,7 +849,7 @@
       "source_file": "kunbox-electron\\src\\renderer\\components\\RuleSets.tsx",
       "source_location": "L663",
       "id": "rulesets_resettodefaults",
-      "community": 6
+      "community": 5
     },
     {
       "label": "getModeIcon()",
@@ -857,7 +857,7 @@
       "source_file": "kunbox-electron\\src\\renderer\\components\\RuleSets.tsx",
       "source_location": "L668",
       "id": "rulesets_getmodeicon",
-      "community": 6
+      "community": 5
     },
     {
       "label": "getModeStyle()",
@@ -865,7 +865,7 @@
       "source_file": "kunbox-electron\\src\\renderer\\components\\RuleSets.tsx",
       "source_location": "L683",
       "id": "rulesets_getmodestyle",
-      "community": 6
+      "community": 5
     },
     {
       "label": "getModeLabel()",
@@ -873,7 +873,7 @@
       "source_file": "kunbox-electron\\src\\renderer\\components\\RuleSets.tsx",
       "source_location": "L698",
       "id": "rulesets_getmodelabel",
-      "community": 6
+      "community": 5
     },
     {
       "label": "getOutboundValueDisplay()",
@@ -881,7 +881,7 @@
       "source_file": "kunbox-electron\\src\\renderer\\components\\RuleSets.tsx",
       "source_location": "L714",
       "id": "rulesets_getoutboundvaluedisplay",
-      "community": 6
+      "community": 5
     },
     {
       "label": "settings.rs",
@@ -889,7 +889,7 @@
       "source_file": "src-tauri\\src\\commands\\settings.rs",
       "source_location": "L1",
       "id": "settings",
-      "community": 5
+      "community": 9
     },
     {
       "label": "updateSetting()",
@@ -897,7 +897,7 @@
       "source_file": "kunbox-electron\\src\\renderer\\components\\Settings.tsx",
       "source_location": "L42",
       "id": "settings_updatesetting",
-      "community": 5
+      "community": 9
     },
     {
       "label": "AddNodeModal.tsx",
@@ -937,7 +937,7 @@
       "source_file": "kunbox-electron\\src\\renderer\\components\\ui\\AddProfileModal.tsx",
       "source_location": "L1",
       "id": "addprofilemodal",
-      "community": 11
+      "community": 12
     },
     {
       "label": "handleClose()",
@@ -945,7 +945,7 @@
       "source_file": "kunbox-electron\\src\\renderer\\components\\ui\\AddProfileModal.tsx",
       "source_location": "L47",
       "id": "addprofilemodal_handleclose",
-      "community": 11
+      "community": 12
     },
     {
       "label": "handlePaste()",
@@ -953,7 +953,7 @@
       "source_file": "kunbox-electron\\src\\renderer\\components\\ui\\AddProfileModal.tsx",
       "source_location": "L61",
       "id": "addprofilemodal_handlepaste",
-      "community": 11
+      "community": 12
     },
     {
       "label": "handleFileSelect()",
@@ -961,7 +961,7 @@
       "source_file": "kunbox-electron\\src\\renderer\\components\\ui\\AddProfileModal.tsx",
       "source_location": "L70",
       "id": "addprofilemodal_handlefileselect",
-      "community": 11
+      "community": 12
     },
     {
       "label": "handleImport()",
@@ -969,7 +969,7 @@
       "source_file": "kunbox-electron\\src\\renderer\\components\\ui\\AddProfileModal.tsx",
       "source_location": "L91",
       "id": "addprofilemodal_handleimport",
-      "community": 11
+      "community": 12
     },
     {
       "label": "ConfirmModal.tsx",
@@ -1201,7 +1201,7 @@
       "source_file": "kunbox-electron\\src\\renderer\\types\\global.d.ts",
       "source_location": "L1",
       "id": "global_d",
-      "community": 18
+      "community": 19
     },
     {
       "label": "constants.ts",
@@ -1209,7 +1209,7 @@
       "source_file": "kunbox-electron\\src\\shared\\constants.ts",
       "source_location": "L1",
       "id": "constants",
-      "community": 19
+      "community": 20
     },
     {
       "label": "mock-api.ts",
@@ -1239,7 +1239,7 @@
       "label": "initMockApi()",
       "file_type": "code",
       "source_file": "kunbox-electron\\src\\shared\\mock-api.ts",
-      "source_location": "L257",
+      "source_location": "L258",
       "id": "mock_api_initmockapi",
       "community": 2
     },
@@ -1281,7 +1281,7 @@
       "source_file": "src-tauri\\build.rs",
       "source_location": "L1",
       "id": "build_main",
-      "community": 12
+      "community": 13
     },
     {
       "label": "lib.rs",
@@ -1289,7 +1289,7 @@
       "source_file": "src-tauri\\src\\lib.rs",
       "source_location": "L1",
       "id": "lib",
-      "community": 10
+      "community": 11
     },
     {
       "label": "append_startup_diagnostic()",
@@ -1297,7 +1297,7 @@
       "source_file": "src-tauri\\src\\lib.rs",
       "source_location": "L14",
       "id": "lib_append_startup_diagnostic",
-      "community": 10
+      "community": 11
     },
     {
       "label": "read_settings_sync()",
@@ -1305,7 +1305,7 @@
       "source_file": "src-tauri\\src\\lib.rs",
       "source_location": "L24",
       "id": "lib_read_settings_sync",
-      "community": 10
+      "community": 11
     },
     {
       "label": "spawn_safe_exit()",
@@ -1313,7 +1313,7 @@
       "source_file": "src-tauri\\src\\lib.rs",
       "source_location": "L36",
       "id": "lib_spawn_safe_exit",
-      "community": 10
+      "community": 11
     },
     {
       "label": "run()",
@@ -1321,7 +1321,7 @@
       "source_file": "src-tauri\\src\\lib.rs",
       "source_location": "L68",
       "id": "lib_run",
-      "community": 10
+      "community": 11
     },
     {
       "label": "get_data_dir()",
@@ -1329,7 +1329,7 @@
       "source_file": "src-tauri\\src\\lib.rs",
       "source_location": "L298",
       "id": "lib_get_data_dir",
-      "community": 10
+      "community": 11
     },
     {
       "label": "setup_tray()",
@@ -1337,7 +1337,7 @@
       "source_file": "src-tauri\\src\\lib.rs",
       "source_location": "L306",
       "id": "lib_setup_tray",
-      "community": 10
+      "community": 11
     },
     {
       "label": "main()",
@@ -1353,7 +1353,7 @@
       "source_file": "src-tauri\\src\\state.rs",
       "source_location": "L1",
       "id": "state",
-      "community": 5
+      "community": 6
     },
     {
       "label": "AppState",
@@ -1361,7 +1361,7 @@
       "source_file": "src-tauri\\src\\state.rs",
       "source_location": "L7",
       "id": "state_appstate",
-      "community": 5
+      "community": 6
     },
     {
       "label": ".new()",
@@ -1369,7 +1369,7 @@
       "source_file": "src-tauri\\src\\state.rs",
       "source_location": "L26",
       "id": "state_appstate_new",
-      "community": 5
+      "community": 6
     },
     {
       "label": ".profiles_file()",
@@ -1377,7 +1377,7 @@
       "source_file": "src-tauri\\src\\state.rs",
       "source_location": "L47",
       "id": "state_appstate_profiles_file",
-      "community": 5
+      "community": 6
     },
     {
       "label": ".settings_file()",
@@ -1385,7 +1385,7 @@
       "source_file": "src-tauri\\src\\state.rs",
       "source_location": "L51",
       "id": "state_appstate_settings_file",
-      "community": 5
+      "community": 6
     },
     {
       "label": ".rulesets_file()",
@@ -1393,7 +1393,7 @@
       "source_file": "src-tauri\\src\\state.rs",
       "source_location": "L55",
       "id": "state_appstate_rulesets_file",
-      "community": 5
+      "community": 6
     },
     {
       "label": ".configs_dir()",
@@ -1401,7 +1401,7 @@
       "source_file": "src-tauri\\src\\state.rs",
       "source_location": "L59",
       "id": "state_appstate_configs_dir",
-      "community": 5
+      "community": 6
     },
     {
       "label": ".rulesets_cache_dir()",
@@ -1409,7 +1409,7 @@
       "source_file": "src-tauri\\src\\state.rs",
       "source_location": "L63",
       "id": "state_appstate_rulesets_cache_dir",
-      "community": 5
+      "community": 6
     },
     {
       "label": ".custom_rules_file()",
@@ -1417,7 +1417,7 @@
       "source_file": "src-tauri\\src\\state.rs",
       "source_location": "L67",
       "id": "state_appstate_custom_rules_file",
-      "community": 5
+      "community": 6
     },
     {
       "label": "ProxyState",
@@ -1471,7 +1471,7 @@
       "label": "default_enable_runtime_logs()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L118",
+      "source_location": "L120",
       "id": "types_default_enable_runtime_logs",
       "community": 2
     },
@@ -1479,7 +1479,7 @@
       "label": ".default()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L123",
+      "source_location": "L125",
       "id": "types_appsettings_default",
       "community": 2
     },
@@ -1487,7 +1487,7 @@
       "label": "SingBoxOutbound",
       "file_type": "code",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L153",
+      "source_location": "L156",
       "id": "types_singboxoutbound",
       "community": 2
     },
@@ -1495,7 +1495,7 @@
       "label": "RuleSet",
       "file_type": "code",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L164",
+      "source_location": "L167",
       "id": "types_ruleset",
       "community": 2
     },
@@ -1503,7 +1503,7 @@
       "label": "CommandResult",
       "file_type": "code",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L182",
+      "source_location": "L185",
       "id": "types_commandresult",
       "community": 2
     },
@@ -1511,7 +1511,7 @@
       "label": ".ok()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L191",
+      "source_location": "L194",
       "id": "types_commandresult_ok",
       "community": 2
     },
@@ -1519,7 +1519,7 @@
       "label": ".ok_with_warning()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L195",
+      "source_location": "L198",
       "id": "types_commandresult_ok_with_warning",
       "community": 2
     },
@@ -1527,7 +1527,7 @@
       "label": ".err()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L199",
+      "source_location": "L202",
       "id": "types_commandresult_err",
       "community": 2
     },
@@ -1535,7 +1535,7 @@
       "label": "NodeLatencyStatus",
       "file_type": "code",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L206",
+      "source_location": "L209",
       "id": "types_nodelatencystatus",
       "community": 2
     },
@@ -1543,7 +1543,7 @@
       "label": "NodeLatencyResult",
       "file_type": "code",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L214",
+      "source_location": "L217",
       "id": "types_nodelatencyresult",
       "community": 2
     },
@@ -1551,7 +1551,7 @@
       "label": ".success()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L221",
+      "source_location": "L224",
       "id": "types_nodelatencyresult_success",
       "community": 2
     },
@@ -1559,7 +1559,7 @@
       "label": ".timeout()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L228",
+      "source_location": "L231",
       "id": "types_nodelatencyresult_timeout",
       "community": 2
     },
@@ -1567,7 +1567,7 @@
       "label": ".controller_unavailable()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L235",
+      "source_location": "L238",
       "id": "types_nodelatencyresult_controller_unavailable",
       "community": 2
     },
@@ -1575,7 +1575,7 @@
       "label": ".local_test_failed()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L242",
+      "source_location": "L245",
       "id": "types_nodelatencyresult_local_test_failed",
       "community": 2
     },
@@ -1583,7 +1583,7 @@
       "label": "DomainRule",
       "file_type": "code",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L251",
+      "source_location": "L254",
       "id": "types_domainrule",
       "community": 2
     },
@@ -1591,7 +1591,7 @@
       "label": "CustomRules",
       "file_type": "code",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L265",
+      "source_location": "L268",
       "id": "types_customrules",
       "community": 2
     },
@@ -1599,7 +1599,7 @@
       "label": ".default()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L271",
+      "source_location": "L274",
       "id": "types_customrules_default",
       "community": 2
     },
@@ -1985,7 +1985,7 @@
       "source_file": "src-tauri\\src\\commands\\mod.rs",
       "source_location": "L1",
       "id": "mod",
-      "community": 5
+      "community": 6
     },
     {
       "label": "PluginVersion",
@@ -3137,7 +3137,7 @@
       "source_file": "src-tauri\\src\\commands\\rules.rs",
       "source_location": "L1",
       "id": "rules",
-      "community": 5
+      "community": 6
     },
     {
       "label": "load_custom_rules()",
@@ -3145,7 +3145,7 @@
       "source_file": "src-tauri\\src\\commands\\rules.rs",
       "source_location": "L6",
       "id": "rules_load_custom_rules",
-      "community": 5
+      "community": 6
     },
     {
       "label": "save_custom_rules()",
@@ -3153,7 +3153,7 @@
       "source_file": "src-tauri\\src\\commands\\rules.rs",
       "source_location": "L30",
       "id": "rules_save_custom_rules",
-      "community": 5
+      "community": 6
     },
     {
       "label": "custom_rules_get()",
@@ -3161,7 +3161,7 @@
       "source_file": "src-tauri\\src\\commands\\rules.rs",
       "source_location": "L38",
       "id": "rules_custom_rules_get",
-      "community": 5
+      "community": 6
     },
     {
       "label": "custom_rules_save()",
@@ -3169,7 +3169,7 @@
       "source_file": "src-tauri\\src\\commands\\rules.rs",
       "source_location": "L45",
       "id": "rules_custom_rules_save",
-      "community": 5
+      "community": 6
     },
     {
       "label": "domain_rules_get()",
@@ -3177,7 +3177,7 @@
       "source_file": "src-tauri\\src\\commands\\rules.rs",
       "source_location": "L52",
       "id": "rules_domain_rules_get",
-      "community": 5
+      "community": 6
     },
     {
       "label": "domain_rules_save()",
@@ -3185,7 +3185,7 @@
       "source_file": "src-tauri\\src\\commands\\rules.rs",
       "source_location": "L59",
       "id": "rules_domain_rules_save",
-      "community": 5
+      "community": 6
     },
     {
       "label": "get_default_rulesets()",
@@ -3193,7 +3193,7 @@
       "source_file": "src-tauri\\src\\commands\\rulesets.rs",
       "source_location": "L14",
       "id": "rulesets_get_default_rulesets",
-      "community": 6
+      "community": 5
     },
     {
       "label": "load_rulesets()",
@@ -3201,7 +3201,7 @@
       "source_file": "src-tauri\\src\\commands\\rulesets.rs",
       "source_location": "L67",
       "id": "rulesets_load_rulesets",
-      "community": 6
+      "community": 5
     },
     {
       "label": "save_rulesets()",
@@ -3209,7 +3209,7 @@
       "source_file": "src-tauri\\src\\commands\\rulesets.rs",
       "source_location": "L81",
       "id": "rulesets_save_rulesets",
-      "community": 6
+      "community": 5
     },
     {
       "label": "ruleset_list()",
@@ -3217,7 +3217,7 @@
       "source_file": "src-tauri\\src\\commands\\rulesets.rs",
       "source_location": "L89",
       "id": "rulesets_ruleset_list",
-      "community": 6
+      "community": 5
     },
     {
       "label": "ruleset_save()",
@@ -3225,7 +3225,7 @@
       "source_file": "src-tauri\\src\\commands\\rulesets.rs",
       "source_location": "L96",
       "id": "rulesets_ruleset_save",
-      "community": 6
+      "community": 5
     },
     {
       "label": "is_valid_ruleset_tag()",
@@ -3233,7 +3233,7 @@
       "source_file": "src-tauri\\src\\commands\\rulesets.rs",
       "source_location": "L102",
       "id": "rulesets_is_valid_ruleset_tag",
-      "community": 6
+      "community": 5
     },
     {
       "label": "ruleset_cache_path()",
@@ -3241,7 +3241,7 @@
       "source_file": "src-tauri\\src\\commands\\rulesets.rs",
       "source_location": "L108",
       "id": "rulesets_ruleset_cache_path",
-      "community": 6
+      "community": 5
     },
     {
       "label": "build_local_proxy_client()",
@@ -3249,7 +3249,7 @@
       "source_file": "src-tauri\\src\\commands\\rulesets.rs",
       "source_location": "L116",
       "id": "rulesets_build_local_proxy_client",
-      "community": 6
+      "community": 5
     },
     {
       "label": "ruleset_download()",
@@ -3257,7 +3257,7 @@
       "source_file": "src-tauri\\src\\commands\\rulesets.rs",
       "source_location": "L132",
       "id": "rulesets_ruleset_download",
-      "community": 6
+      "community": 5
     },
     {
       "label": "extract_github_path()",
@@ -3265,7 +3265,7 @@
       "source_file": "src-tauri\\src\\commands\\rulesets.rs",
       "source_location": "L206",
       "id": "rulesets_extract_github_path",
-      "community": 6
+      "community": 5
     },
     {
       "label": "download_and_verify()",
@@ -3273,7 +3273,7 @@
       "source_file": "src-tauri\\src\\commands\\rulesets.rs",
       "source_location": "L235",
       "id": "rulesets_download_and_verify",
-      "community": 6
+      "community": 5
     },
     {
       "label": "ruleset_is_cached()",
@@ -3281,7 +3281,7 @@
       "source_file": "src-tauri\\src\\commands\\rulesets.rs",
       "source_location": "L282",
       "id": "rulesets_ruleset_is_cached",
-      "community": 6
+      "community": 5
     },
     {
       "label": "rejects_invalid_ruleset_tags()",
@@ -3289,7 +3289,7 @@
       "source_file": "src-tauri\\src\\commands\\rulesets.rs",
       "source_location": "L292",
       "id": "rulesets_rejects_invalid_ruleset_tags",
-      "community": 6
+      "community": 5
     },
     {
       "label": "extracts_github_paths()",
@@ -3297,7 +3297,7 @@
       "source_file": "src-tauri\\src\\commands\\rulesets.rs",
       "source_location": "L298",
       "id": "rulesets_extracts_github_paths",
-      "community": 6
+      "community": 5
     },
     {
       "label": "local_proxy_client_uses_settings_port()",
@@ -3305,7 +3305,7 @@
       "source_file": "src-tauri\\src\\commands\\rulesets.rs",
       "source_location": "L311",
       "id": "rulesets_local_proxy_client_uses_settings_port",
-      "community": 6
+      "community": 5
     },
     {
       "label": "ruleset_fetch_hub()",
@@ -3313,7 +3313,7 @@
       "source_file": "src-tauri\\src\\commands\\rulesets.rs",
       "source_location": "L323",
       "id": "rulesets_ruleset_fetch_hub",
-      "community": 6
+      "community": 5
     },
     {
       "label": "decode_windows_output()",
@@ -3321,7 +3321,7 @@
       "source_file": "src-tauri\\src\\commands\\settings.rs",
       "source_location": "L10",
       "id": "settings_decode_windows_output",
-      "community": 5
+      "community": 9
     },
     {
       "label": "ensure_u16_in_range()",
@@ -3329,7 +3329,7 @@
       "source_file": "src-tauri\\src\\commands\\settings.rs",
       "source_location": "L19",
       "id": "settings_ensure_u16_in_range",
-      "community": 5
+      "community": 9
     },
     {
       "label": "ensure_u32_in_range()",
@@ -3337,7 +3337,7 @@
       "source_file": "src-tauri\\src\\commands\\settings.rs",
       "source_location": "L26",
       "id": "settings_ensure_u32_in_range",
-      "community": 5
+      "community": 9
     },
     {
       "label": "validate_port_pair()",
@@ -3345,7 +3345,7 @@
       "source_file": "src-tauri\\src\\commands\\settings.rs",
       "source_location": "L33",
       "id": "settings_validate_port_pair",
-      "community": 5
+      "community": 9
     },
     {
       "label": "set_windows_startup()",
@@ -3353,7 +3353,7 @@
       "source_file": "src-tauri\\src\\commands\\settings.rs",
       "source_location": "L42",
       "id": "settings_set_windows_startup",
-      "community": 5
+      "community": 9
     },
     {
       "label": "write_settings_file()",
@@ -3361,7 +3361,7 @@
       "source_file": "src-tauri\\src\\commands\\settings.rs",
       "source_location": "L83",
       "id": "settings_write_settings_file",
-      "community": 5
+      "community": 9
     },
     {
       "label": "set_settings_impl()",
@@ -3369,71 +3369,71 @@
       "source_file": "src-tauri\\src\\commands\\settings.rs",
       "source_location": "L90",
       "id": "settings_set_settings_impl",
-      "community": 5
+      "community": 9
     },
     {
       "label": "get_settings()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\settings.rs",
-      "source_location": "L152",
+      "source_location": "L153",
       "id": "settings_get_settings",
-      "community": 5
+      "community": 9
     },
     {
       "label": "set_settings()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\settings.rs",
-      "source_location": "L168",
+      "source_location": "L169",
       "id": "settings_set_settings",
-      "community": 5
+      "community": 9
     },
     {
       "label": "unique_test_path()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\settings.rs",
-      "source_location": "L179",
+      "source_location": "L180",
       "id": "settings_unique_test_path",
-      "community": 5
+      "community": 9
     },
     {
       "label": "validates_u16_range()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\settings.rs",
-      "source_location": "L188",
+      "source_location": "L189",
       "id": "settings_validates_u16_range",
-      "community": 5
+      "community": 9
     },
     {
       "label": "validates_u32_range()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\settings.rs",
-      "source_location": "L195",
+      "source_location": "L196",
       "id": "settings_validates_u32_range",
-      "community": 5
+      "community": 9
     },
     {
       "label": "rejects_duplicate_local_and_socks_ports()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\settings.rs",
-      "source_location": "L202",
+      "source_location": "L203",
       "id": "settings_rejects_duplicate_local_and_socks_ports",
-      "community": 5
+      "community": 9
     },
     {
       "label": "set_settings_rolls_back_startup_side_effect_when_persist_fails()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\settings.rs",
-      "source_location": "L213",
+      "source_location": "L214",
       "id": "settings_set_settings_rolls_back_startup_side_effect_when_persist_fails",
-      "community": 5
+      "community": 9
     },
     {
       "label": "set_settings_keeps_startup_side_effect_when_persist_succeeds()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\settings.rs",
-      "source_location": "L236",
+      "source_location": "L237",
       "id": "settings_set_settings_keeps_startup_side_effect_when_persist_succeeds",
-      "community": 5
+      "community": 9
     },
     {
       "label": "singbox.rs",
@@ -3911,7 +3911,7 @@
       "label": "get_singbox_path()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2071",
+      "source_location": "L2075",
       "id": "singbox_get_singbox_path",
       "community": 1
     },
@@ -3919,7 +3919,7 @@
       "label": "SystemProxySnapshot",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2082",
+      "source_location": "L2086",
       "id": "singbox_systemproxysnapshot",
       "community": 1
     },
@@ -3927,7 +3927,7 @@
       "label": "PersistedSystemProxySnapshot",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2090",
+      "source_location": "L2094",
       "id": "singbox_persistedsystemproxysnapshot",
       "community": 1
     },
@@ -3935,7 +3935,7 @@
       "label": "ProxyCleanupMode",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2098",
+      "source_location": "L2102",
       "id": "singbox_proxycleanupmode",
       "community": 1
     },
@@ -3943,7 +3943,7 @@
       "label": "ProxySessionFlag",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2104",
+      "source_location": "L2108",
       "id": "singbox_proxysessionflag",
       "community": 1
     },
@@ -3951,7 +3951,7 @@
       "label": "query_registry_value()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2113",
+      "source_location": "L2117",
       "id": "singbox_query_registry_value",
       "community": 1
     },
@@ -3959,7 +3959,7 @@
       "label": "snapshot_system_proxy_if_needed()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2141",
+      "source_location": "L2145",
       "id": "singbox_snapshot_system_proxy_if_needed",
       "community": 1
     },
@@ -3967,7 +3967,7 @@
       "label": "snapshot_system_proxy_if_needed_for_state()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2166",
+      "source_location": "L2170",
       "id": "singbox_snapshot_system_proxy_if_needed_for_state",
       "community": 1
     },
@@ -3975,7 +3975,7 @@
       "label": "set_registry_value()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2193",
+      "source_location": "L2197",
       "id": "singbox_set_registry_value",
       "community": 1
     },
@@ -3983,7 +3983,7 @@
       "label": "delete_registry_value()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2219",
+      "source_location": "L2223",
       "id": "singbox_delete_registry_value",
       "community": 1
     },
@@ -3991,7 +3991,7 @@
       "label": "proxy_session_marker_path()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2246",
+      "source_location": "L2250",
       "id": "singbox_proxy_session_marker_path",
       "community": 1
     },
@@ -3999,7 +3999,7 @@
       "label": "persisted_proxy_snapshot_path()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2251",
+      "source_location": "L2255",
       "id": "singbox_persisted_proxy_snapshot_path",
       "community": 1
     },
@@ -4007,7 +4007,7 @@
       "label": "write_proxy_session_marker()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2256",
+      "source_location": "L2260",
       "id": "singbox_write_proxy_session_marker",
       "community": 1
     },
@@ -4015,7 +4015,7 @@
       "label": "clear_proxy_session_marker()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2265",
+      "source_location": "L2269",
       "id": "singbox_clear_proxy_session_marker",
       "community": 1
     },
@@ -4023,7 +4023,7 @@
       "label": "read_proxy_session_marker()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2274",
+      "source_location": "L2278",
       "id": "singbox_read_proxy_session_marker",
       "community": 1
     },
@@ -4031,7 +4031,7 @@
       "label": "save_persisted_proxy_snapshot()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2285",
+      "source_location": "L2289",
       "id": "singbox_save_persisted_proxy_snapshot",
       "community": 1
     },
@@ -4039,7 +4039,7 @@
       "label": "load_persisted_proxy_snapshot()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2298",
+      "source_location": "L2302",
       "id": "singbox_load_persisted_proxy_snapshot",
       "community": 1
     },
@@ -4047,7 +4047,7 @@
       "label": "clear_persisted_proxy_snapshot()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2315",
+      "source_location": "L2319",
       "id": "singbox_clear_persisted_proxy_snapshot",
       "community": 1
     },
@@ -4055,7 +4055,7 @@
       "label": "looks_like_local_proxy_server()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2324",
+      "source_location": "L2328",
       "id": "singbox_looks_like_local_proxy_server",
       "community": 1
     },
@@ -4063,7 +4063,7 @@
       "label": "force_clear_system_proxy()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2333",
+      "source_location": "L2337",
       "id": "singbox_force_clear_system_proxy",
       "community": 1
     },
@@ -4071,7 +4071,7 @@
       "label": "restore_system_proxy_snapshot()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2342",
+      "source_location": "L2346",
       "id": "singbox_restore_system_proxy_snapshot",
       "community": 1
     },
@@ -4079,7 +4079,7 @@
       "label": "restore_persisted_or_clear()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2379",
+      "source_location": "L2383",
       "id": "singbox_restore_persisted_or_clear",
       "community": 1
     },
@@ -4087,7 +4087,7 @@
       "label": "enable_system_proxy_internal()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2408",
+      "source_location": "L2412",
       "id": "singbox_enable_system_proxy_internal",
       "community": 1
     },
@@ -4095,7 +4095,7 @@
       "label": "enable_system_proxy_for_state()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2427",
+      "source_location": "L2431",
       "id": "singbox_enable_system_proxy_for_state",
       "community": 1
     },
@@ -4103,7 +4103,7 @@
       "label": "disable_system_proxy_for_state()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2441",
+      "source_location": "L2445",
       "id": "singbox_disable_system_proxy_for_state",
       "community": 1
     },
@@ -4111,7 +4111,7 @@
       "label": "disable_system_proxy_for_state_on_crash()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2458",
+      "source_location": "L2462",
       "id": "singbox_disable_system_proxy_for_state_on_crash",
       "community": 1
     },
@@ -4119,7 +4119,7 @@
       "label": "repair_stale_proxy_if_needed()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2469",
+      "source_location": "L2473",
       "id": "singbox_repair_stale_proxy_if_needed",
       "community": 1
     },
@@ -4127,7 +4127,7 @@
       "label": "update_max()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2529",
+      "source_location": "L2533",
       "id": "singbox_update_max",
       "community": 1
     },
@@ -4135,7 +4135,7 @@
       "label": "unique_test_dir()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2539",
+      "source_location": "L2543",
       "id": "singbox_unique_test_dir",
       "community": 8
     },
@@ -4143,7 +4143,7 @@
       "label": "make_profile()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2547",
+      "source_location": "L2551",
       "id": "singbox_make_profile",
       "community": 8
     },
@@ -4151,7 +4151,7 @@
       "label": "make_node()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2561",
+      "source_location": "L2565",
       "id": "singbox_make_node",
       "community": 1
     },
@@ -4159,15 +4159,15 @@
       "label": "make_xhttp_node()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2571",
+      "source_location": "L2575",
       "id": "singbox_make_xhttp_node",
-      "community": 1
+      "community": 8
     },
     {
       "label": "make_ruleset()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2598",
+      "source_location": "L2602",
       "id": "singbox_make_ruleset",
       "community": 1
     },
@@ -4175,7 +4175,7 @@
       "label": "make_domain_rule()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2613",
+      "source_location": "L2617",
       "id": "singbox_make_domain_rule",
       "community": 1
     },
@@ -4183,7 +4183,7 @@
       "label": "write_json_file()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2625",
+      "source_location": "L2629",
       "id": "singbox_write_json_file",
       "community": 8
     },
@@ -4191,7 +4191,7 @@
       "label": "read_generated_config()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2632",
+      "source_location": "L2636",
       "id": "singbox_read_generated_config",
       "community": 8
     },
@@ -4199,7 +4199,7 @@
       "label": "detects_local_proxy_server_values()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2639",
+      "source_location": "L2643",
       "id": "singbox_detects_local_proxy_server_values",
       "community": 1
     },
@@ -4207,7 +4207,7 @@
       "label": "force_clear_mode_is_distinct()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2646",
+      "source_location": "L2650",
       "id": "singbox_force_clear_mode_is_distinct",
       "community": 1
     },
@@ -4215,7 +4215,7 @@
       "label": "parse_foreign_wintun_aliases_ignores_kunbox_tun_and_keeps_foreign_aliases()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2651",
+      "source_location": "L2655",
       "id": "singbox_parse_foreign_wintun_aliases_ignores_kunbox_tun_and_keeps_foreign_aliases",
       "community": 1
     },
@@ -4223,7 +4223,7 @@
       "label": "parse_foreign_wintun_aliases_handles_single_object_payload()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2663",
+      "source_location": "L2667",
       "id": "singbox_parse_foreign_wintun_aliases_handles_single_object_payload",
       "community": 1
     },
@@ -4231,7 +4231,7 @@
       "label": "generate_config_uses_profile_ids_for_selector_tags()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2670",
+      "source_location": "L2674",
       "id": "singbox_generate_config_uses_profile_ids_for_selector_tags",
       "community": 8
     },
@@ -4239,7 +4239,7 @@
       "label": "generate_config_uses_saved_profile_node_selection_for_profile_selector_default()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2711",
+      "source_location": "L2715",
       "id": "singbox_generate_config_uses_saved_profile_node_selection_for_profile_selector_default",
       "community": 8
     },
@@ -4247,7 +4247,7 @@
       "label": "generate_config_preserves_profile_scoped_node_identity_for_domain_rules()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2746",
+      "source_location": "L2750",
       "id": "singbox_generate_config_preserves_profile_scoped_node_identity_for_domain_rules",
       "community": 8
     },
@@ -4255,7 +4255,7 @@
       "label": "generate_config_supports_profile_scoped_and_bare_ruleset_node_routes()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2802",
+      "source_location": "L2806",
       "id": "singbox_generate_config_supports_profile_scoped_and_bare_ruleset_node_routes",
       "community": 8
     },
@@ -4263,7 +4263,7 @@
       "label": "generate_config_uses_direct_dns_bootstrap_for_ech_nodes()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2868",
+      "source_location": "L2872",
       "id": "singbox_generate_config_uses_direct_dns_bootstrap_for_ech_nodes",
       "community": 8
     },
@@ -4271,7 +4271,7 @@
       "label": "generate_config_keeps_proxy_dns_for_non_ech_active_node()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2937",
+      "source_location": "L2941",
       "id": "singbox_generate_config_keeps_proxy_dns_for_non_ech_active_node",
       "community": 8
     },
@@ -4279,7 +4279,7 @@
       "label": "generate_config_bridges_xhttp_nodes_through_local_xray_plugin()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2996",
+      "source_location": "L3000",
       "id": "singbox_generate_config_bridges_xhttp_nodes_through_local_xray_plugin",
       "community": 8
     },
@@ -4287,15 +4287,31 @@
       "label": "generate_config_routes_xray_plugin_remote_direct_in_tun_mode()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3038",
+      "source_location": "L3042",
       "id": "singbox_generate_config_routes_xray_plugin_remote_direct_in_tun_mode",
+      "community": 8
+    },
+    {
+      "label": "generate_config_uses_non_strict_tun_route_by_default()",
+      "file_type": "code",
+      "source_file": "src-tauri\\src\\commands\\singbox.rs",
+      "source_location": "L3081",
+      "id": "singbox_generate_config_uses_non_strict_tun_route_by_default",
+      "community": 8
+    },
+    {
+      "label": "generate_config_scopes_fakedns_to_tun_inbound_when_tun_is_enabled()",
+      "file_type": "code",
+      "source_file": "src-tauri\\src\\commands\\singbox.rs",
+      "source_location": "L3114",
+      "id": "singbox_generate_config_scopes_fakedns_to_tun_inbound_when_tun_is_enabled",
       "community": 8
     },
     {
       "label": "build_xray_plugin_config_preserves_vless_xhttp_transport()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3077",
+      "source_location": "L3150",
       "id": "singbox_build_xray_plugin_config_preserves_vless_xhttp_transport",
       "community": 1
     },
@@ -4303,15 +4319,15 @@
       "label": "build_xray_plugin_config_hoists_legacy_xhttp_extra_encryption()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3098",
+      "source_location": "L3171",
       "id": "singbox_build_xray_plugin_config_hoists_legacy_xhttp_extra_encryption",
-      "community": 1
+      "community": 8
     },
     {
       "label": "bounded_selector_probe_helper_caps_concurrency()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3121",
+      "source_location": "L3194",
       "id": "singbox_bounded_selector_probe_helper_caps_concurrency",
       "community": 1
     },
@@ -4319,7 +4335,7 @@
       "label": "recognizes_taskkill_missing_process_output()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3144",
+      "source_location": "L3217",
       "id": "singbox_recognizes_taskkill_missing_process_output",
       "community": 1
     },
@@ -4327,7 +4343,7 @@
       "label": "disable_system_proxy_internal()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3160",
+      "source_location": "L3233",
       "id": "singbox_disable_system_proxy_internal",
       "community": 1
     },
@@ -4335,7 +4351,7 @@
       "label": "start_traffic_polling()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3167",
+      "source_location": "L3240",
       "id": "singbox_start_traffic_polling",
       "community": 1
     },
@@ -4343,7 +4359,7 @@
       "label": "load_profiles_data_from_file()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3240",
+      "source_location": "L3313",
       "id": "singbox_load_profiles_data_from_file",
       "community": 1
     },
@@ -4351,7 +4367,7 @@
       "label": "collect_referenced_profile_selector_tags()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3255",
+      "source_location": "L3328",
       "id": "singbox_collect_referenced_profile_selector_tags",
       "community": 1
     },
@@ -4359,7 +4375,7 @@
       "label": "switch_selector_to_node()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3299",
+      "source_location": "L3372",
       "id": "singbox_switch_selector_to_node",
       "community": 1
     },
@@ -4367,7 +4383,7 @@
       "label": "probe_selector_node_latency()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3320",
+      "source_location": "L3393",
       "id": "singbox_probe_selector_node_latency",
       "community": 1
     },
@@ -4375,7 +4391,7 @@
       "label": "run_bounded_selector_probes()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3350",
+      "source_location": "L3423",
       "id": "singbox_run_bounded_selector_probes",
       "community": 1
     },
@@ -4383,7 +4399,7 @@
       "label": "test_selector_latency_internal()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3382",
+      "source_location": "L3455",
       "id": "singbox_test_selector_latency_internal",
       "community": 1
     },
@@ -4391,7 +4407,7 @@
       "label": "singbox_test_selector_latency()",
       "file_type": "code",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3491",
+      "source_location": "L3564",
       "id": "singbox_singbox_test_selector_latency",
       "community": 1
     },
@@ -4401,7 +4417,7 @@
       "source_file": "src-tauri\\src\\commands\\updater.rs",
       "source_location": "L1",
       "id": "updater",
-      "community": 5
+      "community": 6
     },
     {
       "label": "UpdateInfo",
@@ -4409,7 +4425,7 @@
       "source_file": "src-tauri\\src\\commands\\updater.rs",
       "source_location": "L6",
       "id": "updater_updateinfo",
-      "community": 5
+      "community": 6
     },
     {
       "label": "updater_check()",
@@ -4417,7 +4433,7 @@
       "source_file": "src-tauri\\src\\commands\\updater.rs",
       "source_location": "L15",
       "id": "updater_updater_check",
-      "community": 5
+      "community": 6
     },
     {
       "label": "updater_get_current_version()",
@@ -4425,7 +4441,7 @@
       "source_file": "src-tauri\\src\\commands\\updater.rs",
       "source_location": "L45",
       "id": "updater_updater_get_current_version",
-      "community": 5
+      "community": 6
     },
     {
       "label": "updater_download_and_install()",
@@ -4433,7 +4449,7 @@
       "source_file": "src-tauri\\src\\commands\\updater.rs",
       "source_location": "L50",
       "id": "updater_updater_download_and_install",
-      "community": 5
+      "community": 6
     },
     {
       "label": "window.rs",
@@ -4441,7 +4457,7 @@
       "source_file": "src-tauri\\src\\commands\\window.rs",
       "source_location": "L1",
       "id": "window",
-      "community": 5
+      "community": 6
     },
     {
       "label": "is_admin()",
@@ -4449,7 +4465,7 @@
       "source_file": "src-tauri\\src\\commands\\window.rs",
       "source_location": "L6",
       "id": "window_is_admin",
-      "community": 5
+      "community": 6
     },
     {
       "label": "window_minimize()",
@@ -4457,7 +4473,7 @@
       "source_file": "src-tauri\\src\\commands\\window.rs",
       "source_location": "L50",
       "id": "window_window_minimize",
-      "community": 5
+      "community": 6
     },
     {
       "label": "window_maximize()",
@@ -4465,7 +4481,7 @@
       "source_file": "src-tauri\\src\\commands\\window.rs",
       "source_location": "L55",
       "id": "window_window_maximize",
-      "community": 5
+      "community": 6
     },
     {
       "label": "window_close()",
@@ -4473,7 +4489,7 @@
       "source_file": "src-tauri\\src\\commands\\window.rs",
       "source_location": "L64",
       "id": "window_window_close",
-      "community": 5
+      "community": 6
     },
     {
       "label": "window_show()",
@@ -4481,7 +4497,7 @@
       "source_file": "src-tauri\\src\\commands\\window.rs",
       "source_location": "L69",
       "id": "window_window_show",
-      "community": 5
+      "community": 6
     },
     {
       "label": "restart_as_admin()",
@@ -4489,7 +4505,7 @@
       "source_file": "src-tauri\\src\\commands\\window.rs",
       "source_location": "L75",
       "id": "window_restart_as_admin",
-      "community": 5
+      "community": 6
     }
   ],
   "links": [
@@ -8517,7 +8533,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\settings.rs",
-      "source_location": "L152",
+      "source_location": "L153",
       "weight": 1.0,
       "_src": "settings",
       "_tgt": "settings_get_settings",
@@ -8529,7 +8545,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\settings.rs",
-      "source_location": "L168",
+      "source_location": "L169",
       "weight": 1.0,
       "_src": "settings",
       "_tgt": "settings_set_settings",
@@ -8541,7 +8557,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\settings.rs",
-      "source_location": "L179",
+      "source_location": "L180",
       "weight": 1.0,
       "_src": "settings",
       "_tgt": "settings_unique_test_path",
@@ -8553,7 +8569,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\settings.rs",
-      "source_location": "L188",
+      "source_location": "L189",
       "weight": 1.0,
       "_src": "settings",
       "_tgt": "settings_validates_u16_range",
@@ -8565,7 +8581,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\settings.rs",
-      "source_location": "L195",
+      "source_location": "L196",
       "weight": 1.0,
       "_src": "settings",
       "_tgt": "settings_validates_u32_range",
@@ -8577,7 +8593,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\settings.rs",
-      "source_location": "L202",
+      "source_location": "L203",
       "weight": 1.0,
       "_src": "settings",
       "_tgt": "settings_rejects_duplicate_local_and_socks_ports",
@@ -8589,7 +8605,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\settings.rs",
-      "source_location": "L213",
+      "source_location": "L214",
       "weight": 1.0,
       "_src": "settings",
       "_tgt": "settings_set_settings_rolls_back_startup_side_effect_when_persist_fails",
@@ -8601,7 +8617,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\settings.rs",
-      "source_location": "L236",
+      "source_location": "L237",
       "weight": 1.0,
       "_src": "settings",
       "_tgt": "settings_set_settings_keeps_startup_side_effect_when_persist_succeeds",
@@ -9117,7 +9133,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "kunbox-electron\\src\\shared\\mock-api.ts",
-      "source_location": "L257",
+      "source_location": "L258",
       "weight": 1.0,
       "_src": "mock_api",
       "_tgt": "mock_api_initmockapi",
@@ -9237,7 +9253,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L118",
+      "source_location": "L120",
       "weight": 1.0,
       "_src": "types",
       "_tgt": "types_default_enable_runtime_logs",
@@ -9249,7 +9265,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L153",
+      "source_location": "L156",
       "weight": 1.0,
       "_src": "types",
       "_tgt": "types_singboxoutbound",
@@ -9261,7 +9277,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L164",
+      "source_location": "L167",
       "weight": 1.0,
       "_src": "types",
       "_tgt": "types_ruleset",
@@ -9273,7 +9289,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L182",
+      "source_location": "L185",
       "weight": 1.0,
       "_src": "types",
       "_tgt": "types_commandresult",
@@ -9285,7 +9301,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L206",
+      "source_location": "L209",
       "weight": 1.0,
       "_src": "types",
       "_tgt": "types_nodelatencystatus",
@@ -9297,7 +9313,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L214",
+      "source_location": "L217",
       "weight": 1.0,
       "_src": "types",
       "_tgt": "types_nodelatencyresult",
@@ -9309,7 +9325,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L251",
+      "source_location": "L254",
       "weight": 1.0,
       "_src": "types",
       "_tgt": "types_domainrule",
@@ -9321,7 +9337,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L265",
+      "source_location": "L268",
       "weight": 1.0,
       "_src": "types",
       "_tgt": "types_customrules",
@@ -9345,7 +9361,7 @@
       "relation": "imports_from",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2521",
+      "source_location": "L2525",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "types",
@@ -9645,7 +9661,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L123",
+      "source_location": "L125",
       "weight": 1.0,
       "_src": "types_appsettings",
       "_tgt": "types_appsettings_default",
@@ -9657,7 +9673,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L191",
+      "source_location": "L194",
       "weight": 1.0,
       "_src": "types_commandresult",
       "_tgt": "types_commandresult_ok",
@@ -9669,7 +9685,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L195",
+      "source_location": "L198",
       "weight": 1.0,
       "_src": "types_commandresult",
       "_tgt": "types_commandresult_ok_with_warning",
@@ -9681,7 +9697,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L199",
+      "source_location": "L202",
       "weight": 1.0,
       "_src": "types_commandresult",
       "_tgt": "types_commandresult_err",
@@ -9693,7 +9709,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L221",
+      "source_location": "L224",
       "weight": 1.0,
       "_src": "types_nodelatencyresult",
       "_tgt": "types_nodelatencyresult_success",
@@ -9705,7 +9721,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L228",
+      "source_location": "L231",
       "weight": 1.0,
       "_src": "types_nodelatencyresult",
       "_tgt": "types_nodelatencyresult_timeout",
@@ -9717,7 +9733,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L235",
+      "source_location": "L238",
       "weight": 1.0,
       "_src": "types_nodelatencyresult",
       "_tgt": "types_nodelatencyresult_controller_unavailable",
@@ -9729,7 +9745,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L242",
+      "source_location": "L245",
       "weight": 1.0,
       "_src": "types_nodelatencyresult",
       "_tgt": "types_nodelatencyresult_local_test_failed",
@@ -9741,7 +9757,7 @@
       "relation": "method",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\types.rs",
-      "source_location": "L271",
+      "source_location": "L274",
       "weight": 1.0,
       "_src": "types_customrules",
       "_tgt": "types_customrules_default",
@@ -13461,7 +13477,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\settings.rs",
-      "source_location": "L114",
+      "source_location": "L115",
       "weight": 1.0,
       "_src": "settings_set_settings_impl",
       "_tgt": "settings_ensure_u32_in_range",
@@ -13473,7 +13489,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\settings.rs",
-      "source_location": "L127",
+      "source_location": "L128",
       "weight": 1.0,
       "_src": "settings_set_settings_impl",
       "_tgt": "settings_validate_port_pair",
@@ -13485,7 +13501,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\settings.rs",
-      "source_location": "L158",
+      "source_location": "L159",
       "weight": 1.0,
       "_src": "settings_get_settings",
       "_tgt": "settings_validate_port_pair",
@@ -13497,7 +13513,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\settings.rs",
-      "source_location": "L134",
+      "source_location": "L135",
       "weight": 1.0,
       "_src": "settings_set_settings_impl",
       "_tgt": "settings_write_settings_file",
@@ -13509,7 +13525,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\settings.rs",
-      "source_location": "L169",
+      "source_location": "L170",
       "weight": 1.0,
       "_src": "settings_set_settings",
       "_tgt": "settings_set_settings_impl",
@@ -13521,7 +13537,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\settings.rs",
-      "source_location": "L221",
+      "source_location": "L222",
       "weight": 1.0,
       "_src": "settings_set_settings_rolls_back_startup_side_effect_when_persist_fails",
       "_tgt": "settings_set_settings_impl",
@@ -13533,7 +13549,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\settings.rs",
-      "source_location": "L242",
+      "source_location": "L243",
       "weight": 1.0,
       "_src": "settings_set_settings_keeps_startup_side_effect_when_persist_succeeds",
       "_tgt": "settings_set_settings_impl",
@@ -13545,7 +13561,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\settings.rs",
-      "source_location": "L214",
+      "source_location": "L215",
       "weight": 1.0,
       "_src": "settings_set_settings_rolls_back_startup_side_effect_when_persist_fails",
       "_tgt": "settings_unique_test_path",
@@ -13557,7 +13573,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\settings.rs",
-      "source_location": "L237",
+      "source_location": "L238",
       "weight": 1.0,
       "_src": "settings_set_settings_keeps_startup_side_effect_when_persist_succeeds",
       "_tgt": "settings_unique_test_path",
@@ -14265,7 +14281,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2071",
+      "source_location": "L2075",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_get_singbox_path",
@@ -14277,7 +14293,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2082",
+      "source_location": "L2086",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_systemproxysnapshot",
@@ -14289,7 +14305,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2090",
+      "source_location": "L2094",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_persistedsystemproxysnapshot",
@@ -14301,7 +14317,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2098",
+      "source_location": "L2102",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_proxycleanupmode",
@@ -14313,7 +14329,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2104",
+      "source_location": "L2108",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_proxysessionflag",
@@ -14325,7 +14341,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2113",
+      "source_location": "L2117",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_query_registry_value",
@@ -14337,7 +14353,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2141",
+      "source_location": "L2145",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_snapshot_system_proxy_if_needed",
@@ -14349,7 +14365,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2166",
+      "source_location": "L2170",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_snapshot_system_proxy_if_needed_for_state",
@@ -14361,7 +14377,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2193",
+      "source_location": "L2197",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_set_registry_value",
@@ -14373,7 +14389,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2219",
+      "source_location": "L2223",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_delete_registry_value",
@@ -14385,7 +14401,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2246",
+      "source_location": "L2250",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_proxy_session_marker_path",
@@ -14397,7 +14413,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2251",
+      "source_location": "L2255",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_persisted_proxy_snapshot_path",
@@ -14409,7 +14425,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2256",
+      "source_location": "L2260",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_write_proxy_session_marker",
@@ -14421,7 +14437,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2265",
+      "source_location": "L2269",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_clear_proxy_session_marker",
@@ -14433,7 +14449,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2274",
+      "source_location": "L2278",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_read_proxy_session_marker",
@@ -14445,7 +14461,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2285",
+      "source_location": "L2289",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_save_persisted_proxy_snapshot",
@@ -14457,7 +14473,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2298",
+      "source_location": "L2302",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_load_persisted_proxy_snapshot",
@@ -14469,7 +14485,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2315",
+      "source_location": "L2319",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_clear_persisted_proxy_snapshot",
@@ -14481,7 +14497,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2324",
+      "source_location": "L2328",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_looks_like_local_proxy_server",
@@ -14493,7 +14509,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2333",
+      "source_location": "L2337",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_force_clear_system_proxy",
@@ -14505,7 +14521,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2342",
+      "source_location": "L2346",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_restore_system_proxy_snapshot",
@@ -14517,7 +14533,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2379",
+      "source_location": "L2383",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_restore_persisted_or_clear",
@@ -14529,7 +14545,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2408",
+      "source_location": "L2412",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_enable_system_proxy_internal",
@@ -14541,7 +14557,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2436",
+      "source_location": "L2440",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_enable_system_proxy_for_state",
@@ -14553,7 +14569,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2453",
+      "source_location": "L2457",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_disable_system_proxy_for_state",
@@ -14565,7 +14581,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2464",
+      "source_location": "L2468",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_disable_system_proxy_for_state_on_crash",
@@ -14577,7 +14593,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2513",
+      "source_location": "L2517",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_repair_stale_proxy_if_needed",
@@ -14589,7 +14605,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2529",
+      "source_location": "L2533",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_update_max",
@@ -14601,7 +14617,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2539",
+      "source_location": "L2543",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_unique_test_dir",
@@ -14613,7 +14629,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2547",
+      "source_location": "L2551",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_make_profile",
@@ -14625,7 +14641,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2561",
+      "source_location": "L2565",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_make_node",
@@ -14637,7 +14653,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2571",
+      "source_location": "L2575",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_make_xhttp_node",
@@ -14649,7 +14665,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2598",
+      "source_location": "L2602",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_make_ruleset",
@@ -14661,7 +14677,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2613",
+      "source_location": "L2617",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_make_domain_rule",
@@ -14673,7 +14689,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2625",
+      "source_location": "L2629",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_write_json_file",
@@ -14685,7 +14701,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2632",
+      "source_location": "L2636",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_read_generated_config",
@@ -14697,7 +14713,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2639",
+      "source_location": "L2643",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_detects_local_proxy_server_values",
@@ -14709,7 +14725,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2646",
+      "source_location": "L2650",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_force_clear_mode_is_distinct",
@@ -14721,7 +14737,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2651",
+      "source_location": "L2655",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_parse_foreign_wintun_aliases_ignores_kunbox_tun_and_keeps_foreign_aliases",
@@ -14733,7 +14749,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2663",
+      "source_location": "L2667",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_parse_foreign_wintun_aliases_handles_single_object_payload",
@@ -14745,7 +14761,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2670",
+      "source_location": "L2674",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_generate_config_uses_profile_ids_for_selector_tags",
@@ -14757,7 +14773,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2711",
+      "source_location": "L2715",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_generate_config_uses_saved_profile_node_selection_for_profile_selector_default",
@@ -14769,7 +14785,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2746",
+      "source_location": "L2750",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_generate_config_preserves_profile_scoped_node_identity_for_domain_rules",
@@ -14781,7 +14797,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2802",
+      "source_location": "L2806",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_generate_config_supports_profile_scoped_and_bare_ruleset_node_routes",
@@ -14793,7 +14809,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2868",
+      "source_location": "L2872",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_generate_config_uses_direct_dns_bootstrap_for_ech_nodes",
@@ -14805,7 +14821,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2937",
+      "source_location": "L2941",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_generate_config_keeps_proxy_dns_for_non_ech_active_node",
@@ -14817,7 +14833,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2996",
+      "source_location": "L3000",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_generate_config_bridges_xhttp_nodes_through_local_xray_plugin",
@@ -14829,7 +14845,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3038",
+      "source_location": "L3042",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_generate_config_routes_xray_plugin_remote_direct_in_tun_mode",
@@ -14841,7 +14857,31 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3077",
+      "source_location": "L3081",
+      "weight": 1.0,
+      "_src": "singbox",
+      "_tgt": "singbox_generate_config_uses_non_strict_tun_route_by_default",
+      "source": "singbox",
+      "target": "singbox_generate_config_uses_non_strict_tun_route_by_default",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src-tauri\\src\\commands\\singbox.rs",
+      "source_location": "L3114",
+      "weight": 1.0,
+      "_src": "singbox",
+      "_tgt": "singbox_generate_config_scopes_fakedns_to_tun_inbound_when_tun_is_enabled",
+      "source": "singbox",
+      "target": "singbox_generate_config_scopes_fakedns_to_tun_inbound_when_tun_is_enabled",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src-tauri\\src\\commands\\singbox.rs",
+      "source_location": "L3150",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_build_xray_plugin_config_preserves_vless_xhttp_transport",
@@ -14853,7 +14893,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3098",
+      "source_location": "L3171",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_build_xray_plugin_config_hoists_legacy_xhttp_extra_encryption",
@@ -14865,7 +14905,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3121",
+      "source_location": "L3194",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_bounded_selector_probe_helper_caps_concurrency",
@@ -14877,7 +14917,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3144",
+      "source_location": "L3217",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_recognizes_taskkill_missing_process_output",
@@ -14889,7 +14929,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3160",
+      "source_location": "L3233",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_disable_system_proxy_internal",
@@ -14901,7 +14941,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3167",
+      "source_location": "L3240",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_start_traffic_polling",
@@ -14913,7 +14953,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3240",
+      "source_location": "L3313",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_load_profiles_data_from_file",
@@ -14925,7 +14965,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3255",
+      "source_location": "L3328",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_collect_referenced_profile_selector_tags",
@@ -14937,7 +14977,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3299",
+      "source_location": "L3372",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_switch_selector_to_node",
@@ -14949,7 +14989,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3320",
+      "source_location": "L3393",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_probe_selector_node_latency",
@@ -14961,7 +15001,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3350",
+      "source_location": "L3423",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_run_bounded_selector_probes",
@@ -14973,7 +15013,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3382",
+      "source_location": "L3455",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_test_selector_latency_internal",
@@ -14985,7 +15025,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3491",
+      "source_location": "L3564",
       "weight": 1.0,
       "_src": "singbox",
       "_tgt": "singbox_singbox_test_selector_latency",
@@ -15033,7 +15073,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2130",
+      "source_location": "L2134",
       "weight": 1.0,
       "_src": "singbox_query_registry_value",
       "_tgt": "singbox_decode_windows_output",
@@ -15045,7 +15085,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2212",
+      "source_location": "L2216",
       "weight": 1.0,
       "_src": "singbox_set_registry_value",
       "_tgt": "singbox_decode_windows_output",
@@ -15057,7 +15097,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2237",
+      "source_location": "L2241",
       "weight": 1.0,
       "_src": "singbox_delete_registry_value",
       "_tgt": "singbox_decode_windows_output",
@@ -15105,7 +15145,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2475",
+      "source_location": "L2479",
       "weight": 1.0,
       "_src": "singbox_repair_stale_proxy_if_needed",
       "_tgt": "singbox_append_startup_diagnostic",
@@ -15153,7 +15193,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2658",
+      "source_location": "L2662",
       "weight": 1.0,
       "_src": "singbox_parse_foreign_wintun_aliases_ignores_kunbox_tun_and_keeps_foreign_aliases",
       "_tgt": "singbox_parse_foreign_wintun_aliases",
@@ -15165,7 +15205,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2665",
+      "source_location": "L2669",
       "weight": 1.0,
       "_src": "singbox_parse_foreign_wintun_aliases_handles_single_object_payload",
       "_tgt": "singbox_parse_foreign_wintun_aliases",
@@ -15225,7 +15265,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L1725",
+      "source_location": "L1729",
       "weight": 1.0,
       "_src": "singbox_generate_config_with_settings",
       "_tgt": "singbox_get_clash_api_port",
@@ -15237,7 +15277,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3388",
+      "source_location": "L3461",
       "weight": 1.0,
       "_src": "singbox_test_selector_latency_internal",
       "_tgt": "singbox_get_clash_api_port",
@@ -15585,7 +15625,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L1760",
+      "source_location": "L1764",
       "weight": 1.0,
       "_src": "singbox_generate_config_with_settings",
       "_tgt": "singbox_is_proxy_type",
@@ -15609,7 +15649,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L1784",
+      "source_location": "L1788",
       "weight": 1.0,
       "_src": "singbox_generate_config_with_settings",
       "_tgt": "singbox_process_node",
@@ -15657,7 +15697,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2066",
+      "source_location": "L2070",
       "weight": 1.0,
       "_src": "singbox_generate_config_with_settings",
       "_tgt": "singbox_plugin_bridge_path",
@@ -15669,7 +15709,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L1761",
+      "source_location": "L1765",
       "weight": 1.0,
       "_src": "singbox_generate_config_with_settings",
       "_tgt": "singbox_node_for_singbox_with_plugin_bridge",
@@ -15729,7 +15769,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3079",
+      "source_location": "L3152",
       "weight": 1.0,
       "_src": "singbox_build_xray_plugin_config_preserves_vless_xhttp_transport",
       "_tgt": "singbox_build_xray_plugin_config",
@@ -15741,7 +15781,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3106",
+      "source_location": "L3179",
       "weight": 1.0,
       "_src": "singbox_build_xray_plugin_config_hoists_legacy_xhttp_extra_encryption",
       "_tgt": "singbox_build_xray_plugin_config",
@@ -15825,7 +15865,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L1960",
+      "source_location": "L1964",
       "weight": 1.0,
       "_src": "singbox_generate_config_with_settings",
       "_tgt": "singbox_apply_route_target",
@@ -15837,7 +15877,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L1915",
+      "source_location": "L1919",
       "weight": 1.0,
       "_src": "singbox_generate_config_with_settings",
       "_tgt": "singbox_plugin_bridge_remote_direct_rule",
@@ -15849,7 +15889,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L1886",
+      "source_location": "L1890",
       "weight": 1.0,
       "_src": "singbox_generate_config_with_settings",
       "_tgt": "singbox_plugin_bridge_remote_dns_rule",
@@ -15873,7 +15913,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3291",
+      "source_location": "L3364",
       "weight": 1.0,
       "_src": "singbox_collect_referenced_profile_selector_tags",
       "_tgt": "singbox_profile_selector_tag",
@@ -15921,7 +15961,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L1773",
+      "source_location": "L1777",
       "weight": 1.0,
       "_src": "singbox_generate_config_with_settings",
       "_tgt": "singbox_normalized_node_reference_tag",
@@ -15933,7 +15973,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L1929",
+      "source_location": "L1933",
       "weight": 1.0,
       "_src": "singbox_generate_config_with_settings",
       "_tgt": "singbox_resolve_node_route_outbound",
@@ -15945,7 +15985,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L1784",
+      "source_location": "L1788",
       "weight": 1.0,
       "_src": "singbox_generate_config_with_settings",
       "_tgt": "singbox_with_outbound_tag",
@@ -16041,7 +16081,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2693",
+      "source_location": "L2697",
       "weight": 1.0,
       "_src": "singbox_generate_config_uses_profile_ids_for_selector_tags",
       "_tgt": "singbox_generate_config",
@@ -16053,7 +16093,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2730",
+      "source_location": "L2734",
       "weight": 1.0,
       "_src": "singbox_generate_config_uses_saved_profile_node_selection_for_profile_selector_default",
       "_tgt": "singbox_generate_config",
@@ -16065,7 +16105,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2768",
+      "source_location": "L2772",
       "weight": 1.0,
       "_src": "singbox_generate_config_preserves_profile_scoped_node_identity_for_domain_rules",
       "_tgt": "singbox_generate_config",
@@ -16077,7 +16117,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2828",
+      "source_location": "L2832",
       "weight": 1.0,
       "_src": "singbox_generate_config_supports_profile_scoped_and_bare_ruleset_node_routes",
       "_tgt": "singbox_generate_config",
@@ -16089,7 +16129,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2904",
+      "source_location": "L2908",
       "weight": 1.0,
       "_src": "singbox_generate_config_uses_direct_dns_bootstrap_for_ech_nodes",
       "_tgt": "singbox_generate_config",
@@ -16101,7 +16141,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2978",
+      "source_location": "L2982",
       "weight": 1.0,
       "_src": "singbox_generate_config_keeps_proxy_dns_for_non_ech_active_node",
       "_tgt": "singbox_generate_config",
@@ -16113,7 +16153,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3010",
+      "source_location": "L3014",
       "weight": 1.0,
       "_src": "singbox_generate_config_bridges_xhttp_nodes_through_local_xray_plugin",
       "_tgt": "singbox_generate_config",
@@ -16125,7 +16165,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3056",
+      "source_location": "L3060",
       "weight": 1.0,
       "_src": "singbox_generate_config_routes_xray_plugin_remote_direct_in_tun_mode",
       "_tgt": "singbox_generate_config",
@@ -16137,7 +16177,31 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2152",
+      "source_location": "L3097",
+      "weight": 1.0,
+      "_src": "singbox_generate_config_uses_non_strict_tun_route_by_default",
+      "_tgt": "singbox_generate_config",
+      "source": "singbox_generate_config",
+      "target": "singbox_generate_config_uses_non_strict_tun_route_by_default",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "source_file": "src-tauri\\src\\commands\\singbox.rs",
+      "source_location": "L3134",
+      "weight": 1.0,
+      "_src": "singbox_generate_config_scopes_fakedns_to_tun_inbound_when_tun_is_enabled",
+      "_tgt": "singbox_generate_config",
+      "source": "singbox_generate_config",
+      "target": "singbox_generate_config_scopes_fakedns_to_tun_inbound_when_tun_is_enabled",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "source_file": "src-tauri\\src\\commands\\singbox.rs",
+      "source_location": "L2156",
       "weight": 1.0,
       "_src": "singbox_snapshot_system_proxy_if_needed",
       "_tgt": "singbox_query_registry_value",
@@ -16149,7 +16213,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2177",
+      "source_location": "L2181",
       "weight": 1.0,
       "_src": "singbox_snapshot_system_proxy_if_needed_for_state",
       "_tgt": "singbox_query_registry_value",
@@ -16161,7 +16225,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2471",
+      "source_location": "L2475",
       "weight": 1.0,
       "_src": "singbox_repair_stale_proxy_if_needed",
       "_tgt": "singbox_query_registry_value",
@@ -16173,7 +16237,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2413",
+      "source_location": "L2417",
       "weight": 1.0,
       "_src": "singbox_enable_system_proxy_internal",
       "_tgt": "singbox_snapshot_system_proxy_if_needed",
@@ -16185,7 +16249,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2183",
+      "source_location": "L2187",
       "weight": 1.0,
       "_src": "singbox_snapshot_system_proxy_if_needed_for_state",
       "_tgt": "singbox_save_persisted_proxy_snapshot",
@@ -16197,7 +16261,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2429",
+      "source_location": "L2433",
       "weight": 1.0,
       "_src": "singbox_enable_system_proxy_for_state",
       "_tgt": "singbox_snapshot_system_proxy_if_needed_for_state",
@@ -16209,7 +16273,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2334",
+      "source_location": "L2338",
       "weight": 1.0,
       "_src": "singbox_force_clear_system_proxy",
       "_tgt": "singbox_set_registry_value",
@@ -16221,7 +16285,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2354",
+      "source_location": "L2358",
       "weight": 1.0,
       "_src": "singbox_restore_system_proxy_snapshot",
       "_tgt": "singbox_set_registry_value",
@@ -16233,7 +16297,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2381",
+      "source_location": "L2385",
       "weight": 1.0,
       "_src": "singbox_restore_persisted_or_clear",
       "_tgt": "singbox_set_registry_value",
@@ -16245,7 +16309,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2414",
+      "source_location": "L2418",
       "weight": 1.0,
       "_src": "singbox_enable_system_proxy_internal",
       "_tgt": "singbox_set_registry_value",
@@ -16257,7 +16321,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2430",
+      "source_location": "L2434",
       "weight": 1.0,
       "_src": "singbox_enable_system_proxy_for_state",
       "_tgt": "singbox_set_registry_value",
@@ -16269,7 +16333,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2335",
+      "source_location": "L2339",
       "weight": 1.0,
       "_src": "singbox_force_clear_system_proxy",
       "_tgt": "singbox_delete_registry_value",
@@ -16281,7 +16345,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2359",
+      "source_location": "L2363",
       "weight": 1.0,
       "_src": "singbox_restore_system_proxy_snapshot",
       "_tgt": "singbox_delete_registry_value",
@@ -16293,7 +16357,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2386",
+      "source_location": "L2390",
       "weight": 1.0,
       "_src": "singbox_restore_persisted_or_clear",
       "_tgt": "singbox_delete_registry_value",
@@ -16305,7 +16369,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2261",
+      "source_location": "L2265",
       "weight": 1.0,
       "_src": "singbox_write_proxy_session_marker",
       "_tgt": "singbox_proxy_session_marker_path",
@@ -16317,7 +16381,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2266",
+      "source_location": "L2270",
       "weight": 1.0,
       "_src": "singbox_clear_proxy_session_marker",
       "_tgt": "singbox_proxy_session_marker_path",
@@ -16329,7 +16393,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2275",
+      "source_location": "L2279",
       "weight": 1.0,
       "_src": "singbox_read_proxy_session_marker",
       "_tgt": "singbox_proxy_session_marker_path",
@@ -16341,7 +16405,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2294",
+      "source_location": "L2298",
       "weight": 1.0,
       "_src": "singbox_save_persisted_proxy_snapshot",
       "_tgt": "singbox_persisted_proxy_snapshot_path",
@@ -16353,7 +16417,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2299",
+      "source_location": "L2303",
       "weight": 1.0,
       "_src": "singbox_load_persisted_proxy_snapshot",
       "_tgt": "singbox_persisted_proxy_snapshot_path",
@@ -16365,7 +16429,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2316",
+      "source_location": "L2320",
       "weight": 1.0,
       "_src": "singbox_clear_persisted_proxy_snapshot",
       "_tgt": "singbox_persisted_proxy_snapshot_path",
@@ -16377,7 +16441,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2503",
+      "source_location": "L2507",
       "weight": 1.0,
       "_src": "singbox_repair_stale_proxy_if_needed",
       "_tgt": "singbox_clear_proxy_session_marker",
@@ -16389,7 +16453,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2470",
+      "source_location": "L2474",
       "weight": 1.0,
       "_src": "singbox_repair_stale_proxy_if_needed",
       "_tgt": "singbox_read_proxy_session_marker",
@@ -16401,7 +16465,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2380",
+      "source_location": "L2384",
       "weight": 1.0,
       "_src": "singbox_restore_persisted_or_clear",
       "_tgt": "singbox_load_persisted_proxy_snapshot",
@@ -16413,7 +16477,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2401",
+      "source_location": "L2405",
       "weight": 1.0,
       "_src": "singbox_restore_persisted_or_clear",
       "_tgt": "singbox_clear_persisted_proxy_snapshot",
@@ -16425,7 +16489,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2446",
+      "source_location": "L2450",
       "weight": 1.0,
       "_src": "singbox_disable_system_proxy_for_state",
       "_tgt": "singbox_clear_persisted_proxy_snapshot",
@@ -16437,7 +16501,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2349",
+      "source_location": "L2353",
       "weight": 1.0,
       "_src": "singbox_restore_system_proxy_snapshot",
       "_tgt": "singbox_force_clear_system_proxy",
@@ -16449,7 +16513,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2405",
+      "source_location": "L2409",
       "weight": 1.0,
       "_src": "singbox_restore_persisted_or_clear",
       "_tgt": "singbox_force_clear_system_proxy",
@@ -16461,7 +16525,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2445",
+      "source_location": "L2449",
       "weight": 1.0,
       "_src": "singbox_disable_system_proxy_for_state",
       "_tgt": "singbox_force_clear_system_proxy",
@@ -16473,7 +16537,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3162",
+      "source_location": "L3235",
       "weight": 1.0,
       "_src": "singbox_disable_system_proxy_internal",
       "_tgt": "singbox_restore_system_proxy_snapshot",
@@ -16485,7 +16549,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2443",
+      "source_location": "L2447",
       "weight": 1.0,
       "_src": "singbox_disable_system_proxy_for_state",
       "_tgt": "singbox_restore_persisted_or_clear",
@@ -16497,7 +16561,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2502",
+      "source_location": "L2506",
       "weight": 1.0,
       "_src": "singbox_repair_stale_proxy_if_needed",
       "_tgt": "singbox_restore_persisted_or_clear",
@@ -16509,7 +16573,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2437",
+      "source_location": "L2441",
       "weight": 1.0,
       "_src": "singbox_enable_system_proxy_for_state",
       "_tgt": "singbox_enable_system_proxy_internal",
@@ -16521,7 +16585,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2454",
+      "source_location": "L2458",
       "weight": 1.0,
       "_src": "singbox_disable_system_proxy_for_state",
       "_tgt": "singbox_disable_system_proxy_internal",
@@ -16533,7 +16597,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2460",
+      "source_location": "L2464",
       "weight": 1.0,
       "_src": "singbox_disable_system_proxy_for_state_on_crash",
       "_tgt": "singbox_disable_system_proxy_for_state",
@@ -16545,7 +16609,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3131",
+      "source_location": "L3204",
       "weight": 1.0,
       "_src": "singbox_bounded_selector_probe_helper_caps_concurrency",
       "_tgt": "singbox_update_max",
@@ -16557,7 +16621,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2671",
+      "source_location": "L2675",
       "weight": 1.0,
       "_src": "singbox_generate_config_uses_profile_ids_for_selector_tags",
       "_tgt": "singbox_unique_test_dir",
@@ -16569,7 +16633,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2712",
+      "source_location": "L2716",
       "weight": 1.0,
       "_src": "singbox_generate_config_uses_saved_profile_node_selection_for_profile_selector_default",
       "_tgt": "singbox_unique_test_dir",
@@ -16581,7 +16645,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2747",
+      "source_location": "L2751",
       "weight": 1.0,
       "_src": "singbox_generate_config_preserves_profile_scoped_node_identity_for_domain_rules",
       "_tgt": "singbox_unique_test_dir",
@@ -16593,7 +16657,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2803",
+      "source_location": "L2807",
       "weight": 1.0,
       "_src": "singbox_generate_config_supports_profile_scoped_and_bare_ruleset_node_routes",
       "_tgt": "singbox_unique_test_dir",
@@ -16605,7 +16669,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2869",
+      "source_location": "L2873",
       "weight": 1.0,
       "_src": "singbox_generate_config_uses_direct_dns_bootstrap_for_ech_nodes",
       "_tgt": "singbox_unique_test_dir",
@@ -16617,7 +16681,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2938",
+      "source_location": "L2942",
       "weight": 1.0,
       "_src": "singbox_generate_config_keeps_proxy_dns_for_non_ech_active_node",
       "_tgt": "singbox_unique_test_dir",
@@ -16629,7 +16693,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2997",
+      "source_location": "L3001",
       "weight": 1.0,
       "_src": "singbox_generate_config_bridges_xhttp_nodes_through_local_xray_plugin",
       "_tgt": "singbox_unique_test_dir",
@@ -16641,7 +16705,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3039",
+      "source_location": "L3043",
       "weight": 1.0,
       "_src": "singbox_generate_config_routes_xray_plugin_remote_direct_in_tun_mode",
       "_tgt": "singbox_unique_test_dir",
@@ -16653,7 +16717,31 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2872",
+      "source_location": "L3082",
+      "weight": 1.0,
+      "_src": "singbox_generate_config_uses_non_strict_tun_route_by_default",
+      "_tgt": "singbox_unique_test_dir",
+      "source": "singbox_unique_test_dir",
+      "target": "singbox_generate_config_uses_non_strict_tun_route_by_default",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "source_file": "src-tauri\\src\\commands\\singbox.rs",
+      "source_location": "L3115",
+      "weight": 1.0,
+      "_src": "singbox_generate_config_scopes_fakedns_to_tun_inbound_when_tun_is_enabled",
+      "_tgt": "singbox_unique_test_dir",
+      "source": "singbox_unique_test_dir",
+      "target": "singbox_generate_config_scopes_fakedns_to_tun_inbound_when_tun_is_enabled",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "source_file": "src-tauri\\src\\commands\\singbox.rs",
+      "source_location": "L2876",
       "weight": 1.0,
       "_src": "singbox_generate_config_uses_direct_dns_bootstrap_for_ech_nodes",
       "_tgt": "singbox_make_profile",
@@ -16665,7 +16753,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3051",
+      "source_location": "L3055",
       "weight": 1.0,
       "_src": "singbox_generate_config_routes_xray_plugin_remote_direct_in_tun_mode",
       "_tgt": "singbox_make_xhttp_node",
@@ -16677,7 +16765,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3078",
+      "source_location": "L3151",
       "weight": 1.0,
       "_src": "singbox_build_xray_plugin_config_preserves_vless_xhttp_transport",
       "_tgt": "singbox_make_xhttp_node",
@@ -16689,7 +16777,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3099",
+      "source_location": "L3172",
       "weight": 1.0,
       "_src": "singbox_build_xray_plugin_config_hoists_legacy_xhttp_extra_encryption",
       "_tgt": "singbox_make_xhttp_node",
@@ -16701,7 +16789,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2684",
+      "source_location": "L2688",
       "weight": 1.0,
       "_src": "singbox_generate_config_uses_profile_ids_for_selector_tags",
       "_tgt": "singbox_write_json_file",
@@ -16713,7 +16801,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2722",
+      "source_location": "L2726",
       "weight": 1.0,
       "_src": "singbox_generate_config_uses_saved_profile_node_selection_for_profile_selector_default",
       "_tgt": "singbox_write_json_file",
@@ -16725,7 +16813,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2760",
+      "source_location": "L2764",
       "weight": 1.0,
       "_src": "singbox_generate_config_preserves_profile_scoped_node_identity_for_domain_rules",
       "_tgt": "singbox_write_json_file",
@@ -16737,7 +16825,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2816",
+      "source_location": "L2820",
       "weight": 1.0,
       "_src": "singbox_generate_config_supports_profile_scoped_and_bare_ruleset_node_routes",
       "_tgt": "singbox_write_json_file",
@@ -16749,7 +16837,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2882",
+      "source_location": "L2886",
       "weight": 1.0,
       "_src": "singbox_generate_config_uses_direct_dns_bootstrap_for_ech_nodes",
       "_tgt": "singbox_write_json_file",
@@ -16761,7 +16849,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2948",
+      "source_location": "L2952",
       "weight": 1.0,
       "_src": "singbox_generate_config_keeps_proxy_dns_for_non_ech_active_node",
       "_tgt": "singbox_write_json_file",
@@ -16773,7 +16861,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3007",
+      "source_location": "L3011",
       "weight": 1.0,
       "_src": "singbox_generate_config_bridges_xhttp_nodes_through_local_xray_plugin",
       "_tgt": "singbox_write_json_file",
@@ -16785,7 +16873,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3053",
+      "source_location": "L3057",
       "weight": 1.0,
       "_src": "singbox_generate_config_routes_xray_plugin_remote_direct_in_tun_mode",
       "_tgt": "singbox_write_json_file",
@@ -16797,7 +16885,31 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2696",
+      "source_location": "L3094",
+      "weight": 1.0,
+      "_src": "singbox_generate_config_uses_non_strict_tun_route_by_default",
+      "_tgt": "singbox_write_json_file",
+      "source": "singbox_write_json_file",
+      "target": "singbox_generate_config_uses_non_strict_tun_route_by_default",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "source_file": "src-tauri\\src\\commands\\singbox.rs",
+      "source_location": "L3131",
+      "weight": 1.0,
+      "_src": "singbox_generate_config_scopes_fakedns_to_tun_inbound_when_tun_is_enabled",
+      "_tgt": "singbox_write_json_file",
+      "source": "singbox_write_json_file",
+      "target": "singbox_generate_config_scopes_fakedns_to_tun_inbound_when_tun_is_enabled",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "source_file": "src-tauri\\src\\commands\\singbox.rs",
+      "source_location": "L2700",
       "weight": 1.0,
       "_src": "singbox_generate_config_uses_profile_ids_for_selector_tags",
       "_tgt": "singbox_read_generated_config",
@@ -16809,7 +16921,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2733",
+      "source_location": "L2737",
       "weight": 1.0,
       "_src": "singbox_generate_config_uses_saved_profile_node_selection_for_profile_selector_default",
       "_tgt": "singbox_read_generated_config",
@@ -16821,7 +16933,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2771",
+      "source_location": "L2775",
       "weight": 1.0,
       "_src": "singbox_generate_config_preserves_profile_scoped_node_identity_for_domain_rules",
       "_tgt": "singbox_read_generated_config",
@@ -16833,7 +16945,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2831",
+      "source_location": "L2835",
       "weight": 1.0,
       "_src": "singbox_generate_config_supports_profile_scoped_and_bare_ruleset_node_routes",
       "_tgt": "singbox_read_generated_config",
@@ -16845,7 +16957,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2907",
+      "source_location": "L2911",
       "weight": 1.0,
       "_src": "singbox_generate_config_uses_direct_dns_bootstrap_for_ech_nodes",
       "_tgt": "singbox_read_generated_config",
@@ -16857,7 +16969,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L2981",
+      "source_location": "L2985",
       "weight": 1.0,
       "_src": "singbox_generate_config_keeps_proxy_dns_for_non_ech_active_node",
       "_tgt": "singbox_read_generated_config",
@@ -16869,7 +16981,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3013",
+      "source_location": "L3017",
       "weight": 1.0,
       "_src": "singbox_generate_config_bridges_xhttp_nodes_through_local_xray_plugin",
       "_tgt": "singbox_read_generated_config",
@@ -16881,7 +16993,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3059",
+      "source_location": "L3063",
       "weight": 1.0,
       "_src": "singbox_generate_config_routes_xray_plugin_remote_direct_in_tun_mode",
       "_tgt": "singbox_read_generated_config",
@@ -16893,7 +17005,31 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3126",
+      "source_location": "L3100",
+      "weight": 1.0,
+      "_src": "singbox_generate_config_uses_non_strict_tun_route_by_default",
+      "_tgt": "singbox_read_generated_config",
+      "source": "singbox_read_generated_config",
+      "target": "singbox_generate_config_uses_non_strict_tun_route_by_default",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "source_file": "src-tauri\\src\\commands\\singbox.rs",
+      "source_location": "L3137",
+      "weight": 1.0,
+      "_src": "singbox_generate_config_scopes_fakedns_to_tun_inbound_when_tun_is_enabled",
+      "_tgt": "singbox_read_generated_config",
+      "source": "singbox_read_generated_config",
+      "target": "singbox_generate_config_scopes_fakedns_to_tun_inbound_when_tun_is_enabled",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "source_file": "src-tauri\\src\\commands\\singbox.rs",
+      "source_location": "L3199",
       "weight": 1.0,
       "_src": "singbox_bounded_selector_probe_helper_caps_concurrency",
       "_tgt": "singbox_run_bounded_selector_probes",
@@ -16905,7 +17041,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3281",
+      "source_location": "L3354",
       "weight": 1.0,
       "_src": "singbox_collect_referenced_profile_selector_tags",
       "_tgt": "singbox_load_profiles_data_from_file",
@@ -16917,7 +17053,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3445",
+      "source_location": "L3518",
       "weight": 1.0,
       "_src": "singbox_test_selector_latency_internal",
       "_tgt": "singbox_switch_selector_to_node",
@@ -16929,7 +17065,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3422",
+      "source_location": "L3495",
       "weight": 1.0,
       "_src": "singbox_test_selector_latency_internal",
       "_tgt": "singbox_probe_selector_node_latency",
@@ -16941,7 +17077,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3416",
+      "source_location": "L3489",
       "weight": 1.0,
       "_src": "singbox_test_selector_latency_internal",
       "_tgt": "singbox_run_bounded_selector_probes",
@@ -16953,7 +17089,7 @@
       "relation": "calls",
       "confidence": "EXTRACTED",
       "source_file": "src-tauri\\src\\commands\\singbox.rs",
-      "source_location": "L3496",
+      "source_location": "L3569",
       "weight": 1.0,
       "_src": "singbox_singbox_test_selector_latency",
       "_tgt": "singbox_test_selector_latency_internal",

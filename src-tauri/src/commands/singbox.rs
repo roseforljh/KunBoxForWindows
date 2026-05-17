@@ -1663,10 +1663,14 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
             "inet4_range": "198.18.0.0/15",
             "inet6_range": "fc00::/18"
         }));
-        dns_rules.push(serde_json::json!({
+        let mut fake_dns_rule = serde_json::json!({
             "query_type": ["A", "AAAA"],
             "server": "dns-fakeip"
-        }));
+        });
+        if settings.tun_enabled {
+            fake_dns_rule["inbound"] = serde_json::json!(["tun-in"]);
+        }
+        dns_rules.push(fake_dns_rule);
     }
     
     // 构建 inbounds
@@ -1694,7 +1698,7 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
             "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
             "mtu": 9000,
             "auto_route": true,
-            "strict_route": true,
+            "strict_route": settings.tun_strict_route,
             "stack": settings.tun_stack
         }));
     }
@@ -3069,6 +3073,77 @@ mod tests {
             .expect("xray plugin remote server must bypass TUN proxy loop");
 
         assert_eq!(remote_rule.get("outbound").and_then(|value| value.as_str()), Some("direct"));
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn generate_config_uses_non_strict_tun_route_by_default() {
+        let data_dir = unique_test_dir("tun-non-strict-route");
+        let state = AppState::new(data_dir.clone());
+
+        state.settings.lock().await.tun_enabled = true;
+
+        let profiles_data = ProfilesData {
+            profiles: vec![make_profile("profile-a", "Profile A")],
+            active_profile_id: Some("profile-a".to_string()),
+            active_node_tag: Some("node-a".to_string()),
+            node_selections: HashMap::new(),
+        };
+
+        write_json_file(&state.profiles_file(), &profiles_data);
+        write_json_file(&state.configs_dir().join("profile-a.json"), &vec![make_node("node-a")]);
+
+        let result = generate_config(&state).await.unwrap();
+        assert!(result.success);
+
+        let config = read_generated_config(&state);
+        let tun_inbound = config["inbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|inbound| inbound.get("tag").and_then(|tag| tag.as_str()) == Some("tun-in"))
+            .expect("tun inbound should be generated");
+
+        assert_eq!(tun_inbound.get("strict_route").and_then(|value| value.as_bool()), Some(false));
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn generate_config_scopes_fakedns_to_tun_inbound_when_tun_is_enabled() {
+        let data_dir = unique_test_dir("tun-fakedns-scope");
+        let state = AppState::new(data_dir.clone());
+
+        {
+            let mut settings = state.settings.lock().await;
+            settings.tun_enabled = true;
+            settings.fake_dns = true;
+        }
+
+        let profiles_data = ProfilesData {
+            profiles: vec![make_profile("profile-a", "Profile A")],
+            active_profile_id: Some("profile-a".to_string()),
+            active_node_tag: Some("node-a".to_string()),
+            node_selections: HashMap::new(),
+        };
+
+        write_json_file(&state.profiles_file(), &profiles_data);
+        write_json_file(&state.configs_dir().join("profile-a.json"), &vec![make_node("node-a")]);
+
+        let result = generate_config(&state).await.unwrap();
+        assert!(result.success);
+
+        let config = read_generated_config(&state);
+        let dns_rules = config["dns"]["rules"].as_array().unwrap();
+        let fake_dns_rule = dns_rules
+            .iter()
+            .find(|rule| rule.get("server").and_then(|server| server.as_str()) == Some("dns-fakeip"))
+            .expect("fake dns rule should be generated");
+
+        let inbound = fake_dns_rule.get("inbound").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(inbound.len(), 1);
+        assert_eq!(inbound[0].as_str(), Some("tun-in"));
 
         let _ = fs::remove_dir_all(data_dir);
     }

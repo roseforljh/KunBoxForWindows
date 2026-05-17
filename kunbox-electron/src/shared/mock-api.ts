@@ -11,6 +11,7 @@ const defaultSettings: AppSettings = {
   systemProxy: false,
   tunEnabled: false,
   tunStack: 'mixed',
+  tunStrictRoute: false,
   localDns: '223.5.5.5',
   remoteDns: 'https://dns.google/dns-query',
   fakeDns: false,
