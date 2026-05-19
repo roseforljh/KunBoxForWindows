@@ -100,6 +100,29 @@ jobs:
         working-directory: kunbox-electron
         run: npm run build
 
+      - name: Download sing-box kernel
+        shell: pwsh
+        run: |
+          $apiUrl = "https://api.github.com/repos/SagerNet/sing-box/releases/latest"
+          $headers = @{ "Accept" = "application/vnd.github.v3+json"; "User-Agent" = "KunBox-CI" }
+          $release = Invoke-RestMethod -Uri $apiUrl -Headers $headers
+          $tag = $release.tag_name
+          $version = $tag.TrimStart('v')
+          $assetName = "sing-box-$version-windows-amd64.zip"
+          $asset = $release.assets | Where-Object { $_.name -eq $assetName }
+          if (-not $asset) { throw "Asset $assetName not found in release $tag" }
+          $downloadUrl = $asset.browser_download_url
+          Write-Host "Downloading sing-box $version from $downloadUrl"
+          $zipPath = "src-tauri/resources/libs/sing-box.zip"
+          Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath -UseBasicParsing
+          Expand-Archive -Path $zipPath -DestinationPath "src-tauri/resources/libs/temp" -Force
+          $exe = Get-ChildItem -Path "src-tauri/resources/libs/temp" -Recurse -Filter "sing-box.exe" | Select-Object -First 1
+          if (-not $exe) { throw "sing-box.exe not found in archive" }
+          Copy-Item $exe.FullName "src-tauri/resources/libs/sing-box.exe"
+          Remove-Item $zipPath -Force
+          Remove-Item "src-tauri/resources/libs/temp" -Recurse -Force
+          Write-Host "sing-box $version bundled successfully"
+
       - name: Run Rust checks
         working-directory: src-tauri
         run: cargo check

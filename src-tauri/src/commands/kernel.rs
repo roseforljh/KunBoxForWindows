@@ -18,17 +18,16 @@ const KERNEL_FILENAME: &str = "sing-box.exe";
 // GitHub 镜像源列表
 const GITHUB_MIRRORS: &[&str] = &[
     "",                                    // 原始 GitHub（无镜像）
-    "https://mirror.ghproxy.com/",         // ghproxy 镜像
-    "https://ghproxy.net/",                // ghproxy.net
-    "https://gh-proxy.com/",               // gh-proxy
+    "https://ghfast.top/",                 // ghfast 镜像
+    "https://gh.llkk.cc/",                 // llkk 镜像
+    "https://ghp.ci/",                     // ghp.ci 镜像
+    "https://cf.ghproxy.cc/",              // cf ghproxy
 ];
 
 // GitHub API 镜像源列表
 const GITHUB_API_MIRRORS: &[&str] = &[
     "https://api.github.com",              // 原始 API
-    "https://gh-api.p3terx.com",           // P3TERX 镜像
-    "https://api.github.moeyy.xyz",        // GitHub API 镜像
-    "https://github.api.99988866.xyz",     // GitHub API 镜像
+    "https://ghfast.top/https://api.github.com",  // ghfast 代理
 ];
 
 const VERSION_FALLBACK_API: &str = "https://data.jsdelivr.com/v1/package/gh/SagerNet/sing-box";
@@ -367,7 +366,10 @@ async fn fetch_release_fallback_from_jsdelivr(
 
 #[tauri::command]
 pub async fn kernel_get_local_version(app: AppHandle) -> Result<Option<KernelVersion>, String> {
-    let kernel_path = get_kernel_path(&app)?;
+    let kernel_path = match get_kernel_path(&app) {
+        Ok(p) => p,
+        Err(_) => return Ok(None),
+    };
     
     if !kernel_path.exists() {
         return Ok(None);
@@ -412,7 +414,10 @@ pub async fn kernel_get_local_version(app: AppHandle) -> Result<Option<KernelVer
 
 #[tauri::command]
 pub async fn kernel_get_capabilities(app: AppHandle) -> Result<KernelCapabilities, String> {
-    let kernel_path = get_kernel_path(&app)?;
+    let kernel_path = match get_kernel_path(&app) {
+        Ok(p) => p,
+        Err(_) => return Ok(KernelCapabilities::default()),
+    };
     if !kernel_path.exists() {
         return Ok(KernelCapabilities::default());
     }
