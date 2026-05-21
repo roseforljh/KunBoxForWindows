@@ -1,29 +1,28 @@
-# Graph Report - .  (2026-05-17)
+# Graph Report - .  (2026-05-21)
 
 ## Corpus Check
-- 54 files Â· ~62,360 words
+- 54 files ¡¤ ~62,842 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 563 nodes Â· 1059 edges Â· 21 communities detected
-- Extraction: 100% EXTRACTED Â· 0% INFERRED Â· 0% AMBIGUOUS
-- Token cost: 0 input Â· 0 output
+- 568 nodes ¡¤ 1081 edges ¡¤ 21 communities detected
+- Extraction: 100% EXTRACTED ¡¤ 0% INFERRED ¡¤ 0% AMBIGUOUS
+- Token cost: 0 input ¡¤ 0 output
 
 ## God Nodes (most connected - your core abstractions)
-1. `singbox_start_impl()` - 22 edges
+1. `singbox_start_impl()` - 23 edges
 2. `generate_config_with_settings()` - 21 edges
 3. `load_profiles_data()` - 18 edges
-4. `start_temp_singbox()` - 14 edges
-5. `make_test_state()` - 13 edges
-6. `cleanup_temp_singbox()` - 12 edges
-7. `node_test_all()` - 12 edges
-8. `generate_config()` - 12 edges
-9. `kernel_download()` - 11 edges
-10. `test_latency_via_temp_backend()` - 11 edges
+4. `generate_config()` - 15 edges
+5. `start_temp_singbox()` - 14 edges
+6. `unique_test_dir()` - 14 edges
+7. `write_json_file()` - 14 edges
+8. `read_generated_config()` - 14 edges
+9. `make_test_state()` - 13 edges
+10. `cleanup_temp_singbox()` - 12 edges
 
 ## Surprising Connections (you probably didn't know these)
-- `build_xray_plugin_config_hoists_legacy_xhttp_extra_encryption()` --calls--> `build_xray_plugin_config()`  [EXTRACTED]
-  src-tauri\src\commands\singbox.rs â†’ src-tauri\src\commands\singbox.rs  _Bridges community 1 â†’ community 8_
+- None detected - all connections are within the same source files.
 
 ## Communities
 
@@ -33,19 +32,19 @@ Nodes (119): acquire_temp_singbox_test_slot(), append_latency_diagnostic(), appe
 
 ### Community 1 - "Community 1"
 Cohesion: 0.04
-Nodes (96): active_or_first_node(), allocate_clash_api_port(), append_startup_diagnostic(), apply_route_target(), bounded_selector_probe_helper_caps_concurrency(), build_dns_server(), build_dns_server_with_resolver(), build_foreign_wintun_warning() (+88 more)
+Nodes (116): active_or_first_node(), allocate_clash_api_port(), append_startup_diagnostic(), apply_route_target(), bounded_selector_probe_helper_caps_concurrency(), build_dns_server(), build_dns_server_with_resolver(), build_foreign_wintun_warning() (+108 more)
 
 ### Community 2 - "Community 2"
 Cohesion: 0.03
-Nodes (19): handleAdd(), handleClose(), cleanDomainValue(), parseSmartDomainType(), saveRule(), localFailureLatencyResult(), normalizeLatencyResult(), AppSettings (+11 more)
+Nodes (13): handleAdd(), handleClose(), applyTheme(), handler(), restartIfConnected(), sleep(), createAreaPath(), createPath() (+5 more)
 
 ### Community 3 - "Community 3"
-Cohesion: 0.05
-Nodes (7): applyTheme(), handler(), restartIfConnected(), sleep(), createAreaPath(), createPath(), ErrorBoundary
-
-### Community 4 - "Community 4"
 Cohesion: 0.08
 Nodes (44): build_release_from_version(), builds_release_from_version(), clear_kernel_cache_targets(), clears_actual_cache_db_and_ruleset_cache(), download_kernel_archive_to_path(), extract_kernel_archive(), fetch_release_fallback_from_jsdelivr(), fetch_trusted_remote_releases() (+36 more)
+
+### Community 4 - "Community 4"
+Cohesion: 0.06
+Nodes (12): AppSettings, CommandResult, CustomRules, DomainRule, NodeLatencyResult, NodeLatencyStatus, Profile, ProfilesData (+4 more)
 
 ### Community 5 - "Community 5"
 Cohesion: 0.09
@@ -60,12 +59,12 @@ Cohesion: 0.13
 Nodes (25): build_xray_release_from_version(), builds_xray_release_from_version(), converts_exact_github_release_to_plugin_release(), download_archive_to_path(), extract_xray_archive(), fetch_xray_release_by_tag(), fetch_xray_releases(), find_xray_windows_asset() (+17 more)
 
 ### Community 8 - "Community 8"
-Cohesion: 0.32
-Nodes (17): build_xray_plugin_config_hoists_legacy_xhttp_extra_encryption(), generate_config(), generate_config_bridges_xhttp_nodes_through_local_xray_plugin(), generate_config_keeps_proxy_dns_for_non_ech_active_node(), generate_config_preserves_profile_scoped_node_identity_for_domain_rules(), generate_config_routes_xray_plugin_remote_direct_in_tun_mode(), generate_config_scopes_fakedns_to_tun_inbound_when_tun_is_enabled(), generate_config_supports_profile_scoped_and_bare_ruleset_node_routes() (+9 more)
+Cohesion: 0.13
+Nodes (14): decode_windows_output(), ensure_u16_in_range(), ensure_u32_in_range(), get_settings(), set_settings(), set_settings_impl(), set_settings_keeps_startup_side_effect_when_persist_succeeds(), set_settings_keeps_strict_tun_route_enabled() (+6 more)
 
 ### Community 9 - "Community 9"
-Cohesion: 0.2
-Nodes (12): decode_windows_output(), ensure_u16_in_range(), ensure_u32_in_range(), get_settings(), set_settings(), set_settings_impl(), set_settings_keeps_startup_side_effect_when_persist_succeeds(), set_settings_rolls_back_startup_side_effect_when_persist_fails() (+4 more)
+Cohesion: 0.25
+Nodes (1): ErrorBoundary
 
 ### Community 10 - "Community 10"
 Cohesion: 0.62
@@ -81,39 +80,39 @@ Nodes (2): handleClose(), handleImport()
 
 ### Community 13 - "Community 13"
 Cohesion: 1.0
-Nodes (0):
+Nodes (0): 
 
 ### Community 14 - "Community 14"
 Cohesion: 1.0
-Nodes (0):
+Nodes (0): 
 
 ### Community 15 - "Community 15"
 Cohesion: 1.0
-Nodes (0):
+Nodes (0): 
 
 ### Community 16 - "Community 16"
 Cohesion: 1.0
-Nodes (0):
+Nodes (0): 
 
 ### Community 17 - "Community 17"
 Cohesion: 1.0
-Nodes (0):
+Nodes (0): 
 
 ### Community 18 - "Community 18"
 Cohesion: 1.0
-Nodes (0):
+Nodes (0): 
 
 ### Community 19 - "Community 19"
 Cohesion: 1.0
-Nodes (0):
+Nodes (0): 
 
 ### Community 20 - "Community 20"
 Cohesion: 1.0
-Nodes (0):
+Nodes (0): 
 
 ## Knowledge Gaps
 - **30 isolated node(s):** `ProxyState`, `TrafficStats`, `Profile`, `SingBoxOutbound`, `RuleSet` (+25 more)
-  These have â‰¤1 connection - possible missing edges or undocumented components.
+  These have ¡Ü1 connection - possible missing edges or undocumented components.
 - **Thin community `Community 13`** (2 nodes): `build.rs`, `main()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 - **Thin community `Community 14`** (2 nodes): `manual_test.rs`, `main()`
@@ -143,8 +142,8 @@ _Questions this graph is uniquely positioned to answer:_
 - **Should `Community 2` be split into smaller, more focused modules?**
   _Cohesion score 0.03 - nodes in this community are weakly interconnected._
 - **Should `Community 3` be split into smaller, more focused modules?**
-  _Cohesion score 0.05 - nodes in this community are weakly interconnected._
-- **Should `Community 4` be split into smaller, more focused modules?**
   _Cohesion score 0.08 - nodes in this community are weakly interconnected._
+- **Should `Community 4` be split into smaller, more focused modules?**
+  _Cohesion score 0.06 - nodes in this community are weakly interconnected._
 - **Should `Community 5` be split into smaller, more focused modules?**
   _Cohesion score 0.09 - nodes in this community are weakly interconnected._

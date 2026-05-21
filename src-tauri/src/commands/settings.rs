@@ -93,6 +93,7 @@ where
 {
     // Get current settings
     let mut current = state.settings.lock().await.clone();
+    current.tun_strict_route = true;
     let old_start_with_windows = current.start_with_windows;
 
     // Merge with incoming partial settings
@@ -103,7 +104,6 @@ where
         if let Some(v) = obj.get("systemProxy").and_then(|v| v.as_bool()) { current.system_proxy = v; }
         if let Some(v) = obj.get("tunEnabled").and_then(|v| v.as_bool()) { current.tun_enabled = v; }
         if let Some(v) = obj.get("tunStack").and_then(|v| v.as_str()) { current.tun_stack = v.to_string(); }
-        if let Some(v) = obj.get("tunStrictRoute").and_then(|v| v.as_bool()) { current.tun_strict_route = v; }
         if let Some(v) = obj.get("localDns").and_then(|v| v.as_str()) { current.local_dns = v.to_string(); }
         if let Some(v) = obj.get("remoteDns").and_then(|v| v.as_str()) { current.remote_dns = v.to_string(); }
         if let Some(v) = obj.get("fakeDns").and_then(|v| v.as_bool()) { current.fake_dns = v; }
@@ -252,6 +252,45 @@ mod tests {
 
         let saved: AppSettings = serde_json::from_str(&fs::read_to_string(state.settings_file()).unwrap()).unwrap();
         assert!(saved.start_with_windows);
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn set_settings_keeps_strict_tun_route_enabled() {
+        let data_dir = unique_test_path("strict-tun-route");
+        let state = AppState::new(data_dir.clone());
+
+        set_settings_impl(&state, serde_json::json!({
+            "tunStrictRoute": false
+        }), |_| Ok(())).await.unwrap();
+
+        assert!(state.settings.lock().await.tun_strict_route);
+
+        let saved: AppSettings = serde_json::from_str(&fs::read_to_string(state.settings_file()).unwrap()).unwrap();
+        assert!(saved.tun_strict_route);
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn set_settings_repairs_existing_non_strict_tun_route() {
+        let data_dir = unique_test_path("strict-tun-route-repair");
+        let state = AppState::new(data_dir.clone());
+
+        {
+            let mut settings = state.settings.lock().await;
+            settings.tun_strict_route = false;
+        }
+
+        set_settings_impl(&state, serde_json::json!({
+            "localDns": "1.1.1.1"
+        }), |_| Ok(())).await.unwrap();
+
+        assert!(state.settings.lock().await.tun_strict_route);
+
+        let saved: AppSettings = serde_json::from_str(&fs::read_to_string(state.settings_file()).unwrap()).unwrap();
+        assert!(saved.tun_strict_route);
 
         let _ = fs::remove_dir_all(data_dir);
     }

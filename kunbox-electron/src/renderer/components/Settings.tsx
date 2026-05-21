@@ -190,9 +190,6 @@ export default function Settings() {
                       onChange={(v) => updateSetting('tunStack', v as AppSettings['tunStack'])}
                     />
                   </SettingRow>
-                  <SettingRow label="严格路由" isLast>
-                    <Toggle checked={settings.tunStrictRoute} onChange={(v) => updateSetting('tunStrictRoute', v)} />
-                  </SettingRow>
                 </SettingCard>
 
                 {settings.tunEnabled && !isAdmin && (

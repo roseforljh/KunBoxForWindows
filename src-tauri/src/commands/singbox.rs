@@ -284,6 +284,26 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
     #[cfg(windows)]
     kill_stray_singbox_processes(state).await?;
 
+    // Ensure inbound ports are available; auto-fallback to free ports if occupied (e.g. TIME_WAIT)
+    let listen_addr_for_check = if effective_settings.allow_lan { "0.0.0.0" } else { "127.0.0.1" };
+    if std::net::TcpListener::bind((listen_addr_for_check, effective_settings.local_port)).is_err() {
+        let fallback = find_available_tcp_port().await?;
+        append_startup_diagnostic(state, &format!(
+            "mixed-in port {} occupied, using fallback port {}", effective_settings.local_port, fallback
+        ));
+        effective_settings.local_port = fallback;
+    }
+    if std::net::TcpListener::bind((listen_addr_for_check, effective_settings.socks_port)).is_err() {
+        let fallback = find_available_tcp_port().await?;
+        append_startup_diagnostic(state, &format!(
+            "socks-in port {} occupied, using fallback port {}", effective_settings.socks_port, fallback
+        ));
+        effective_settings.socks_port = fallback;
+    }
+    if effective_settings.local_port == effective_settings.socks_port {
+        effective_settings.socks_port = find_available_tcp_port().await?;
+    }
+
     // Generate config
     let clash_api_port = allocate_clash_api_port(state).await?;
     append_startup_diagnostic(state, &format!("selected clash api port: {}", clash_api_port));
@@ -1698,7 +1718,7 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
             "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
             "mtu": 9000,
             "auto_route": true,
-            "strict_route": settings.tun_strict_route,
+            "strict_route": true,
             "stack": settings.tun_stack
         }));
     }
@@ -1740,7 +1760,8 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
             },
             "cache_file": {
                 "enabled": true,
-                "path": "cache.db"
+                "path": "cache.db",
+                "store_rdrc": true
             }
         },
         "dns": dns_config,
@@ -1901,7 +1922,15 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
     // ========== 构建路由规则 ==========
     let mut rules: Vec<serde_json::Value> = vec![
         serde_json::json!({ "inbound": "mixed-in", "action": "sniff" }),
-        serde_json::json!({ "protocol": "dns", "action": "hijack-dns" }),
+        serde_json::json!({
+            "type": "logical",
+            "mode": "or",
+            "rules": [
+                { "protocol": "dns" },
+                { "port": 53 }
+            ],
+            "action": "hijack-dns"
+        }),
     ];
 
     // 预先声明规则集引用和缓存目录（广告屏蔽和用户规则集都需要）
@@ -2671,6 +2700,102 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn generate_config_hijacks_dns_by_protocol_or_port() {
+        let data_dir = unique_test_dir("dns-hijack-port");
+        let state = AppState::new(data_dir.clone());
+
+        let profiles_data = ProfilesData {
+            profiles: vec![make_profile("profile-a", "Profile A")],
+            active_profile_id: Some("profile-a".to_string()),
+            active_node_tag: Some("node-a".to_string()),
+            node_selections: HashMap::new(),
+        };
+
+        write_json_file(&state.profiles_file(), &profiles_data);
+        write_json_file(&state.configs_dir().join("profile-a.json"), &vec![make_node("node-a")]);
+
+        let result = generate_config(&state).await.unwrap();
+        assert!(result.success);
+
+        let config = read_generated_config(&state);
+        let rules = config["route"]["rules"].as_array().unwrap();
+        let dns_hijack_rule = rules
+            .iter()
+            .find(|rule| rule.get("action").and_then(|action| action.as_str()) == Some("hijack-dns"))
+            .expect("dns hijack rule should be generated");
+
+        assert_eq!(dns_hijack_rule.get("type").and_then(|value| value.as_str()), Some("logical"));
+        assert_eq!(dns_hijack_rule.get("mode").and_then(|value| value.as_str()), Some("or"));
+
+        let nested_rules = dns_hijack_rule.get("rules").and_then(|value| value.as_array()).unwrap();
+        assert!(nested_rules.iter().any(|rule| rule.get("protocol").and_then(|value| value.as_str()) == Some("dns")));
+        assert!(nested_rules.iter().any(|rule| rule.get("port").and_then(|value| value.as_u64()) == Some(53)));
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn generate_config_forces_strict_tun_route() {
+        let data_dir = unique_test_dir("tun-strict-route");
+        let state = AppState::new(data_dir.clone());
+
+        {
+            let mut settings = state.settings.lock().await;
+            settings.tun_enabled = true;
+            settings.tun_strict_route = false;
+        }
+
+        let profiles_data = ProfilesData {
+            profiles: vec![make_profile("profile-a", "Profile A")],
+            active_profile_id: Some("profile-a".to_string()),
+            active_node_tag: Some("node-a".to_string()),
+            node_selections: HashMap::new(),
+        };
+
+        write_json_file(&state.profiles_file(), &profiles_data);
+        write_json_file(&state.configs_dir().join("profile-a.json"), &vec![make_node("node-a")]);
+
+        let result = generate_config(&state).await.unwrap();
+        assert!(result.success);
+
+        let config = read_generated_config(&state);
+        let tun_inbound = config["inbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|inbound| inbound.get("tag").and_then(|tag| tag.as_str()) == Some("tun-in"))
+            .expect("tun inbound should be generated");
+
+        assert_eq!(tun_inbound.get("strict_route").and_then(|value| value.as_bool()), Some(true));
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn generate_config_stores_rejected_dns_response_cache() {
+        let data_dir = unique_test_dir("dns-rdrc-cache");
+        let state = AppState::new(data_dir.clone());
+
+        let profiles_data = ProfilesData {
+            profiles: vec![make_profile("profile-a", "Profile A")],
+            active_profile_id: Some("profile-a".to_string()),
+            active_node_tag: Some("node-a".to_string()),
+            node_selections: HashMap::new(),
+        };
+
+        write_json_file(&state.profiles_file(), &profiles_data);
+        write_json_file(&state.configs_dir().join("profile-a.json"), &vec![make_node("node-a")]);
+
+        let result = generate_config(&state).await.unwrap();
+        assert!(result.success);
+
+        let config = read_generated_config(&state);
+        assert_eq!(config["experimental"]["cache_file"]["store_rdrc"].as_bool(), Some(true));
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
     async fn generate_config_uses_profile_ids_for_selector_tags() {
         let data_dir = unique_test_dir("duplicate-profile-selector");
         let state = AppState::new(data_dir.clone());
@@ -3078,7 +3203,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn generate_config_uses_non_strict_tun_route_by_default() {
+    async fn generate_config_uses_strict_tun_route_by_default() {
         let data_dir = unique_test_dir("tun-non-strict-route");
         let state = AppState::new(data_dir.clone());
 
@@ -3105,7 +3230,7 @@ mod tests {
             .find(|inbound| inbound.get("tag").and_then(|tag| tag.as_str()) == Some("tun-in"))
             .expect("tun inbound should be generated");
 
-        assert_eq!(tun_inbound.get("strict_route").and_then(|value| value.as_bool()), Some(false));
+        assert_eq!(tun_inbound.get("strict_route").and_then(|value| value.as_bool()), Some(true));
 
         let _ = fs::remove_dir_all(data_dir);
     }

@@ -130,7 +130,7 @@ impl Default for AppSettings {
             system_proxy: true,
             tun_enabled: false,
             tun_stack: "mixed".to_string(),
-            tun_strict_route: false,
+            tun_strict_route: true,
             local_dns: "223.5.5.5".to_string(),
             remote_dns: "https://dns.google/dns-query".to_string(),
             fake_dns: false,
