@@ -11,7 +11,7 @@ use tokio::process::Command;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio_util::sync::CancellationToken;
 use crate::state::AppState;
-use crate::types::{CommandResult, ProxyState, TrafficStats};
+use crate::types::{AppSettings, CommandResult, ProxyState, TrafficStats};
 
 #[cfg(windows)]
 fn decode_windows_output(bytes: &[u8]) -> String {
@@ -165,12 +165,89 @@ async fn kill_stray_singbox_processes(state: &AppState) -> Result<(), String> {
     Err(format!("清理残留 sing-box 进程失败: {}", combined))
 }
 
+fn inbound_listen_addr(settings: &AppSettings) -> &'static str {
+    if settings.allow_lan { "0.0.0.0" } else { "127.0.0.1" }
+}
+
+fn reserve_tcp_port(listen_addr: &str, port: u16) -> Result<std::net::TcpListener, std::io::Error> {
+    std::net::TcpListener::bind((listen_addr, port))
+}
+
+async fn reserve_available_tcp_port_avoiding(
+    listen_addr: &str,
+    avoid_ports: &[u16],
+) -> Result<(u16, std::net::TcpListener), String> {
+    for _ in 0..64 {
+        let listener = std::net::TcpListener::bind((listen_addr, 0)).map_err(|e| e.to_string())?;
+        let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+        if !avoid_ports.contains(&port) {
+            return Ok((port, listener));
+        }
+    }
+    Err("无法分配可用本地端口".to_string())
+}
+
+async fn find_available_tcp_port_avoiding(listen_addr: &str, avoid_ports: &[u16]) -> Result<u16, String> {
+    let (port, listener) = reserve_available_tcp_port_avoiding(listen_addr, avoid_ports).await?;
+    drop(listener);
+    Ok(port)
+}
+
 async fn find_available_tcp_port() -> Result<u16, String> {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .map_err(|e| e.to_string())?
-        .local_addr()
-        .map(|addr| addr.port())
-        .map_err(|e| e.to_string())
+    find_available_tcp_port_avoiding("127.0.0.1", &[]).await
+}
+
+async fn resolve_available_inbound_ports(
+    state: &AppState,
+    settings: &mut AppSettings,
+) -> Result<(bool, Vec<std::net::TcpListener>), String> {
+    let listen_addr = inbound_listen_addr(settings);
+    let mut changed = false;
+    let mut reservations = Vec::new();
+
+    match reserve_tcp_port(listen_addr, settings.local_port) {
+        Ok(listener) => reservations.push(listener),
+        Err(err) => {
+            let old_port = settings.local_port;
+            let (fallback, listener) = reserve_available_tcp_port_avoiding(listen_addr, &[settings.socks_port]).await?;
+            append_startup_diagnostic(state, &format!(
+                "mixed-in port {} unavailable ({}), using fallback port {}",
+                old_port, err, fallback
+            ));
+            settings.local_port = fallback;
+            reservations.push(listener);
+            changed = true;
+        }
+    }
+
+    let socks_reservation = if settings.socks_port == settings.local_port {
+        Err("same as mixed-in port".to_string())
+    } else {
+        reserve_tcp_port(listen_addr, settings.socks_port).map_err(|err| err.to_string())
+    };
+
+    match socks_reservation {
+        Ok(listener) => reservations.push(listener),
+        Err(err) => {
+            let old_port = settings.socks_port;
+            let (fallback, listener) = reserve_available_tcp_port_avoiding(listen_addr, &[settings.local_port]).await?;
+            append_startup_diagnostic(state, &format!(
+                "socks-in port {} unavailable ({}), using fallback port {}",
+                old_port, err, fallback
+            ));
+            settings.socks_port = fallback;
+            reservations.push(listener);
+            changed = true;
+        }
+    }
+
+    Ok((changed, reservations))
+}
+
+fn write_settings_file(state: &AppState, settings: &AppSettings) -> Result<(), String> {
+    fs::create_dir_all(&state.data_dir).map_err(|e| e.to_string())?;
+    let content = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
+    fs::write(state.settings_file(), content).map_err(|e| e.to_string())
 }
 
 async fn allocate_clash_api_port(state: &AppState) -> Result<u16, String> {
@@ -284,24 +361,29 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
     #[cfg(windows)]
     kill_stray_singbox_processes(state).await?;
 
-    // Ensure inbound ports are available; auto-fallback to free ports if occupied (e.g. TIME_WAIT)
-    let listen_addr_for_check = if effective_settings.allow_lan { "0.0.0.0" } else { "127.0.0.1" };
-    if std::net::TcpListener::bind((listen_addr_for_check, effective_settings.local_port)).is_err() {
-        let fallback = find_available_tcp_port().await?;
+    let (ports_changed, inbound_port_reservations) = resolve_available_inbound_ports(state, &mut effective_settings).await?;
+    if ports_changed {
+        let persisted_settings = {
+            let locked = state.settings.lock().await;
+            let mut next = locked.clone();
+            next.local_port = effective_settings.local_port;
+            next.socks_port = effective_settings.socks_port;
+            next
+        };
+        write_settings_file(state, &persisted_settings)?;
+        *state.settings.lock().await = persisted_settings;
+        let port_warning = format!(
+            "本地代理端口被系统保留或占用，已自动切换为 HTTP {} / SOCKS {}。",
+            effective_settings.local_port, effective_settings.socks_port
+        );
+        startup_warning = Some(match startup_warning {
+            Some(existing) => format!("{}\n{}", existing, port_warning),
+            None => port_warning,
+        });
         append_startup_diagnostic(state, &format!(
-            "mixed-in port {} occupied, using fallback port {}", effective_settings.local_port, fallback
+            "persisted auto-selected inbound ports: mixed-in={}, socks-in={}",
+            effective_settings.local_port, effective_settings.socks_port
         ));
-        effective_settings.local_port = fallback;
-    }
-    if std::net::TcpListener::bind((listen_addr_for_check, effective_settings.socks_port)).is_err() {
-        let fallback = find_available_tcp_port().await?;
-        append_startup_diagnostic(state, &format!(
-            "socks-in port {} occupied, using fallback port {}", effective_settings.socks_port, fallback
-        ));
-        effective_settings.socks_port = fallback;
-    }
-    if effective_settings.local_port == effective_settings.socks_port {
-        effective_settings.socks_port = find_available_tcp_port().await?;
     }
 
     // Generate config
@@ -360,6 +442,8 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
     let _ = app.emit("singbox:state", "connecting");
 
     // Start sing-box process
+
+    drop(inbound_port_reservations);
 
     #[cfg(windows)]
     let mut child = Command::new(&singbox_path)
@@ -2553,6 +2637,7 @@ mod tests {
     use crate::state::AppState;
     use crate::types::{CustomRules, DomainRule, Profile, ProfilesData, RuleSet};
     use std::collections::HashMap;
+    use std::net::TcpListener;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -2678,6 +2763,34 @@ mod tests {
     #[test]
     fn force_clear_mode_is_distinct() {
         assert_ne!(ProxyCleanupMode::RestoreSnapshot, ProxyCleanupMode::ForceClear);
+    }
+
+    #[tokio::test]
+    async fn resolve_available_inbound_ports_replaces_unavailable_ports() {
+        let data_dir = unique_test_dir("inbound-port-fallback");
+        let state = AppState::new(data_dir.clone());
+        let blocked = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let blocked_port = blocked.local_addr().unwrap().port();
+
+        let mut settings = AppSettings::default();
+        settings.local_port = blocked_port;
+        settings.socks_port = find_available_tcp_port_avoiding("127.0.0.1", &[blocked_port])
+            .await
+            .unwrap();
+
+        let (changed, reservations) = resolve_available_inbound_ports(&state, &mut settings).await.unwrap();
+
+        assert!(changed);
+        assert_ne!(settings.local_port, blocked_port);
+        assert_ne!(settings.local_port, settings.socks_port);
+        assert_eq!(reservations.len(), 2);
+        assert!(TcpListener::bind(("127.0.0.1", settings.local_port)).is_err());
+        assert!(TcpListener::bind(("127.0.0.1", settings.socks_port)).is_err());
+        drop(reservations);
+        assert!(TcpListener::bind(("127.0.0.1", settings.local_port)).is_ok());
+
+        drop(blocked);
+        let _ = fs::remove_dir_all(data_dir);
     }
 
     #[test]

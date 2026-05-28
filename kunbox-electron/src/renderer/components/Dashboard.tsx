@@ -8,6 +8,7 @@ import { formatBytes, formatDuration, cn } from '../lib/utils'
 import { useToast } from './ui/Toast'
 import { useManagedTimeouts } from '../lib/useManagedTimeouts'
 import { useProfiles } from '../lib/useProfiles'
+import type { AppSettings } from '../../shared/types'
 
 export default function Dashboard() {
   const { state, traffic, connect, disconnect, needsRestart, lastError } = useConnectionStore(
@@ -32,6 +33,7 @@ export default function Dashboard() {
   const [isAnimating, setIsAnimating] = useState(false)
   const { profiles, loadProfiles } = useProfiles()
   const [isTesting, setIsTesting] = useState(false)
+  const [localPort, setLocalPort] = useState<number | null>(null)
   const [trafficHistory, setTrafficHistory] = useState<{ download: number; upload: number }[]>([])
   const errorToastGuardRef = useRef(false)
   const toast = useToast()
@@ -41,6 +43,15 @@ export default function Dashboard() {
   const isConnecting = state === 'connecting'
   const isDisconnecting = state === 'disconnecting'
   const isConnected = isOn
+
+  const loadLocalPort = useCallback(async () => {
+    try {
+      const settings: AppSettings = await window.api.settings.get()
+      setLocalPort(settings.localPort)
+    } catch (error) {
+      console.error('Failed to load local port:', error)
+    }
+  }, [])
 
   // Listen for selector switch events
   useEffect(() => {
@@ -79,8 +90,9 @@ export default function Dashboard() {
   // Load profiles and nodes on mount
   useEffect(() => {
     void loadProfilesSafe()
+    void loadLocalPort()
     loadNodes()
-  }, [loadNodes, loadProfilesSafe])
+  }, [loadNodes, loadLocalPort, loadProfilesSafe])
 
   // Get active node info
   const activeProfile = profiles.find(p => p.enabled)
@@ -101,6 +113,7 @@ export default function Dashboard() {
       } else {
         const result = await connect()
         if (result.success) {
+          await loadLocalPort()
           if (result.warning) {
             toast.warning(result.warning)
           } else {
@@ -136,6 +149,7 @@ export default function Dashboard() {
       await new Promise(resolve => setTimeout(resolve, 500))
       const startResult = await connect()
       if (startResult.success) {
+        await loadLocalPort()
         if (startResult.warning) {
           toast.warning(startResult.warning)
         } else {
@@ -247,6 +261,7 @@ export default function Dashboard() {
             isLoading={isAnimating} 
             onToggle={handleToggle}
             onRestart={handleRestart}
+            localPort={localPort}
           />
         </div>
       </div>
@@ -392,16 +407,18 @@ export default function Dashboard() {
   )
 }
 
-function ProxyToggle({ 
-  isOn, 
-  isLoading, 
+function ProxyToggle({
+  isOn,
+  isLoading,
   onToggle,
-  onRestart
-}: { 
+  onRestart,
+  localPort
+}: {
   isOn: boolean
   isLoading: boolean
   onToggle: () => void
   onRestart: () => void
+  localPort: number | null
 }) {
   const [isRestarting, setIsRestarting] = useState(false)
 
@@ -483,7 +500,7 @@ function ProxyToggle({
               : 'text-[var(--text-muted)]'
           )}
         >
-          127.0.0.1:7890
+          {localPort === null ? '读取端口中...' : `127.0.0.1:${localPort}`}
         </span>
         
         <motion.button

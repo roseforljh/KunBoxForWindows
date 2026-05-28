@@ -4,7 +4,10 @@ use crate::state::AppState;
 use crate::types::AppSettings;
 
 #[cfg(windows)]
-use std::process::Command;
+use std::{os::windows::process::CommandExt, process::Command};
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[cfg(windows)]
 fn decode_windows_output(bytes: &[u8]) -> String {
@@ -34,6 +37,65 @@ fn validate_port_pair(settings: &AppSettings) -> Result<(), String> {
     if settings.local_port == settings.socks_port {
         return Err("localPort 和 socksPort 不能相同".to_string());
     }
+    Ok(())
+}
+
+fn port_in_ranges(port: u16, ranges: &[(u16, u16)]) -> Option<(u16, u16)> {
+    ranges.iter().copied().find(|(start, end)| port >= *start && port <= *end)
+}
+
+#[cfg(windows)]
+fn parse_excluded_tcp_port_ranges(output: &str) -> Vec<(u16, u16)> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let nums: Vec<u16> = line
+                .split_whitespace()
+                .filter_map(|part| part.parse::<u16>().ok())
+                .collect();
+            match nums.as_slice() {
+                [start, end, ..] if start <= end => Some((*start, *end)),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+#[cfg(windows)]
+fn windows_excluded_tcp_port_ranges() -> Vec<(u16, u16)> {
+    let output = Command::new("netsh")
+        .args(["interface", "ipv4", "show", "excludedportrange", "protocol=tcp"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let stdout = decode_windows_output(&output.stdout);
+            parse_excluded_tcp_port_ranges(&stdout)
+        }
+        _ => Vec::new(),
+    }
+}
+
+#[cfg(windows)]
+fn validate_windows_excluded_ports(settings: &AppSettings) -> Result<(), String> {
+    let ranges = windows_excluded_tcp_port_ranges();
+    for (field, port) in [
+        ("localPort", settings.local_port),
+        ("socksPort", settings.socks_port),
+    ] {
+        if let Some((start, end)) = port_in_ranges(port, &ranges) {
+            return Err(format!(
+                "{} {} 已被 Windows 系统保留（{}-{}），请换一个端口",
+                field, port, start, end
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn validate_windows_excluded_ports(_settings: &AppSettings) -> Result<(), String> {
     Ok(())
 }
 
@@ -97,9 +159,16 @@ where
     let old_start_with_windows = current.start_with_windows;
 
     // Merge with incoming partial settings
+    let mut ports_changed = false;
     if let Some(obj) = settings.as_object() {
-        if let Some(v) = obj.get("localPort").and_then(|v| v.as_u64()) { current.local_port = ensure_u16_in_range(v, "localPort")?; }
-        if let Some(v) = obj.get("socksPort").and_then(|v| v.as_u64()) { current.socks_port = ensure_u16_in_range(v, "socksPort")?; }
+        if let Some(v) = obj.get("localPort").and_then(|v| v.as_u64()) {
+            current.local_port = ensure_u16_in_range(v, "localPort")?;
+            ports_changed = true;
+        }
+        if let Some(v) = obj.get("socksPort").and_then(|v| v.as_u64()) {
+            current.socks_port = ensure_u16_in_range(v, "socksPort")?;
+            ports_changed = true;
+        }
         if let Some(v) = obj.get("allowLan").and_then(|v| v.as_bool()) { current.allow_lan = v; }
         if let Some(v) = obj.get("systemProxy").and_then(|v| v.as_bool()) { current.system_proxy = v; }
         if let Some(v) = obj.get("tunEnabled").and_then(|v| v.as_bool()) { current.tun_enabled = v; }
@@ -126,6 +195,9 @@ where
     }
 
     validate_port_pair(&current)?;
+    if ports_changed {
+        validate_windows_excluded_ports(&current)?;
+    }
 
     let startup_changed = current.start_with_windows != old_start_with_windows;
     if startup_changed {
@@ -208,6 +280,28 @@ mod tests {
 
         settings.socks_port = 5947;
         assert!(validate_port_pair(&settings).is_ok());
+    }
+
+    #[test]
+    fn detects_port_inside_range() {
+        assert_eq!(port_in_ranges(5946, &[(5855, 5954)]), Some((5855, 5954)));
+        assert_eq!(port_in_ranges(5955, &[(5855, 5954)]), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn parses_windows_excluded_tcp_port_ranges() {
+        let output = r#"
+Start Port    End Port
+----------    --------
+      5855        5954
+     50000       50059     *
+"#;
+
+        assert_eq!(
+            parse_excluded_tcp_port_ranges(output),
+            vec![(5855, 5954), (50000, 50059)]
+        );
     }
 
     #[tokio::test]
