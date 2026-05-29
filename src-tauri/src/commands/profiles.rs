@@ -962,9 +962,6 @@ fn parse_clash_proxies(proxies: &[serde_json::Value]) -> Result<Vec<SingBoxOutbo
             }
 
             if proxy_type == "naive" {
-                if let Some(network_type) = p.get("network").and_then(|v| v.as_str()) {
-                    extra.insert("network".to_string(), serde_json::Value::String(network_type.to_string()));
-                }
                 if let Some(udp_over_tcp) = p.get("udp-over-tcp").and_then(|v| v.as_bool()) {
                     extra.insert("udp_over_tcp".to_string(), serde_json::Value::Bool(udp_over_tcp));
                 }
@@ -2616,6 +2613,35 @@ mod tests {
         let hysteria2 = parse_hysteria2_link("hysteria2://pwd@example.com:443?insecure=true#demo").unwrap();
         let hysteria2_tls = hysteria2.extra.get("tls").and_then(|v| v.as_object()).unwrap();
         assert_eq!(hysteria2_tls.get("insecure").and_then(|v| v.as_bool()), Some(true));
+    }
+
+    #[test]
+    fn parse_clash_naive_ignores_network_field() {
+        let proxies = vec![serde_json::json!({
+            "name": "Naive H2",
+            "type": "naive",
+            "server": "naive.example.com",
+            "port": 443,
+            "username": "user",
+            "password": "pass",
+            "network": "h2",
+            "sni": "naive.example.com"
+        })];
+
+        let nodes = parse_clash_proxies(&proxies).expect("expected naive node");
+        assert_eq!(nodes.len(), 1);
+        let node = &nodes[0];
+
+        assert_eq!(node.outbound_type.as_deref(), Some("naive"));
+        assert_eq!(node.extra.get("username").and_then(|value| value.as_str()), Some("user"));
+        assert_eq!(
+            node.extra
+                .get("tls")
+                .and_then(|value| value.get("server_name"))
+                .and_then(|value| value.as_str()),
+            Some("naive.example.com")
+        );
+        assert!(node.extra.get("network").is_none());
     }
 
     fn make_test_state() -> AppState {
