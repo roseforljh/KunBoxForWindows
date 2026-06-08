@@ -54,6 +54,7 @@ const mockNodes: SingBoxOutbound[] = [
 ]
 
 let mockActiveProfileId: string | null = 'mock-profile-1'
+let mockActiveNodeTag: string | null = mockNodes[0]?.tag ?? null
 let mockSettings: AppSettings = { ...defaultSettings }
 
 const mockNodesWithProfile: NodeWithProfile[] = mockNodes.map((n) => ({
@@ -131,7 +132,11 @@ export const mockApi = {
 
   node: {
     list: (): Promise<SingBoxOutbound[]> => Promise.resolve([...mockNodes]),
-    setActive: (_tag: string): Promise<void> => Promise.resolve(),
+    getActive: (): Promise<string | null> => Promise.resolve(mockActiveNodeTag),
+    setActive: (_tag: string): Promise<void> => {
+      mockActiveNodeTag = _tag
+      return Promise.resolve()
+    },
     add: (_link: string, _target?: any): Promise<SingBoxOutbound> =>
       Promise.resolve({ tag: '新节点', type: 'shadowsocks', server: 'new.example.com', server_port: 443 }),
     testLatency: (_tag: string): Promise<NodeLatencyResult> => Promise.resolve({

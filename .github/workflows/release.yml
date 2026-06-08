@@ -119,6 +119,12 @@ jobs:
           $exe = Get-ChildItem -Path "src-tauri/resources/libs/temp" -Recurse -Filter "sing-box.exe" | Select-Object -First 1
           if (-not $exe) { throw "sing-box.exe not found in archive" }
           Copy-Item $exe.FullName "src-tauri/resources/libs/sing-box.exe"
+          $cronet = Get-ChildItem -Path "src-tauri/resources/libs/temp" -Recurse -Filter "libcronet.dll" | Select-Object -First 1
+          if ($cronet) {
+            Copy-Item $cronet.FullName "src-tauri/resources/libs/libcronet.dll"
+          } else {
+            Write-Warning "libcronet.dll not found in archive; naive outbound will be unavailable in bundled kernel"
+          }
           Remove-Item $zipPath -Force
           Remove-Item "src-tauri/resources/libs/temp" -Recurse -Force
           Write-Host "sing-box $version bundled successfully"

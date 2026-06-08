@@ -116,6 +116,25 @@ fn path_exists(path: &Path) -> bool {
     fs::metadata(path).is_ok()
 }
 
+#[cfg(windows)]
+fn kernel_support_file_available(kernel_path: &Path, filename: &str) -> bool {
+    if kernel_path
+        .parent()
+        .is_some_and(|dir| path_exists(&dir.join(filename)))
+    {
+        return true;
+    }
+
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).any(|path| path_exists(&path.join(filename))))
+        .unwrap_or(false)
+}
+
+#[cfg(not(windows))]
+fn kernel_support_file_available(_kernel_path: &Path, _filename: &str) -> bool {
+    true
+}
+
 fn remove_path_if_exists(path: &Path) -> Result<(), String> {
     if !path.exists() {
         return Ok(());
@@ -449,9 +468,12 @@ pub async fn kernel_get_capabilities(app: AppHandle) -> Result<KernelCapabilitie
         "unknown".to_string()
     };
 
+    let supports_naive = version_gte(&version, (1, 13, 0))
+        && kernel_support_file_available(&kernel_path, "libcronet.dll");
+
     Ok(KernelCapabilities {
         version: version.clone(),
-        supports_naive: version_gte(&version, (1, 13, 0)),
+        supports_naive,
         supports_icmp_proxy: version_gte(&version, (1, 13, 0)),
         supports_bypass_action: version_gte(&version, (1, 13, 0)),
     })

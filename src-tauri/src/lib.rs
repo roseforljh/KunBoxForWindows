@@ -88,25 +88,25 @@ pub fn run() {
                 settings.system_proxy,
             ),
         );
-        
+
         // If requireAdmin is set and we're not running as admin, restart with elevation
         if settings.require_admin && !commands::is_admin() {
             use std::env;
             append_startup_diagnostic(&data_dir, "require_admin enabled and process is not elevated, attempting ShellExecuteW(runas)");
-            
+
             if let Ok(exe_path) = env::current_exe() {
                 let exe_path_wide: Vec<u16> = exe_path.to_string_lossy()
                     .encode_utf16()
                     .chain(std::iter::once(0))
                     .collect();
-                
+
                 let runas: Vec<u16> = "runas\0".encode_utf16().collect();
-                
+
                 unsafe {
                     use windows::core::PCWSTR;
                     use windows::Win32::UI::Shell::ShellExecuteW;
                     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-                    
+
                     let result = ShellExecuteW(
                         None,
                         PCWSTR(runas.as_ptr()),
@@ -115,7 +115,7 @@ pub fn run() {
                         PCWSTR::null(),
                         SW_SHOWNORMAL,
                     );
-                    
+
                     // If ShellExecuteW returns > 32, it succeeded - exit current instance
                     if result.0 as isize > 32 {
                         append_startup_diagnostic(&data_dir, "ShellExecuteW(runas) succeeded, exiting current non-elevated instance");
@@ -151,12 +151,12 @@ pub fn run() {
             let data_dir = get_data_dir();
             std::fs::create_dir_all(&data_dir).ok();
             append_startup_diagnostic(&data_dir, "tauri setup entered");
-            
+
             // Create configs directory
             let configs_dir = data_dir.join("configs");
             std::fs::create_dir_all(&configs_dir).ok();
             append_startup_diagnostic(&data_dir, &format!("config dir ready: {:?}", configs_dir));
-            
+
             log::info!("Data directory: {:?}", data_dir);
 
             let state = AppState::new(data_dir.clone());
@@ -205,7 +205,7 @@ pub fn run() {
                 // Read settings to check minimizeToTray
                 let data_dir = get_data_dir();
                 let settings = read_settings_sync(&data_dir);
-                
+
                 if settings.minimize_to_tray {
                     // Hide window instead of closing
                     let _ = window.hide();
@@ -231,6 +231,7 @@ pub fn run() {
             commands::profile_set_enabled,
             // Nodes
             commands::node_list,
+            commands::node_get_active,
             commands::node_set_active,
             commands::node_delete,
             commands::node_add,
@@ -309,30 +310,30 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
     // Main items
     let show_item = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
-    
+
     // VPN control submenu
     let vpn_start = MenuItem::with_id(app, "vpn_start", "启动 VPN", true, None::<&str>)?;
     let vpn_stop = MenuItem::with_id(app, "vpn_stop", "停止 VPN", true, None::<&str>)?;
     let vpn_restart = MenuItem::with_id(app, "vpn_restart", "重启 VPN", true, None::<&str>)?;
     let vpn_submenu = Submenu::with_items(app, "VPN 控制", true, &[&vpn_start, &vpn_stop, &vpn_restart])?;
-    
+
     // System proxy submenu
     let proxy_enable = MenuItem::with_id(app, "proxy_enable", "启用系统代理", true, None::<&str>)?;
     let proxy_disable = MenuItem::with_id(app, "proxy_disable", "关闭系统代理", true, None::<&str>)?;
     let proxy_submenu = Submenu::with_items(app, "系统代理", true, &[&proxy_enable, &proxy_disable])?;
-    
+
     // TUN mode submenu
     let tun_enable = MenuItem::with_id(app, "tun_enable", "启用 TUN 模式", true, None::<&str>)?;
     let tun_disable = MenuItem::with_id(app, "tun_disable", "关闭 TUN 模式", true, None::<&str>)?;
     let tun_submenu = Submenu::with_items(app, "TUN 模式", true, &[&tun_enable, &tun_disable])?;
-    
+
     // Separators
     let sep1 = PredefinedMenuItem::separator(app)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
-    
+
     // Quit item
     let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-    
+
     let menu = Menu::with_items(app, &[
         &show_item,
         &sep1,

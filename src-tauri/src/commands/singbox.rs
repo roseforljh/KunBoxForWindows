@@ -404,6 +404,16 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
     let config_path_str = config_path.to_str()
         .ok_or_else(|| "Config path contains invalid UTF-8 characters".to_string())?;
 
+    #[cfg(windows)]
+    if config_file_has_outbound_type(&config_path, "naive")?
+        && !support_file_available_for_executable(&singbox_path, "libcronet.dll")
+    {
+        stop_plugin_bridges(state).await;
+        let message = "当前配置包含 naive 节点，但未找到 libcronet.dll。请到【设置 → 内核】重新下载 sing-box 1.13+ 官方 Windows 内核，或将 libcronet.dll 放到 sing-box.exe 同目录后重试。";
+        append_startup_diagnostic(state, message);
+        return Ok(CommandResult::err(message));
+    }
+
     // Preflight check: show clear error to UI before trying to run
     #[cfg(windows)]
     let check_output = Command::new(&singbox_path)
@@ -823,13 +833,89 @@ pub async fn singbox_disable_system_proxy() -> Result<CommandResult, String> {
 }
 
 /// 判断节点类型是否是代理类型
-fn is_proxy_type(node_type: &str) -> bool {
+pub(crate) fn is_proxy_type(node_type: &str) -> bool {
     matches!(node_type,
         "shadowsocks" | "vmess" | "vless" | "trojan" |
         "hysteria" | "hysteria2" | "tuic" | "anytls" |
         "http" | "socks" | "wireguard" | "ssh" | "shadowtls" |
         "naive"
     )
+}
+
+fn sanitize_naive_tls(obj: &mut serde_json::Map<String, serde_json::Value>, server: &str) {
+    let mut tls = obj
+        .remove("tls")
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+
+    let allowed_keys = ["server_name", "certificate", "certificate_path", "ech"];
+    tls.retain(|key, _| allowed_keys.contains(&key.as_str()));
+
+    if !server.is_empty() && !tls.contains_key("server_name") {
+        tls.insert("server_name".to_string(), serde_json::Value::String(server.to_string()));
+    }
+
+    obj.insert("tls".to_string(), serde_json::Value::Object(tls));
+}
+
+fn sanitize_naive_outbound(obj: &mut serde_json::Map<String, serde_json::Value>, server: &str) {
+    for key in [
+        "network",
+        "transport",
+        "ws-opts",
+        "grpc-opts",
+        "h2-opts",
+        "http-opts",
+        "skip-cert-verify",
+        "servername",
+        "sni",
+        "alpn",
+        "client-fingerprint",
+        "reality-opts",
+        "method",
+        "security",
+        "packet_encoding",
+        "flow",
+        "uuid",
+        "alter_id",
+    ] {
+        obj.remove(key);
+    }
+    sanitize_naive_tls(obj, server);
+}
+
+fn config_value_has_outbound_type(config: &serde_json::Value, outbound_type: &str) -> bool {
+    config
+        .get("outbounds")
+        .and_then(|value| value.as_array())
+        .is_some_and(|outbounds| {
+            outbounds.iter().any(|outbound| {
+                outbound
+                    .get("type")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|value| value.eq_ignore_ascii_case(outbound_type))
+            })
+        })
+}
+
+fn config_file_has_outbound_type(config_path: &std::path::Path, outbound_type: &str) -> Result<bool, String> {
+    let content = fs::read_to_string(config_path).map_err(|e| e.to_string())?;
+    let config: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    Ok(config_value_has_outbound_type(&config, outbound_type))
+}
+
+#[cfg(windows)]
+fn support_file_available_for_executable(executable_path: &std::path::Path, filename: &str) -> bool {
+    if executable_path
+        .parent()
+        .is_some_and(|dir| dir.join(filename).exists())
+    {
+        return true;
+    }
+
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).any(|path| path.join(filename).exists()))
+        .unwrap_or(false)
 }
 
 /// 处理节点配置，确保格式正确
@@ -870,6 +956,10 @@ fn process_node(node: &serde_json::Value) -> serde_json::Value {
 
         if node_type == "vless" && !obj.contains_key("packet_encoding") {
             obj.insert("packet_encoding".to_string(), serde_json::Value::String("xudp".to_string()));
+        }
+
+        if node_type == "naive" {
+            sanitize_naive_outbound(obj, &server);
         }
     }
     node
@@ -1545,10 +1635,27 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
         }
     }
 
-    // 处理当前配置的节点
-    let nodes: Vec<serde_json::Value> = raw_nodes.iter().map(process_node).collect();
+    // 处理当前配置的节点，并过滤 sing-box 不支持的类型，避免单个无效节点拖垮整份配置。
+    let nodes: Vec<serde_json::Value> = raw_nodes
+        .iter()
+        .map(process_node)
+        .filter(|node| {
+            node.get("type")
+                .and_then(|value| value.as_str())
+                .is_some_and(is_proxy_type)
+        })
+        .collect();
+
+    if nodes.is_empty() {
+        return Ok(CommandResult::err("当前配置没有可用的受支持代理节点"));
+    }
 
     let active_node_tag = profiles_data.active_node_tag.clone()
+        .filter(|tag| {
+            nodes
+                .iter()
+                .any(|node| node.get("tag").and_then(|value| value.as_str()) == Some(tag.as_str()))
+        })
         .or_else(|| nodes.first().and_then(|n| n.get("tag").and_then(|t| t.as_str()).map(|s| s.to_string())));
 
     let inferred_ech_dns_server = extract_ech_dns_server_override(&raw_nodes, active_node_tag.as_deref());
@@ -1914,33 +2021,57 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
             }
 
             // 收集该配置的所有代理节点
-            let mut profile_proxy_tags: Vec<String> = Vec::new();
+            let mut profile_proxy_entries: Vec<(String, String)> = Vec::new();
             for node in &profile.nodes {
                 let node_type = node.get("type").and_then(|t| t.as_str()).unwrap_or("");
                 if is_proxy_type(node_type) {
                     if let Some(tag) = node.get("tag").and_then(|t| t.as_str()) {
+                        let outbound_tag = if profile.id == active_profile_id {
+                            tag.to_string()
+                        } else {
+                            normalized_node_reference_tag(&format!("{}::{}", profile.id, tag))
+                        };
+
                         // 如果节点不存在，添加到 outbounds
-                        if !existing_tags.contains(tag) {
-                            outbounds.push(node_for_singbox_with_plugin_bridge(node, &mut plugin_bridge_specs));
-                            existing_tags.insert(tag.to_string());
+                        if !existing_tags.contains(&outbound_tag) {
+                            if outbound_tag == tag {
+                                outbounds.push(node_for_singbox_with_plugin_bridge(node, &mut plugin_bridge_specs));
+                            } else {
+                                let scoped_node = with_outbound_tag(process_node(node), &outbound_tag);
+                                outbounds.push(node_for_singbox_with_plugin_bridge(&scoped_node, &mut plugin_bridge_specs));
+                            }
+                            existing_tags.insert(outbound_tag.clone());
                         }
-                        profile_proxy_tags.push(tag.to_string());
+                        profile_proxy_entries.push((tag.to_string(), outbound_tag));
                     }
                 }
             }
+            let profile_proxy_tags: Vec<String> = profile_proxy_entries
+                .iter()
+                .map(|(_, outbound_tag)| outbound_tag.clone())
+                .collect();
 
             // 创建 selector 类型（由应用层管理延迟测试和切换）
             if !profile_proxy_tags.is_empty() {
                 let selector_default = profiles_data
                     .node_selections
                     .get(&profile.id)
-                    .filter(|saved_tag| profile_proxy_tags.iter().any(|tag| tag == *saved_tag))
-                    .cloned()
+                    .and_then(|saved_tag| {
+                        profile_proxy_entries
+                            .iter()
+                            .find(|(raw_tag, outbound_tag)| raw_tag == saved_tag || outbound_tag == saved_tag)
+                            .map(|(_, outbound_tag)| outbound_tag.clone())
+                    })
                     .or_else(|| {
                         (profiles_data.active_profile_id.as_deref() == Some(profile.id.as_str()))
                             .then(|| profiles_data.active_node_tag.clone())
                             .flatten()
-                            .filter(|active_tag| profile_proxy_tags.iter().any(|tag| tag == active_tag))
+                            .and_then(|active_tag| {
+                                profile_proxy_entries
+                                    .iter()
+                                    .find(|(raw_tag, outbound_tag)| raw_tag == &active_tag || outbound_tag == &active_tag)
+                                    .map(|(_, outbound_tag)| outbound_tag.clone())
+                            })
                     })
                     .or_else(|| profile_proxy_tags.first().cloned());
 
@@ -2985,6 +3116,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn generate_config_scopes_duplicate_profile_selector_nodes() {
+        let data_dir = unique_test_dir("profile-selector-duplicate-node-tags");
+        let state = AppState::new(data_dir.clone());
+
+        let profiles_data = ProfilesData {
+            profiles: vec![
+                make_profile("profile-a", "Alpha"),
+                make_profile("profile-b", "Beta"),
+            ],
+            active_profile_id: Some("profile-a".to_string()),
+            active_node_tag: Some("shared-node".to_string()),
+            node_selections: HashMap::new(),
+        };
+
+        write_json_file(&state.profiles_file(), &profiles_data);
+        write_json_file(&state.configs_dir().join("profile-a.json"), &vec![make_node("shared-node")]);
+        write_json_file(&state.configs_dir().join("profile-b.json"), &vec![make_node("shared-node")]);
+
+        *state.rulesets.lock().await = vec![make_ruleset("rs-b", "profile", Some("profile-b"))];
+
+        let result = generate_config(&state).await.unwrap();
+        assert!(result.success);
+
+        let config = read_generated_config(&state);
+        let outbounds = config["outbounds"].as_array().unwrap();
+        let tags: std::collections::HashSet<&str> = outbounds
+            .iter()
+            .filter_map(|outbound| outbound.get("tag").and_then(|tag| tag.as_str()))
+            .collect();
+
+        assert!(tags.contains("shared-node"));
+        assert!(tags.contains("profile-b::shared-node"));
+
+        let selector = outbounds
+            .iter()
+            .find(|outbound| outbound.get("tag").and_then(|tag| tag.as_str()) == Some("P:profile-b"))
+            .expect("expected profile-b selector");
+        let selector_outbounds: Vec<&str> = selector
+            .get("outbounds")
+            .and_then(|value| value.as_array())
+            .unwrap()
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect();
+
+        assert_eq!(selector_outbounds, vec!["profile-b::shared-node"]);
+        assert_eq!(
+            selector.get("default").and_then(|value| value.as_str()),
+            Some("profile-b::shared-node")
+        );
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
     async fn generate_config_preserves_profile_scoped_node_identity_for_domain_rules() {
         let data_dir = unique_test_dir("profile-scoped-node-routing");
         let state = AppState::new(data_dir.clone());
@@ -3405,6 +3591,49 @@ mod tests {
         assert_eq!(outbound["streamSettings"]["network"].as_str(), Some("xhttp"));
         assert_eq!(outbound["streamSettings"]["xhttpSettings"]["path"].as_str(), Some("/proxy"));
         assert_eq!(outbound["streamSettings"]["xhttpSettings"]["host"].as_str(), Some("cdn.example.com"));
+    }
+
+    #[test]
+    fn node_for_singbox_removes_naive_unsupported_fields_and_keeps_tls() {
+        let node = serde_json::json!({
+            "type": "naive",
+            "tag": "Naive H2",
+            "server": "naive.example.com",
+            "server_port": 443,
+            "username": "user",
+            "password": "pass",
+            "network": "h2"
+        });
+        let mut bridge_specs = Vec::new();
+
+        let outbound = node_for_singbox_with_plugin_bridge(&node, &mut bridge_specs);
+
+        assert_eq!(outbound.get("type").and_then(|value| value.as_str()), Some("naive"));
+        assert!(outbound.get("network").is_none());
+        assert!(outbound.get("transport").is_none());
+        assert_eq!(
+            outbound
+                .get("tls")
+                .and_then(|value| value.get("server_name"))
+                .and_then(|value| value.as_str()),
+            Some("naive.example.com")
+        );
+        assert!(outbound.get("tls").and_then(|value| value.get("enabled")).is_none());
+        assert!(outbound.get("tls").and_then(|value| value.get("insecure")).is_none());
+    }
+
+    #[test]
+    fn config_value_has_outbound_type_detects_naive_nodes() {
+        let config = serde_json::json!({
+            "outbounds": [
+                { "type": "selector", "tag": "PROXY", "outbounds": ["Naive"] },
+                { "type": "naive", "tag": "Naive" },
+                { "type": "direct", "tag": "direct" }
+            ]
+        });
+
+        assert!(config_value_has_outbound_type(&config, "naive"));
+        assert!(!config_value_has_outbound_type(&config, "trojan"));
     }
 
     #[test]

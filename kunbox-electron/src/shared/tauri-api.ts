@@ -147,6 +147,7 @@ export const api = {
 
   node: {
     list: (): Promise<SingBoxOutbound[]> => invoke('node_list'),
+    getActive: (): Promise<string | null> => invoke('node_get_active'),
     setActive: (tag: string): Promise<void> => invoke('node_set_active', { tag }),
     add: (link: string, target?: { type: 'existing'; profileId: string } | { type: 'new'; profileName: string }): Promise<SingBoxOutbound> => {
       if (target?.type === 'new') {

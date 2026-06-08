@@ -317,6 +317,7 @@ export const useNodesStore = create<NodesState>()(
       loadNodes: async () => {
         const nodes = await window.api.node.list()
         const activeProfileId = await window.api.profile.getActive()
+        const backendActiveNodeTag = await window.api.node.getActive()
         const { activeNodeTag, latencyCache } = get()
         const now = Date.now()
 
@@ -342,17 +343,25 @@ export const useNodesStore = create<NodesState>()(
           }
           return { ...n }
         })
-        
-        if (nodes.length > 0 && !activeNodeTag) {
-          const firstTag = nodes[0].tag
-          if (firstTag) {
-            await window.api.node.setActive(firstTag)
-            set({ nodes: nodesWithLatency, activeNodeTag: firstTag, ...(cacheChanged ? { latencyCache: newCache } : {}) })
-            return
-          }
+
+        const nodeTags = new Set(nodes.map((node) => node.tag).filter(Boolean))
+        const validBackendTag = backendActiveNodeTag && nodeTags.has(backendActiveNodeTag)
+          ? backendActiveNodeTag
+          : null
+        const validLocalTag = activeNodeTag && nodeTags.has(activeNodeTag)
+          ? activeNodeTag
+          : null
+        const nextActiveTag = validBackendTag || validLocalTag || nodes[0]?.tag || null
+
+        if (nextActiveTag && nextActiveTag !== backendActiveNodeTag) {
+          await window.api.node.setActive(nextActiveTag)
         }
-        
-        set({ nodes: nodesWithLatency, ...(cacheChanged ? { latencyCache: newCache } : {}) })
+
+        set({
+          nodes: nodesWithLatency,
+          activeNodeTag: nextActiveTag,
+          ...(cacheChanged ? { latencyCache: newCache } : {})
+        })
       },
 
       loadAllNodes: async () => {

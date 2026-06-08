@@ -292,17 +292,17 @@ export default function Dashboard() {
           <div className="hidden lg:block w-px h-24 bg-[var(--border-primary)]" />
 
           <div className="flex-1 grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <div className="text-center cursor-pointer" onClick={() => isConnected && testLatency()}>
-              <div className={`text-3xl font-bold ${isConnected ? getLatencyColor(currentLatency) : 'text-[var(--text-primary)]'}`}>
+            <div className="text-center cursor-pointer" onClick={() => testLatency()}>
+              <div className={`text-3xl font-bold ${getLatencyColor(currentLatency)}`}>
                 {isTesting ? (
                   <Loader2 className="w-8 h-8 animate-spin mx-auto" />
+                ) : currentLatency !== null ? (
+                  <>{currentLatency}<span className="text-base font-normal">ms</span></>
                 ) : isConnected ? (
-                  currentLatency !== null ? (
-                    <>{currentLatency}<span className="text-base font-normal">ms</span></>
-                  ) : (
-                    <span className="text-lg">测试中...</span>
-                  )
-                ) : '-'}
+                  <span className="text-lg">测试中...</span>
+                ) : (
+                  '-'
+                )}
               </div>
               <div className="text-xs text-[var(--text-muted)] mt-1 flex items-center justify-center gap-1">
                 <Zap className="w-3 h-3" />

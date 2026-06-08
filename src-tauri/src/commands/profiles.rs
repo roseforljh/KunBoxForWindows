@@ -442,6 +442,34 @@ fn save_profile_nodes(state: &AppState, profile_id: &str, nodes: &[SingBoxOutbou
     Ok(())
 }
 
+fn reconcile_profile_node_selection(data: &mut ProfilesData, profile_id: &str, nodes: &[SingBoxOutbound]) {
+    let node_exists = |tag: &str| nodes.iter().any(|node| node.tag.as_deref() == Some(tag));
+    let fallback = nodes.first().and_then(|node| node.tag.clone());
+
+    let next_selection = data
+        .node_selections
+        .get(profile_id)
+        .cloned()
+        .filter(|tag| node_exists(tag))
+        .or_else(|| {
+            (data.active_profile_id.as_deref() == Some(profile_id))
+                .then(|| data.active_node_tag.clone())
+                .flatten()
+                .filter(|tag| node_exists(tag))
+        })
+        .or(fallback);
+
+    if let Some(tag) = &next_selection {
+        data.node_selections.insert(profile_id.to_string(), tag.clone());
+    } else {
+        data.node_selections.remove(profile_id);
+    }
+
+    if data.active_profile_id.as_deref() == Some(profile_id) {
+        data.active_node_tag = next_selection;
+    }
+}
+
 #[tauri::command]
 pub async fn profile_list(state: State<'_, AppState>) -> Result<Vec<Profile>, String> {
     let data = load_profiles_data(&state);
@@ -499,6 +527,7 @@ pub async fn profile_update(state: State<'_, AppState>, id: String) -> Result<Pr
     data.profiles[profile_idx].node_count = nodes.len() as u32;
 
     save_profile_nodes(&state, &id, &nodes)?;
+    reconcile_profile_node_selection(&mut data, &id, &nodes);
     save_profiles_data(&state, &data)?;
 
     let profile = data.profiles[profile_idx].clone();
@@ -579,9 +608,13 @@ pub async fn profile_edit(
     }
     if let Some(dns) = dns_pre_resolve {
         data.profiles[profile_idx].dns_pre_resolve = dns;
+        if !dns {
+            data.profiles[profile_idx].dns_server = None;
+        }
     }
     if let Some(server) = dns_server {
-        data.profiles[profile_idx].dns_server = Some(server);
+        let server = server.trim().to_string();
+        data.profiles[profile_idx].dns_server = if server.is_empty() { None } else { Some(server) };
     }
 
     save_profiles_data(&state, &data)?;
@@ -609,6 +642,12 @@ pub async fn node_list(state: State<'_, AppState>) -> Result<Vec<SingBoxOutbound
     } else {
         Ok(Vec::new())
     }
+}
+
+#[tauri::command]
+pub async fn node_get_active(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let data = load_profiles_data(&state);
+    Ok(data.active_node_tag)
 }
 
 #[tauri::command]
@@ -643,9 +682,7 @@ pub async fn node_delete(state: State<'_, AppState>, tag: String) -> Result<(), 
         profile.node_count = nodes.len() as u32;
     }
 
-    if data.active_node_tag.as_ref() == Some(&tag) {
-        data.active_node_tag = nodes.first().and_then(|n| n.tag.clone());
-    }
+    reconcile_profile_node_selection(&mut data, &profile_id, &nodes);
 
     save_profiles_data(&state, &data)?;
     *state.profiles_data.lock().await = data;
@@ -748,7 +785,7 @@ fn parse_subscription_content(content: &str) -> Result<Vec<SingBoxOutbound>, Str
     }
 
     // Try base64 decode
-    if let Ok(decoded) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, content.trim()) {
+    if let Some(decoded) = decode_base64_compat(content.trim()) {
         if let Ok(decoded_str) = String::from_utf8(decoded) {
             let nodes: Vec<SingBoxOutbound> = decoded_str
                 .lines()
@@ -773,14 +810,56 @@ fn parse_subscription_content(content: &str) -> Result<Vec<SingBoxOutbound>, Str
     }
 }
 
+fn decode_base64_compat(input: &str) -> Option<Vec<u8>> {
+    let input = input.trim();
+    for engine in [
+        &base64::engine::general_purpose::STANDARD,
+        &base64::engine::general_purpose::STANDARD_NO_PAD,
+        &base64::engine::general_purpose::URL_SAFE,
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+    ] {
+        if let Ok(decoded) = base64::Engine::decode(engine, input) {
+            return Some(decoded);
+        }
+    }
+    None
+}
+
+fn parse_u16_port(value: u64) -> Option<u16> {
+    u16::try_from(value).ok()
+}
+
+fn parse_port_value(value: &serde_json::Value) -> Option<u16> {
+    value
+        .as_u64()
+        .and_then(parse_u16_port)
+        .or_else(|| value.as_str().and_then(|s| s.parse::<u16>().ok()))
+}
+
+fn parse_host_port(host_port: &str) -> Option<(String, u16)> {
+    let host_port = host_port
+        .split_once('?')
+        .map(|(value, _)| value)
+        .unwrap_or(host_port);
+    let url = url::Url::parse(&format!("tcp://{}", host_port)).ok()?;
+    Some((url.host_str()?.to_string(), url.port()?))
+}
+
+fn parse_bool_param(value: &str) -> bool {
+    value == "1" || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes")
+}
+
 fn parse_clash_proxies(proxies: &[serde_json::Value]) -> Result<Vec<SingBoxOutbound>, String> {
     let nodes: Vec<SingBoxOutbound> = proxies
         .iter()
         .filter_map(|p| {
             let tag = p.get("name")?.as_str()?.to_string();
             let proxy_type = map_clash_type(p.get("type")?.as_str()?);
+            if !crate::commands::singbox::is_proxy_type(&proxy_type) {
+                return None;
+            }
             let server = p.get("server")?.as_str()?.to_string();
-            let port = p.get("port")?.as_u64()? as u16;
+            let port = parse_u16_port(p.get("port")?.as_u64()?)?;
 
             let mut extra = serde_json::Map::new();
 
@@ -988,6 +1067,9 @@ fn parse_singbox_outbounds(outbounds: &[serde_json::Value]) -> Result<Vec<SingBo
             if ["direct", "block", "dns", "selector", "urltest"].contains(&outbound_type) {
                 return None;
             }
+            if !crate::commands::singbox::is_proxy_type(outbound_type) {
+                return None;
+            }
             serde_json::from_value(o.clone()).ok()
         })
         .collect();
@@ -1007,6 +1089,8 @@ fn parse_node_link(link: &str) -> Option<SingBoxOutbound> {
         parse_hysteria2_link(link)
     } else if link.starts_with("hysteria://") {
         parse_hysteria_link(link)
+    } else if link.starts_with("tuic://") {
+        parse_tuic_link(link)
     } else if link.starts_with("naive+") {
         parse_naive_link(link)
     } else {
@@ -1019,19 +1103,24 @@ fn parse_ss_link(link: &str) -> Option<SingBoxOutbound> {
     let (encoded, tag) = rest.split_once('#').unwrap_or((rest, "SS"));
     let tag = urlencoding::decode(tag).ok()?.to_string();
 
-    let parts: Vec<&str> = encoded.split('@').collect();
-    if parts.len() != 2 {
-        return None;
-    }
+    let (userinfo, host_port) = if let Some((userinfo, host_port)) = encoded.split_once('@') {
+        (userinfo.to_string(), host_port.to_string())
+    } else {
+        let decoded = decode_base64_compat(encoded)?;
+        let decoded_str = String::from_utf8(decoded).ok()?;
+        let (userinfo, host_port) = decoded_str.split_once('@')?;
+        (userinfo.to_string(), host_port.to_string())
+    };
 
-    let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, parts[0]).ok()?;
-    let decoded_str = String::from_utf8(decoded).ok()?;
-    let (method, password) = decoded_str.split_once(':')?;
-
-    let host_port: Vec<&str> = parts[1].split(':').collect();
-    if host_port.len() != 2 {
-        return None;
-    }
+    let decoded_plain_userinfo = urlencoding::decode(&userinfo).ok()?.to_string();
+    let decoded_userinfo = if decoded_plain_userinfo.contains(':') {
+        decoded_plain_userinfo
+    } else {
+        let decoded = decode_base64_compat(&userinfo)?;
+        String::from_utf8(decoded).ok()?
+    };
+    let (method, password) = decoded_userinfo.split_once(':')?;
+    let (server, port) = parse_host_port(&host_port)?;
 
     let mut extra = std::collections::HashMap::new();
     extra.insert("method".to_string(), serde_json::Value::String(method.to_string()));
@@ -1040,8 +1129,8 @@ fn parse_ss_link(link: &str) -> Option<SingBoxOutbound> {
     Some(SingBoxOutbound {
         tag: Some(tag),
         outbound_type: Some("shadowsocks".to_string()),
-        server: Some(host_port[0].to_string()),
-        server_port: host_port[1].parse().ok(),
+        server: Some(server),
+        server_port: Some(port),
         extra,
     })
 }
@@ -1094,14 +1183,7 @@ fn parse_vless_link(link: &str) -> Option<SingBoxOutbound> {
     let (user_host, query) = main_part.split_once('?').unwrap_or((main_part, ""));
     let (uuid, host_port) = user_host.split_once('@')?;
 
-    let (server, port_str) = if host_port.starts_with('[') {
-        // IPv6
-        let end = host_port.find("]:")?;
-        (&host_port[1..end], &host_port[end+2..])
-    } else {
-        host_port.rsplit_once(':')?
-    };
-    let port: u16 = port_str.parse().ok()?;
+    let (server, port) = parse_host_port(host_port)?;
 
     let params: std::collections::HashMap<String, String> = query
         .split('&')
@@ -1151,7 +1233,7 @@ fn parse_vless_link(link: &str) -> Option<SingBoxOutbound> {
         } else if let Some(public_name) = ech_public_name {
             tls.insert("server_name".to_string(), serde_json::Value::String(public_name.to_string()));
         } else {
-            tls.insert("server_name".to_string(), serde_json::Value::String(server.to_string()));
+            tls.insert("server_name".to_string(), serde_json::Value::String(server.clone()));
         }
 
         if let Some(insecure) = params.get("insecure") {
@@ -1285,7 +1367,7 @@ fn parse_vless_link(link: &str) -> Option<SingBoxOutbound> {
     Some(SingBoxOutbound {
         tag: Some(tag),
         outbound_type: Some("vless".to_string()),
-        server: Some(server.to_string()),
+        server: Some(server),
         server_port: Some(port),
         extra,
     })
@@ -1293,15 +1375,13 @@ fn parse_vless_link(link: &str) -> Option<SingBoxOutbound> {
 
 fn parse_vmess_link(link: &str) -> Option<SingBoxOutbound> {
     let rest = link.strip_prefix("vmess://")?;
-    let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, rest.trim()).ok()?;
+    let decoded = decode_base64_compat(rest.trim())?;
     let decoded_str = String::from_utf8(decoded).ok()?;
     let json: serde_json::Value = serde_json::from_str(&decoded_str).ok()?;
 
     let tag = json.get("ps").and_then(|v| v.as_str()).unwrap_or("VMess").to_string();
     let server = json.get("add").and_then(|v| v.as_str())?.to_string();
-    let port: u16 = json.get("port").and_then(|v| {
-        v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
-    })? as u16;
+    let port = json.get("port").and_then(parse_port_value)?;
     let uuid = json.get("id").and_then(|v| v.as_str())?.to_string();
 
     let mut extra = std::collections::HashMap::new();
@@ -1378,8 +1458,7 @@ fn parse_trojan_link(link: &str) -> Option<SingBoxOutbound> {
     let (password, host_port) = password_host.split_once('@')?;
     let password = urlencoding::decode(password).ok()?.to_string();
 
-    let (server, port_str) = host_port.rsplit_once(':')?;
-    let port: u16 = port_str.parse().ok()?;
+    let (server, port) = parse_host_port(host_port)?;
 
     let params: std::collections::HashMap<String, String> = query
         .split('&')
@@ -1396,7 +1475,7 @@ fn parse_trojan_link(link: &str) -> Option<SingBoxOutbound> {
     if let Some(sni) = params.get("sni") {
         tls.insert("server_name".to_string(), serde_json::Value::String(sni.clone()));
     } else {
-        tls.insert("server_name".to_string(), serde_json::Value::String(server.to_string()));
+        tls.insert("server_name".to_string(), serde_json::Value::String(server.clone()));
     }
     if params.get("allowInsecure").map(|s| s == "1" || s.eq_ignore_ascii_case("true")).unwrap_or(false) {
         tls.insert("insecure".to_string(), serde_json::Value::Bool(true));
@@ -1428,7 +1507,7 @@ fn parse_trojan_link(link: &str) -> Option<SingBoxOutbound> {
     Some(SingBoxOutbound {
         tag: Some(tag),
         outbound_type: Some("trojan".to_string()),
-        server: Some(server.to_string()),
+        server: Some(server),
         server_port: Some(port),
         extra,
     })
@@ -1443,8 +1522,7 @@ fn parse_hysteria2_link(link: &str) -> Option<SingBoxOutbound> {
     let (password, host_port) = password_host.split_once('@')?;
     let password = urlencoding::decode(password).ok()?.to_string();
 
-    let (server, port_str) = host_port.rsplit_once(':')?;
-    let port: u16 = port_str.parse().ok()?;
+    let (server, port) = parse_host_port(host_port)?;
 
     let params: std::collections::HashMap<String, String> = query
         .split('&')
@@ -1461,7 +1539,7 @@ fn parse_hysteria2_link(link: &str) -> Option<SingBoxOutbound> {
     if let Some(sni) = params.get("sni") {
         tls.insert("server_name".to_string(), serde_json::Value::String(sni.clone()));
     } else {
-        tls.insert("server_name".to_string(), serde_json::Value::String(server.to_string()));
+        tls.insert("server_name".to_string(), serde_json::Value::String(server.clone()));
     }
     if params.get("insecure").map(|s| s == "1" || s.eq_ignore_ascii_case("true")).unwrap_or(false) {
         tls.insert("insecure".to_string(), serde_json::Value::Bool(true));
@@ -1487,7 +1565,7 @@ fn parse_hysteria2_link(link: &str) -> Option<SingBoxOutbound> {
     Some(SingBoxOutbound {
         tag: Some(tag),
         outbound_type: Some("hysteria2".to_string()),
-        server: Some(server.to_string()),
+        server: Some(server),
         server_port: Some(port),
         extra,
     })
@@ -1499,8 +1577,7 @@ fn parse_hysteria_link(link: &str) -> Option<SingBoxOutbound> {
     let tag = urlencoding::decode(tag).ok()?.to_string();
 
     let (host_port, query) = main_part.split_once('?').unwrap_or((main_part, ""));
-    let (server, port_str) = host_port.rsplit_once(':')?;
-    let port: u16 = port_str.parse().ok()?;
+    let (server, port) = parse_host_port(host_port)?;
 
     let params: std::collections::HashMap<String, String> = query
         .split('&')
@@ -1520,7 +1597,7 @@ fn parse_hysteria_link(link: &str) -> Option<SingBoxOutbound> {
     if let Some(sni) = params.get("sni").or(params.get("peer")) {
         tls.insert("server_name".to_string(), serde_json::Value::String(sni.clone()));
     } else {
-        tls.insert("server_name".to_string(), serde_json::Value::String(server.to_string()));
+        tls.insert("server_name".to_string(), serde_json::Value::String(server.clone()));
     }
     if params.get("insecure").map(|s| s == "1" || s.eq_ignore_ascii_case("true")).unwrap_or(false) {
         tls.insert("insecure".to_string(), serde_json::Value::Bool(true));
@@ -1549,7 +1626,103 @@ fn parse_hysteria_link(link: &str) -> Option<SingBoxOutbound> {
     Some(SingBoxOutbound {
         tag: Some(tag),
         outbound_type: Some("hysteria".to_string()),
-        server: Some(server.to_string()),
+        server: Some(server),
+        server_port: Some(port),
+        extra,
+    })
+}
+
+fn parse_tuic_link(link: &str) -> Option<SingBoxOutbound> {
+    let url = url::Url::parse(link).ok()?;
+    let tag = url
+        .fragment()
+        .and_then(|value| urlencoding::decode(value).ok().map(|value| value.to_string()))
+        .unwrap_or_else(|| "TUIC".to_string());
+    let server = url.host_str()?.to_string();
+    let port = url.port_or_known_default().unwrap_or(443);
+    let uuid = urlencoding::decode(url.username()).ok()?.to_string();
+    let password = url
+        .password()
+        .and_then(|value| urlencoding::decode(value).ok().map(|value| value.to_string()))
+        .unwrap_or_default();
+
+    if uuid.is_empty() || password.is_empty() {
+        return None;
+    }
+
+    let params: std::collections::HashMap<String, String> = url
+        .query_pairs()
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect();
+
+    let mut extra = std::collections::HashMap::new();
+    extra.insert("uuid".to_string(), serde_json::Value::String(uuid));
+    extra.insert("password".to_string(), serde_json::Value::String(password));
+
+    if let Some(value) = params
+        .get("congestion_control")
+        .or_else(|| params.get("congestionControl"))
+        .filter(|value| !value.is_empty())
+    {
+        extra.insert("congestion_control".to_string(), serde_json::Value::String(value.clone()));
+    }
+    if let Some(value) = params
+        .get("udp_relay_mode")
+        .or_else(|| params.get("udpRelayMode"))
+        .filter(|value| !value.is_empty())
+    {
+        extra.insert("udp_relay_mode".to_string(), serde_json::Value::String(value.clone()));
+    }
+    if let Some(value) = params
+        .get("udp_over_stream")
+        .or_else(|| params.get("udpOverStream"))
+    {
+        extra.insert("udp_over_stream".to_string(), serde_json::Value::Bool(parse_bool_param(value)));
+    }
+    if let Some(value) = params
+        .get("zero_rtt_handshake")
+        .or_else(|| params.get("zeroRttHandshake"))
+    {
+        extra.insert("zero_rtt_handshake".to_string(), serde_json::Value::Bool(parse_bool_param(value)));
+    }
+
+    let mut tls = serde_json::Map::new();
+    tls.insert("enabled".to_string(), serde_json::Value::Bool(true));
+    tls.insert(
+        "server_name".to_string(),
+        serde_json::Value::String(
+            params
+                .get("sni")
+                .or_else(|| params.get("servername"))
+                .cloned()
+                .unwrap_or_else(|| server.clone()),
+        ),
+    );
+    if let Some(value) = params
+        .get("allow_insecure")
+        .or_else(|| params.get("allowInsecure"))
+        .or_else(|| params.get("insecure"))
+    {
+        tls.insert("insecure".to_string(), serde_json::Value::Bool(parse_bool_param(value)));
+    }
+    if let Some(value) = params.get("alpn").filter(|value| !value.is_empty()) {
+        tls.insert(
+            "alpn".to_string(),
+            serde_json::Value::Array(
+                value
+                    .split(',')
+                    .filter(|item| !item.is_empty())
+                    .map(|item| serde_json::Value::String(item.to_string()))
+                    .collect(),
+            ),
+        );
+    }
+    extra.insert("tls".to_string(), serde_json::Value::Object(tls));
+
+    Some(SingBoxOutbound {
+        tag: Some(tag),
+        outbound_type: Some("tuic".to_string()),
+        server: Some(server),
         server_port: Some(port),
         extra,
     })
@@ -1947,6 +2120,25 @@ fn get_kernel_path_with_fallback(app: &AppHandle) -> Option<std::path::PathBuf> 
     app.path().resource_dir().ok().map(|dir| dir.join("resources").join("libs").join("sing-box.exe"))
 }
 
+#[cfg(windows)]
+fn support_file_available_for_executable(executable_path: &std::path::Path, filename: &str) -> bool {
+    if executable_path
+        .parent()
+        .is_some_and(|dir| dir.join(filename).exists())
+    {
+        return true;
+    }
+
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).any(|path| path.join(filename).exists()))
+        .unwrap_or(false)
+}
+
+#[cfg(not(windows))]
+fn support_file_available_for_executable(_executable_path: &std::path::Path, _filename: &str) -> bool {
+    true
+}
+
 async fn start_temp_singbox(
     app: &AppHandle,
     state: &AppState,
@@ -2019,6 +2211,7 @@ async fn start_temp_singbox(
     }
 
     // Load nodes and generate temp config
+    let naive_runtime_available = support_file_available_for_executable(&kernel_path, "libcronet.dll");
     let data = load_profiles_data(state);
     let profile_id = match data.active_profile_id {
         Some(id) => id,
@@ -2031,6 +2224,13 @@ async fn start_temp_singbox(
         log::warn!("No nodes found for latency testing");
         return false;
     }
+    if !naive_runtime_available
+        && nodes_raw
+            .iter()
+            .any(|node| node.get("type").and_then(|value| value.as_str()) == Some("naive"))
+    {
+        append_latency_diagnostic(state, "temp sing-box will skip naive nodes because libcronet.dll is unavailable");
+    }
 
     // Create temp config
     let temp_dir = temp_singbox_dir(state);
@@ -2042,7 +2242,13 @@ async fn start_temp_singbox(
         return false;
     }
 
-    let (config, temp_tag_map, plugin_bridge_specs) = generate_temp_config_raw(&nodes_raw, TEMP_SINGBOX_PORT);
+    let (config, temp_tag_map, plugin_bridge_specs) =
+        generate_temp_config_raw(&nodes_raw, TEMP_SINGBOX_PORT, naive_runtime_available);
+    if temp_tag_map.is_empty() {
+        append_latency_diagnostic(state, "temp sing-box skipped because no supported proxy nodes remain after filtering");
+        let _ = remove_temp_singbox_dir(&temp_dir);
+        return false;
+    }
     append_latency_diagnostic(
         state,
         &format!(
@@ -2236,6 +2442,7 @@ pub(crate) async fn check_clash_api_running(port: u16) -> bool {
 fn generate_temp_config_raw(
     nodes: &[serde_json::Value],
     api_port: u16,
+    naive_runtime_available: bool,
 ) -> (
     serde_json::Value,
     std::collections::HashMap<String, Vec<String>>,
@@ -2258,14 +2465,22 @@ fn generate_temp_config_raw(
     });
     let effective_remote_dns = inferred_ech_dns_server
         .clone()
-        .unwrap_or_else(|| "https://dns.google/dns-query".to_string());
-    let remote_dns_detour = if active_node_has_ech { "direct" } else { "direct" };
-    let remote_dns_domain_resolver = Some("dns-local");
+        .unwrap_or_else(|| "223.5.5.5".to_string());
+    let remote_dns_detour = "direct";
+    let remote_dns_domain_resolver = active_node_has_ech.then_some("dns-local");
 
     // 处理节点，移除不合法字段并添加必要配置
     let mut tag_map = std::collections::HashMap::new();
     let mut plugin_bridge_specs = Vec::new();
     let mut outbounds: Vec<serde_json::Value> = nodes.iter()
+        .filter(|node| {
+            node.get("type")
+                .and_then(|value| value.as_str())
+                .is_some_and(|node_type| {
+                    crate::commands::singbox::is_proxy_type(node_type)
+                        && (node_type != "naive" || naive_runtime_available)
+                })
+        })
         .enumerate()
         .map(|(index, node)| {
             let bridge_index = plugin_bridge_specs.len();
@@ -2644,6 +2859,173 @@ mod tests {
         assert!(node.extra.get("network").is_none());
     }
 
+    #[test]
+    fn parse_subscription_decodes_url_safe_no_padding_base64() {
+        let content = "ss://YWVzLTEyOC1nY206cGFzcw@example.com:8388#SS";
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            content,
+        );
+
+        let nodes = parse_subscription_content(&encoded).expect("expected decoded subscription");
+
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].tag.as_deref(), Some("SS"));
+        assert_eq!(nodes[0].server.as_deref(), Some("example.com"));
+    }
+
+    #[test]
+    fn parse_ss_link_supports_plain_sip002_userinfo() {
+        let node = parse_ss_link("ss://aes-128-gcm:plain-pass@example.com:8388#Plain").unwrap();
+
+        assert_eq!(node.tag.as_deref(), Some("Plain"));
+        assert_eq!(node.server.as_deref(), Some("example.com"));
+        assert_eq!(node.server_port, Some(8388));
+        assert_eq!(node.extra.get("method").and_then(|value| value.as_str()), Some("aes-128-gcm"));
+        assert_eq!(node.extra.get("password").and_then(|value| value.as_str()), Some("plain-pass"));
+    }
+
+    #[test]
+    fn parse_ss_link_supports_percent_encoded_sip002_userinfo() {
+        let node = parse_ss_link("ss://aes-128-gcm%3Aplain-pass@example.com:8388#Plain").unwrap();
+
+        assert_eq!(node.extra.get("method").and_then(|value| value.as_str()), Some("aes-128-gcm"));
+        assert_eq!(node.extra.get("password").and_then(|value| value.as_str()), Some("plain-pass"));
+        assert_eq!(node.server.as_deref(), Some("example.com"));
+        assert_eq!(node.server_port, Some(8388));
+    }
+
+    #[test]
+    fn parse_clash_proxies_rejects_out_of_range_port() {
+        let proxies = vec![serde_json::json!({
+            "name": "Bad Port",
+            "type": "trojan",
+            "server": "example.com",
+            "port": 70000,
+            "password": "pass"
+        })];
+
+        let nodes = parse_clash_proxies(&proxies).unwrap();
+
+        assert!(nodes.is_empty());
+    }
+
+    #[test]
+    fn parse_clash_proxies_ignores_unsupported_ssr_nodes() {
+        let proxies = vec![serde_json::json!({
+            "name": "SSR",
+            "type": "ssr",
+            "server": "example.com",
+            "port": 8388,
+            "cipher": "aes-256-cfb",
+            "password": "pass"
+        })];
+
+        let nodes = parse_clash_proxies(&proxies).unwrap();
+
+        assert!(nodes.is_empty());
+    }
+
+    #[test]
+    fn parse_singbox_outbounds_ignores_unsupported_types() {
+        let outbounds = vec![
+            serde_json::json!({
+                "type": "shadowsocksr",
+                "tag": "SSR",
+                "server": "example.com",
+                "server_port": 8388
+            }),
+            serde_json::json!({
+                "type": "trojan",
+                "tag": "Trojan",
+                "server": "example.com",
+                "server_port": 443,
+                "password": "pass"
+            }),
+        ];
+
+        let nodes = parse_singbox_outbounds(&outbounds).unwrap();
+
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].tag.as_deref(), Some("Trojan"));
+    }
+
+    #[test]
+    fn parse_vmess_link_rejects_out_of_range_port() {
+        let json = serde_json::json!({
+            "v": "2",
+            "ps": "Bad VMess Port",
+            "add": "example.com",
+            "port": 70000,
+            "id": "11111111-1111-1111-1111-111111111111",
+            "aid": 0
+        });
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            serde_json::to_string(&json).unwrap(),
+        );
+
+        assert!(parse_vmess_link(&format!("vmess://{}", encoded)).is_none());
+    }
+
+    #[test]
+    fn parse_tuic_link_preserves_required_fields() {
+        let node = parse_node_link(
+            "tuic://11111111-1111-1111-1111-111111111111:secret@example.com:443?congestion_control=bbr&udp_relay_mode=native&sni=tuic.example.com&alpn=h3&allow_insecure=1#TUIC",
+        )
+        .expect("expected tuic node");
+
+        assert_eq!(node.outbound_type.as_deref(), Some("tuic"));
+        assert_eq!(node.tag.as_deref(), Some("TUIC"));
+        assert_eq!(node.server.as_deref(), Some("example.com"));
+        assert_eq!(node.server_port, Some(443));
+        assert_eq!(
+            node.extra.get("uuid").and_then(|value| value.as_str()),
+            Some("11111111-1111-1111-1111-111111111111")
+        );
+        assert_eq!(node.extra.get("password").and_then(|value| value.as_str()), Some("secret"));
+        assert_eq!(
+            node.extra.get("congestion_control").and_then(|value| value.as_str()),
+            Some("bbr")
+        );
+        assert_eq!(
+            node.extra.get("udp_relay_mode").and_then(|value| value.as_str()),
+            Some("native")
+        );
+        let tls = node.extra.get("tls").and_then(|value| value.as_object()).unwrap();
+        assert_eq!(tls.get("server_name").and_then(|value| value.as_str()), Some("tuic.example.com"));
+        assert_eq!(tls.get("insecure").and_then(|value| value.as_bool()), Some(true));
+        assert_eq!(tls.get("alpn").and_then(|value| value.as_array()).unwrap()[0].as_str(), Some("h3"));
+    }
+
+    #[test]
+    fn reconcile_profile_node_selection_falls_back_when_active_tag_disappears() {
+        let mut data = ProfilesData {
+            profiles: vec![],
+            active_profile_id: Some("profile-a".to_string()),
+            active_node_tag: Some("old-node".to_string()),
+            node_selections: std::collections::HashMap::from([(
+                "profile-a".to_string(),
+                "old-node".to_string(),
+            )]),
+        };
+        let nodes = vec![SingBoxOutbound {
+            tag: Some("new-node".to_string()),
+            outbound_type: Some("trojan".to_string()),
+            server: Some("example.com".to_string()),
+            server_port: Some(443),
+            extra: std::collections::HashMap::new(),
+        }];
+
+        reconcile_profile_node_selection(&mut data, "profile-a", &nodes);
+
+        assert_eq!(data.active_node_tag.as_deref(), Some("new-node"));
+        assert_eq!(
+            data.node_selections.get("profile-a").map(String::as_str),
+            Some("new-node")
+        );
+    }
+
     fn make_test_state() -> AppState {
         let dir = unique_test_dir("temp-singbox-guard");
         AppState::new(dir)
@@ -2858,7 +3240,7 @@ mod tests {
             }),
         ];
 
-        let (config, tag_map, _) = generate_temp_config_raw(&nodes, TEMP_SINGBOX_PORT);
+        let (config, tag_map, _) = generate_temp_config_raw(&nodes, TEMP_SINGBOX_PORT, true);
         let outbounds = config
             .get("outbounds")
             .and_then(|value| value.as_array())
@@ -2873,6 +3255,88 @@ mod tests {
         assert_eq!(tags, vec!["latency-0000", "latency-0001", "latency-0002"]);
         assert_eq!(tag_map.get("节点🚀"), Some(&vec!["latency-0000".to_string(), "latency-0001".to_string()]));
         assert_eq!(tag_map.get("中文😀"), Some(&vec!["latency-0002".to_string()]));
+    }
+
+    #[test]
+    fn generate_temp_config_removes_naive_unsupported_fields_and_uses_local_dns() {
+        let nodes = vec![serde_json::json!({
+            "type": "naive",
+            "tag": "Naive H2",
+            "server": "naive.example.com",
+            "server_port": 443,
+            "username": "user",
+            "password": "pass",
+            "network": "h2"
+        })];
+
+        let (config, tag_map, _) = generate_temp_config_raw(&nodes, TEMP_SINGBOX_PORT, true);
+        let outbound = config
+            .get("outbounds")
+            .and_then(|value| value.as_array())
+            .and_then(|outbounds| outbounds.first())
+            .expect("expected naive outbound");
+
+        assert_eq!(outbound.get("type").and_then(|value| value.as_str()), Some("naive"));
+        assert_eq!(outbound.get("tag").and_then(|value| value.as_str()), Some("latency-0000"));
+        assert!(outbound.get("network").is_none());
+        assert!(outbound.get("transport").is_none());
+        assert_eq!(
+            outbound
+                .get("tls")
+                .and_then(|value| value.get("server_name"))
+                .and_then(|value| value.as_str()),
+            Some("naive.example.com")
+        );
+        assert!(outbound.get("tls").and_then(|value| value.get("enabled")).is_none());
+        assert!(outbound.get("tls").and_then(|value| value.get("insecure")).is_none());
+        assert_eq!(tag_map.get("Naive H2"), Some(&vec!["latency-0000".to_string()]));
+
+        let dns_servers = config
+            .get("dns")
+            .and_then(|value| value.get("servers"))
+            .and_then(|value| value.as_array())
+            .expect("expected dns servers");
+        let remote_dns = dns_servers
+            .iter()
+            .find(|server| server.get("tag").and_then(|value| value.as_str()) == Some("dns-remote"))
+            .expect("expected dns-remote");
+
+        assert_eq!(remote_dns.get("type").and_then(|value| value.as_str()), Some("udp"));
+        assert_eq!(remote_dns.get("server").and_then(|value| value.as_str()), Some("223.5.5.5"));
+        assert_eq!(remote_dns.get("detour"), None);
+    }
+
+    #[test]
+    fn generate_temp_config_skips_naive_when_runtime_unavailable() {
+        let nodes = vec![
+            serde_json::json!({
+                "type": "naive",
+                "tag": "Naive",
+                "server": "naive.example.com",
+                "server_port": 443,
+                "username": "user",
+                "password": "pass"
+            }),
+            serde_json::json!({
+                "type": "trojan",
+                "tag": "Trojan",
+                "server": "trojan.example.com",
+                "server_port": 443,
+                "password": "pass"
+            }),
+        ];
+
+        let (config, tag_map, _) = generate_temp_config_raw(&nodes, TEMP_SINGBOX_PORT, false);
+        let outbounds = config
+            .get("outbounds")
+            .and_then(|value| value.as_array())
+            .expect("expected outbounds");
+
+        assert!(outbounds.iter().all(|outbound| {
+            outbound.get("type").and_then(|value| value.as_str()) != Some("naive")
+        }));
+        assert_eq!(tag_map.get("Naive"), None);
+        assert_eq!(tag_map.get("Trojan"), Some(&vec!["latency-0000".to_string()]));
     }
 
     #[test]
@@ -2900,7 +3364,7 @@ mod tests {
             ECH_DNS_SERVER_META_KEY: "https://dns.alidns.com/dns-query"
         })];
 
-        let (config, _, _) = generate_temp_config_raw(&nodes, TEMP_SINGBOX_PORT);
+        let (config, _, _) = generate_temp_config_raw(&nodes, TEMP_SINGBOX_PORT, true);
 
         let dns = config.get("dns").and_then(|value| value.as_object()).expect("expected dns config");
         let servers = dns.get("servers").and_then(|value| value.as_array()).expect("expected dns servers");
