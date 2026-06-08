@@ -848,8 +848,9 @@ fn sanitize_naive_tls(obj: &mut serde_json::Map<String, serde_json::Value>, serv
         .and_then(|value| value.as_object().cloned())
         .unwrap_or_default();
 
-    let allowed_keys = ["server_name", "certificate", "certificate_path", "ech"];
+    let allowed_keys = ["enabled", "server_name", "certificate", "certificate_path", "ech"];
     tls.retain(|key, _| allowed_keys.contains(&key.as_str()));
+    tls.insert("enabled".to_string(), serde_json::Value::Bool(true));
 
     if !server.is_empty() && !tls.contains_key("server_name") {
         tls.insert("server_name".to_string(), serde_json::Value::String(server.to_string()));
@@ -3618,7 +3619,13 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("naive.example.com")
         );
-        assert!(outbound.get("tls").and_then(|value| value.get("enabled")).is_none());
+        assert_eq!(
+            outbound
+                .get("tls")
+                .and_then(|value| value.get("enabled"))
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
         assert!(outbound.get("tls").and_then(|value| value.get("insecure")).is_none());
     }
 

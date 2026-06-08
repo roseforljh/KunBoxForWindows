@@ -3287,7 +3287,13 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("naive.example.com")
         );
-        assert!(outbound.get("tls").and_then(|value| value.get("enabled")).is_none());
+        assert_eq!(
+            outbound
+                .get("tls")
+                .and_then(|value| value.get("enabled"))
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
         assert!(outbound.get("tls").and_then(|value| value.get("insecure")).is_none());
         assert_eq!(tag_map.get("Naive H2"), Some(&vec!["latency-0000".to_string()]));
 
