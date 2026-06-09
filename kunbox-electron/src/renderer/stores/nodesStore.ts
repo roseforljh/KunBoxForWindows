@@ -49,6 +49,17 @@ function localFailureLatencyResult(): ReturnType<typeof normalizeLatencyResult> 
   })
 }
 
+function normalizeBatchLatency(latency: number | undefined): ReturnType<typeof normalizeLatencyResult> {
+  if (typeof latency === 'number' && latency > 0) {
+    return normalizeLatencyResult({
+      status: 'success',
+      latencyMs: latency,
+    })
+  }
+
+  return localFailureLatencyResult()
+}
+
 // Abort controller for batch testing
 let abortController: AbortController | null = null
 let testAllRunId = 0
@@ -167,61 +178,45 @@ export const useNodesStore = create<NodesState>()(
           .map((node: NodeItem, index: number) => ({ node, index }))
           .filter((item): item is { node: NodeItem; index: number } => Boolean(item.node.tag))
 
+        if (queue.length === 0) return
+
         const batchLatencyCache: LatencyCache = {}
+        const queueIndices = new Set(queue.map((item) => item.index))
 
         set((state: NodesState) => ({
           isTesting: true,
           testProgress: 0,
           testTotal: queue.length,
-          nodes: state.nodes.map(n => ({ ...n, isTesting: true }))
+          nodes: state.nodes.map((node, index) => queueIndices.has(index)
+            ? { ...node, isTesting: true }
+            : node
+          )
         }))
 
         try {
           await window.api.node.beginLatencyTests(runId)
 
-          const CONCURRENCY = 8
-          for (let i = 0; i < queue.length; i += CONCURRENCY) {
-            const batch = queue.slice(i, i + CONCURRENCY)
-            await Promise.all(batch.map(async (item) => {
-              if (signal.aborted || runId !== testAllRunId) return
+          const results = await window.api.node.testAll()
+          if (signal.aborted || runId !== testAllRunId) return
 
-              const tag = item.node.tag
-              if (!tag) return
-
-              let latencyMs: number | null = null
-              let latencyStatus: NodeLatencyStatus = 'local_test_failed'
-              let isTimeout = false
-
-              try {
-                const result = await window.api.node.testLatency(tag, runId)
-                if (signal.aborted || runId !== testAllRunId) return
-                const normalized = normalizeLatencyResult(result)
-                latencyMs = normalized.latencyMs
-                latencyStatus = normalized.latencyStatus
-                isTimeout = normalized.isTimeout
-              } catch {
-                if (signal.aborted || runId !== testAllRunId) return
-                const fallback = localFailureLatencyResult()
-                latencyMs = fallback.latencyMs
-                latencyStatus = fallback.latencyStatus
-                isTimeout = fallback.isTimeout
-              }
-
-              const timestamp = Date.now()
-              const cacheKey = `${activeProfileId}::${tag}`
-              batchLatencyCache[cacheKey] = { latencyMs, latencyStatus, isTimeout, timestamp }
-              set((state: NodesState) => {
-                if (signal.aborted || runId !== testAllRunId) return state
-                return {
-                  nodes: state.nodes.map((node, index) => index === item.index
-                    ? { ...node, latencyMs, latencyStatus, isTimeout, isTesting: false }
-                    : node
-                  ),
-                  testProgress: Math.min(state.testProgress + 1, queue.length)
-                }
-              })
-            }))
+          const timestamp = Date.now()
+          const updates = new Map<number, ReturnType<typeof normalizeLatencyResult>>()
+          for (const item of queue) {
+            const tag = item.node.tag
+            if (!tag) continue
+            const normalized = normalizeBatchLatency(results[tag])
+            updates.set(item.index, normalized)
+            batchLatencyCache[`${activeProfileId}::${tag}`] = { ...normalized, timestamp }
           }
+
+          set((state: NodesState) => ({
+            nodes: state.nodes.map((node, index) => {
+              const update = updates.get(index)
+              return update ? { ...node, ...update, isTesting: false } : node
+            }),
+            latencyCache: { ...state.latencyCache, ...batchLatencyCache },
+            testProgress: queue.length
+          }))
         } catch {
           if (signal.aborted || runId !== testAllRunId) return
 

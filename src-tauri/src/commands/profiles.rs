@@ -36,6 +36,7 @@ static CANCELED_LATENCY_BATCHES: once_cell::sync::Lazy<Arc<Mutex<HashSet<u64>>>>
 pub(crate) const ECH_DNS_SERVER_META_KEY: &str = "x_kunbox_ech_dns_server";
 const TEMP_SINGBOX_PORT: u16 = 19090;
 const TEMP_XRAY_BRIDGE_PORT_BASE: u16 = 19180;
+const TEMP_LATENCY_FALLBACK_REMOTE_DNS: &str = "https://1.1.1.1/dns-query";
 
 #[derive(Debug, PartialEq, Eq)]
 enum LatencyTestBackend {
@@ -69,6 +70,18 @@ fn normalize_latency_test_settings(settings: &AppSettings) -> (String, u32) {
     };
     let timeout_ms = settings.latency_test_timeout.max(1);
     (test_url, timeout_ms)
+}
+
+fn temp_latency_remote_dns(settings: &AppSettings) -> String {
+    let remote_dns = settings.remote_dns.trim();
+    if remote_dns.is_empty()
+        || remote_dns.eq_ignore_ascii_case("fakeip")
+        || remote_dns.eq_ignore_ascii_case("local")
+    {
+        return TEMP_LATENCY_FALLBACK_REMOTE_DNS.to_string();
+    }
+
+    remote_dns.to_string()
 }
 
 async fn current_latency_test_settings(state: &AppState) -> (String, u32) {
@@ -2084,6 +2097,20 @@ enum TempStartGuard {
     Blocked(TempStartBlockReason),
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum RunningTempProcessAction {
+    Reuse,
+    Rebuild,
+}
+
+fn running_temp_process_action(api_ready: bool, active_tests: usize) -> RunningTempProcessAction {
+    if api_ready && active_tests > 1 {
+        RunningTempProcessAction::Reuse
+    } else {
+        RunningTempProcessAction::Rebuild
+    }
+}
+
 async fn can_start_temp_singbox(state: &AppState, allow_main_process_alive: bool) -> TempStartGuard {
     if *state.shutdown_in_progress.lock().await {
         return TempStartGuard::Blocked(TempStartBlockReason::ShutdownInProgress);
@@ -2179,12 +2206,16 @@ async fn start_temp_singbox(
             match child.try_wait() {
                 Ok(None) => {
                     // Still running, check if API is responsive
-                    if check_clash_api_running(TEMP_SINGBOX_PORT).await {
-                        log::info!("Rebuilding temp sing-box to refresh latency test config and plugin bridges");
-                        cleanup_existing = true;
-                    } else {
-                        cleanup_existing = true;
+                    let api_ready = check_clash_api_running(TEMP_SINGBOX_PORT).await;
+                    let active_tests = *TEMP_SINGBOX_ACTIVE_TESTS.lock().await;
+                    if running_temp_process_action(api_ready, active_tests) == RunningTempProcessAction::Reuse {
+                        log::debug!("Reusing running temp sing-box for concurrent latency batch");
+                        return true;
                     }
+                    if api_ready {
+                        log::info!("Rebuilding temp sing-box to refresh latency test config and plugin bridges");
+                    }
+                    cleanup_existing = true;
                 }
                 _ => {
                     // Process exited
@@ -2242,8 +2273,17 @@ async fn start_temp_singbox(
         return false;
     }
 
+    let temp_remote_dns = {
+        let settings = state.settings.lock().await.clone();
+        temp_latency_remote_dns(&settings)
+    };
+    append_latency_diagnostic(
+        state,
+        &format!("temp latency dns server: {}", temp_remote_dns),
+    );
+
     let (config, temp_tag_map, plugin_bridge_specs) =
-        generate_temp_config_raw(&nodes_raw, TEMP_SINGBOX_PORT, naive_runtime_available);
+        generate_temp_config_raw(&nodes_raw, TEMP_SINGBOX_PORT, naive_runtime_available, &temp_remote_dns);
     if temp_tag_map.is_empty() {
         append_latency_diagnostic(state, "temp sing-box skipped because no supported proxy nodes remain after filtering");
         let _ = remove_temp_singbox_dir(&temp_dir);
@@ -2443,6 +2483,7 @@ fn generate_temp_config_raw(
     nodes: &[serde_json::Value],
     api_port: u16,
     naive_runtime_available: bool,
+    remote_dns: &str,
 ) -> (
     serde_json::Value,
     std::collections::HashMap<String, Vec<String>>,
@@ -2465,7 +2506,7 @@ fn generate_temp_config_raw(
     });
     let effective_remote_dns = inferred_ech_dns_server
         .clone()
-        .unwrap_or_else(|| "223.5.5.5".to_string());
+        .unwrap_or_else(|| remote_dns.to_string());
     let remote_dns_detour = "direct";
     let remote_dns_domain_resolver = active_node_has_ech.then_some("dns-local");
 
@@ -2579,7 +2620,9 @@ fn generate_temp_config_raw(
                         remote_dns_detour,
                         remote_dns_domain_resolver,
                     )
-                ]
+                ],
+                "strategy": "ipv4_only",
+                "independent_cache": true
             },
             "inbounds": [],
             "outbounds": outbounds,
@@ -3215,6 +3258,20 @@ mod tests {
     }
 
     #[test]
+    fn temp_latency_remote_dns_falls_back_for_local_or_fakeip() {
+        let mut settings = AppSettings::default();
+
+        settings.remote_dns = "fakeip".to_string();
+        assert_eq!(temp_latency_remote_dns(&settings), TEMP_LATENCY_FALLBACK_REMOTE_DNS);
+
+        settings.remote_dns = "local".to_string();
+        assert_eq!(temp_latency_remote_dns(&settings), TEMP_LATENCY_FALLBACK_REMOTE_DNS);
+
+        settings.remote_dns = "  https://dns.alidns.com/dns-query  ".to_string();
+        assert_eq!(temp_latency_remote_dns(&settings), "https://dns.alidns.com/dns-query");
+    }
+
+    #[test]
     fn generate_temp_config_uses_ascii_unique_tags_and_preserves_mapping() {
         let nodes = vec![
             serde_json::json!({
@@ -3240,7 +3297,12 @@ mod tests {
             }),
         ];
 
-        let (config, tag_map, _) = generate_temp_config_raw(&nodes, TEMP_SINGBOX_PORT, true);
+        let (config, tag_map, _) = generate_temp_config_raw(
+            &nodes,
+            TEMP_SINGBOX_PORT,
+            true,
+            TEMP_LATENCY_FALLBACK_REMOTE_DNS,
+        );
         let outbounds = config
             .get("outbounds")
             .and_then(|value| value.as_array())
@@ -3258,7 +3320,7 @@ mod tests {
     }
 
     #[test]
-    fn generate_temp_config_removes_naive_unsupported_fields_and_uses_local_dns() {
+    fn generate_temp_config_removes_naive_unsupported_fields_and_uses_remote_dns() {
         let nodes = vec![serde_json::json!({
             "type": "naive",
             "tag": "Naive H2",
@@ -3269,7 +3331,12 @@ mod tests {
             "network": "h2"
         })];
 
-        let (config, tag_map, _) = generate_temp_config_raw(&nodes, TEMP_SINGBOX_PORT, true);
+        let (config, tag_map, _) = generate_temp_config_raw(
+            &nodes,
+            TEMP_SINGBOX_PORT,
+            true,
+            "https://dns.google/dns-query",
+        );
         let outbound = config
             .get("outbounds")
             .and_then(|value| value.as_array())
@@ -3307,9 +3374,24 @@ mod tests {
             .find(|server| server.get("tag").and_then(|value| value.as_str()) == Some("dns-remote"))
             .expect("expected dns-remote");
 
-        assert_eq!(remote_dns.get("type").and_then(|value| value.as_str()), Some("udp"));
-        assert_eq!(remote_dns.get("server").and_then(|value| value.as_str()), Some("223.5.5.5"));
+        assert_eq!(remote_dns.get("type").and_then(|value| value.as_str()), Some("https"));
+        assert_eq!(remote_dns.get("server").and_then(|value| value.as_str()), Some("dns.google"));
+        assert_eq!(remote_dns.get("path").and_then(|value| value.as_str()), Some("/dns-query"));
         assert_eq!(remote_dns.get("detour"), None);
+        assert_eq!(
+            config
+                .get("dns")
+                .and_then(|value| value.get("strategy"))
+                .and_then(|value| value.as_str()),
+            Some("ipv4_only")
+        );
+        assert_eq!(
+            config
+                .get("dns")
+                .and_then(|value| value.get("independent_cache"))
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
     }
 
     #[test]
@@ -3332,7 +3414,12 @@ mod tests {
             }),
         ];
 
-        let (config, tag_map, _) = generate_temp_config_raw(&nodes, TEMP_SINGBOX_PORT, false);
+        let (config, tag_map, _) = generate_temp_config_raw(
+            &nodes,
+            TEMP_SINGBOX_PORT,
+            false,
+            TEMP_LATENCY_FALLBACK_REMOTE_DNS,
+        );
         let outbounds = config
             .get("outbounds")
             .and_then(|value| value.as_array())
@@ -3370,7 +3457,12 @@ mod tests {
             ECH_DNS_SERVER_META_KEY: "https://dns.alidns.com/dns-query"
         })];
 
-        let (config, _, _) = generate_temp_config_raw(&nodes, TEMP_SINGBOX_PORT, true);
+        let (config, _, _) = generate_temp_config_raw(
+            &nodes,
+            TEMP_SINGBOX_PORT,
+            true,
+            TEMP_LATENCY_FALLBACK_REMOTE_DNS,
+        );
 
         let dns = config.get("dns").and_then(|value| value.as_object()).expect("expected dns config");
         let servers = dns.get("servers").and_then(|value| value.as_array()).expect("expected dns servers");
@@ -3513,6 +3605,22 @@ mod tests {
         assert_eq!(take_temp_singbox_tag_for_batch(Some(99), "dup").await.as_deref(), Some("latency-0000"));
         assert_eq!(take_temp_singbox_tag_for_batch(Some(99), "dup").await.as_deref(), Some("latency-0001"));
         assert_eq!(take_temp_singbox_tag_for_batch(Some(99), "dup").await, None);
+    }
+
+    #[test]
+    fn temp_start_reuses_responsive_process_during_concurrent_batch() {
+        assert_eq!(
+            running_temp_process_action(true, 2),
+            RunningTempProcessAction::Reuse
+        );
+        assert_eq!(
+            running_temp_process_action(true, 1),
+            RunningTempProcessAction::Rebuild
+        );
+        assert_eq!(
+            running_temp_process_action(false, 2),
+            RunningTempProcessAction::Rebuild
+        );
     }
 
     #[tokio::test]
