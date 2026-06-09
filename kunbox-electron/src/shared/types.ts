@@ -100,7 +100,7 @@ export interface AppSettings {
   enableRuntimeLogs: boolean
 }
 
-export type NodeLatencyStatus = 'success' | 'timeout' | 'controller_unavailable' | 'local_test_failed'
+export type NodeLatencyStatus = 'success' | 'timeout' | 'controller_unavailable' | 'proxy_failed' | 'local_test_failed'
 
 export interface NodeLatencyResult {
   status: NodeLatencyStatus

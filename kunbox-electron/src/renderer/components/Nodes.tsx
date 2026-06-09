@@ -146,6 +146,7 @@ export default function Nodes() {
     const effectiveStatus = status ?? (isTimeout ? 'timeout' : undefined)
     if (effectiveStatus === 'timeout') return 'text-red-400'
     if (effectiveStatus === 'controller_unavailable') return 'text-orange-400'
+    if (effectiveStatus === 'proxy_failed') return 'text-red-400'
     if (effectiveStatus === 'local_test_failed') return 'text-purple-400'
     if (!latency || latency < 0) return 'text-text-muted'
     if (latency < 500) return 'text-green-400'
@@ -157,6 +158,7 @@ export default function Nodes() {
     const effectiveStatus = node.latencyStatus ?? (node.isTimeout ? 'timeout' : undefined)
     if (effectiveStatus === 'timeout') return '超时'
     if (effectiveStatus === 'controller_unavailable') return '控制器异常'
+    if (effectiveStatus === 'proxy_failed') return '节点失败'
     if (effectiveStatus === 'local_test_failed') return '本地失败'
     if (node.latencyMs && node.latencyMs > 0) return `${node.latencyMs}ms`
     return '延迟'

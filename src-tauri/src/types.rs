@@ -210,6 +210,7 @@ pub enum NodeLatencyStatus {
     Success,
     Timeout,
     ControllerUnavailable,
+    ProxyFailed,
     LocalTestFailed,
 }
 
@@ -238,6 +239,13 @@ impl NodeLatencyResult {
     pub fn controller_unavailable() -> Self {
         Self {
             status: NodeLatencyStatus::ControllerUnavailable,
+            latency_ms: None,
+        }
+    }
+
+    pub fn proxy_failed() -> Self {
+        Self {
+            status: NodeLatencyStatus::ProxyFailed,
             latency_ms: None,
         }
     }

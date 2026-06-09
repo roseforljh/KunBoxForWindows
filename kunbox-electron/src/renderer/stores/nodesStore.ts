@@ -49,17 +49,6 @@ function localFailureLatencyResult(): ReturnType<typeof normalizeLatencyResult> 
   })
 }
 
-function normalizeBatchLatency(latency: number | undefined): ReturnType<typeof normalizeLatencyResult> {
-  if (typeof latency === 'number' && latency > 0) {
-    return normalizeLatencyResult({
-      status: 'success',
-      latencyMs: latency,
-    })
-  }
-
-  return localFailureLatencyResult()
-}
-
 // Abort controller for batch testing
 let abortController: AbortController | null = null
 let testAllRunId = 0
@@ -196,27 +185,50 @@ export const useNodesStore = create<NodesState>()(
         try {
           await window.api.node.beginLatencyTests(runId)
 
-          const results = await window.api.node.testAll()
-          if (signal.aborted || runId !== testAllRunId) return
+          const CONCURRENCY = 8
+          let nextQueueIndex = 0
 
-          const timestamp = Date.now()
-          const updates = new Map<number, ReturnType<typeof normalizeLatencyResult>>()
-          for (const item of queue) {
-            const tag = item.node.tag
-            if (!tag) continue
-            const normalized = normalizeBatchLatency(results[tag])
-            updates.set(item.index, normalized)
-            batchLatencyCache[`${activeProfileId}::${tag}`] = { ...normalized, timestamp }
+          const testNextNode = async () => {
+            while (nextQueueIndex < queue.length) {
+              if (signal.aborted || runId !== testAllRunId) return
+
+              const item = queue[nextQueueIndex]
+              nextQueueIndex += 1
+
+              const tag = item.node.tag
+              if (!tag) continue
+
+              let normalized: ReturnType<typeof normalizeLatencyResult>
+              try {
+                const result = await window.api.node.testLatency(tag, runId)
+                if (signal.aborted || runId !== testAllRunId) return
+                normalized = normalizeLatencyResult(result)
+              } catch {
+                if (signal.aborted || runId !== testAllRunId) return
+                normalized = localFailureLatencyResult()
+              }
+
+              const timestamp = Date.now()
+              batchLatencyCache[`${activeProfileId}::${tag}`] = { ...normalized, timestamp }
+              set((state: NodesState) => {
+                if (signal.aborted || runId !== testAllRunId) return state
+                return {
+                  nodes: state.nodes.map((node, index) => index === item.index
+                    ? { ...node, ...normalized, isTesting: false }
+                    : node
+                  ),
+                  latencyCache: { ...state.latencyCache, ...batchLatencyCache },
+                  testProgress: Math.min(state.testProgress + 1, queue.length)
+                }
+              })
+            }
           }
 
-          set((state: NodesState) => ({
-            nodes: state.nodes.map((node, index) => {
-              const update = updates.get(index)
-              return update ? { ...node, ...update, isTesting: false } : node
-            }),
-            latencyCache: { ...state.latencyCache, ...batchLatencyCache },
-            testProgress: queue.length
-          }))
+          const workers = Array.from(
+            { length: Math.min(CONCURRENCY, queue.length) },
+            () => testNextNode()
+          )
+          await Promise.all(workers)
         } catch {
           if (signal.aborted || runId !== testAllRunId) return
 
