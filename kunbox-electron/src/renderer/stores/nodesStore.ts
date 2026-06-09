@@ -33,6 +33,9 @@ interface LatencyCache {
   }
 }
 
+const LATENCY_CACHE_TTL_MS = 3600000
+const MIN_VALID_CACHED_LATENCY_MS = 10
+
 function normalizeLatencyResult(result: NodeLatencyResult) {
   const latencyStatus = result.status
   return {
@@ -47,6 +50,20 @@ function localFailureLatencyResult(): ReturnType<typeof normalizeLatencyResult> 
     status: 'local_test_failed',
     latencyMs: null,
   })
+}
+
+function isUsableCachedLatency(
+  entry: LatencyCache[string] | null | undefined,
+  now: number,
+): entry is LatencyCache[string] {
+  if (!entry || now - entry.timestamp >= LATENCY_CACHE_TTL_MS) return false
+  if (
+    entry.latencyStatus === 'success' &&
+    (!entry.latencyMs || entry.latencyMs < MIN_VALID_CACHED_LATENCY_MS)
+  ) {
+    return false
+  }
+  return true
 }
 
 // Abort controller for batch testing
@@ -109,7 +126,7 @@ export const useNodesStore = create<NodesState>()(
         const nodesWithLatency = nodes.map((n: SingBoxOutbound) => {
           const cacheKey = activeProfileId && n.tag ? `${activeProfileId}::${n.tag}` : null
           const cached = cacheKey ? latencyCache[cacheKey] : null
-          if (cached && now - cached.timestamp < 3600000) {
+          if (isUsableCachedLatency(cached, now)) {
             return {
               ...n,
               latencyMs: cached.latencyMs,

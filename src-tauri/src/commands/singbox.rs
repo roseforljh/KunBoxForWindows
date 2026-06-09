@@ -883,6 +883,8 @@ fn sanitize_naive_outbound(obj: &mut serde_json::Map<String, serde_json::Value>,
         obj.remove(key);
     }
     sanitize_naive_tls(obj, server);
+    obj.entry("quic".to_string())
+        .or_insert_with(|| serde_json::Value::Bool(false));
 }
 
 fn config_value_has_outbound_type(config: &serde_json::Value, outbound_type: &str) -> bool {
@@ -3612,6 +3614,7 @@ mod tests {
         assert_eq!(outbound.get("type").and_then(|value| value.as_str()), Some("naive"));
         assert!(outbound.get("network").is_none());
         assert!(outbound.get("transport").is_none());
+        assert_eq!(outbound.get("quic").and_then(|value| value.as_bool()), Some(false));
         assert_eq!(
             outbound
                 .get("tls")

@@ -59,11 +59,6 @@ enum LatencyProbeError {
     Failed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TempProxyTarget {
-    proxy_port: u16,
-}
-
 fn select_latency_test_backend(
     proxy_state: &ProxyState,
     main_api_ready: bool,
@@ -169,71 +164,41 @@ async fn test_latency_via_temp_backend(
         return NodeLatencyResult::local_test_failed();
     }
 
-    let temp_target = match if run_id.is_some() {
-        take_temp_singbox_proxy_target_for_batch(run_id, tag).await
+    let temp_tag = match if run_id.is_some() {
+        take_temp_singbox_tag_for_batch(run_id, tag).await
     } else {
-        first_temp_singbox_proxy_target(tag).await
+        first_temp_singbox_tag(tag).await
     } {
-        Some(temp_target) => temp_target,
+        Some(temp_tag) => temp_tag,
         None => {
             append_latency_diagnostic(
                 state,
-                &format!("temp proxy port mapping missing for tag='{}'", tag),
+                &format!("temp proxy tag mapping missing for tag='{}'", tag),
             );
-            log::warn!("Temp proxy port mapping missing for '{}'", tag);
+            log::warn!("Temp proxy tag mapping missing for '{}'", tag);
             release_temp_singbox_test_slot(state, run_id).await;
             return NodeLatencyResult::local_test_failed();
         }
     };
 
-    let mut result = test_latency_via_local_proxy_cancellable(
-        temp_target.proxy_port,
+    let result = test_latency_via_clash_api_cancellable(
+        &temp_tag,
+        TEMP_SINGBOX_PORT,
         test_url,
         timeout_ms,
         cancel_token.clone(),
     )
     .await;
 
-    if result.is_err() {
-        if let Some((server, server_port)) = latency_tcp_target_for_tag(state, tag) {
-            let fallback_result = test_latency_via_tcp_connect_cancellable(
-                &server,
-                server_port,
-                timeout_ms,
-                cancel_token.clone(),
-            )
-            .await;
-            append_latency_diagnostic(
-                state,
-                &format!(
-                    "tcp fallback result for tag='{}', target={}:{}: {:?}",
-                    tag, server, server_port, fallback_result
-                ),
-            );
-            if matches!(fallback_result, Ok(latency) if latency > 0) {
-                result = fallback_result;
-            }
-        }
-    }
-
     append_latency_diagnostic(
         state,
         &format!(
-            "latency raw result for tag='{}', proxy_port={}: {:?}",
-            tag, temp_target.proxy_port, result
+            "latency raw result for tag='{}', temp_tag='{}': {:?}",
+            tag, temp_tag, result
         ),
     );
     release_temp_singbox_test_slot(state, run_id).await;
     map_latency_probe_result(result, NodeLatencyStatus::LocalTestFailed)
-}
-
-fn latency_tcp_target_for_tag(state: &AppState, tag: &str) -> Option<(String, u16)> {
-    let data = load_profiles_data(state);
-    let profile_id = data.active_profile_id?;
-    load_profile_nodes(state, &profile_id)
-        .into_iter()
-        .find(|node| node.tag.as_deref() == Some(tag))
-        .and_then(|node| Some((node.server?, node.server_port?)))
 }
 
 fn remove_temp_singbox_dir(path: &std::path::Path) -> Result<(), String> {
@@ -371,11 +336,6 @@ async fn read_temp_singbox_tag_map() -> std::collections::HashMap<String, Vec<St
     TEMP_SINGBOX_TAG_MAP.lock().await.clone()
 }
 
-async fn read_temp_singbox_proxy_port_map() -> std::collections::HashMap<String, Vec<u16>> {
-    TEMP_SINGBOX_PROXY_PORT_MAP.lock().await.clone()
-}
-
-#[cfg(test)]
 async fn take_temp_singbox_tag_for_batch(
     run_id: Option<u64>,
     original_tag: &str,
@@ -385,18 +345,6 @@ async fn take_temp_singbox_tag_for_batch(
     }
     let mut tag_map = TEMP_SINGBOX_TAG_MAP.lock().await;
     take_temp_singbox_tag(&mut tag_map, original_tag)
-}
-
-async fn take_temp_singbox_proxy_target_for_batch(
-    run_id: Option<u64>,
-    original_tag: &str,
-) -> Option<TempProxyTarget> {
-    if *TEMP_SINGBOX_OWNER_BATCH_ID.lock().await != run_id {
-        return None;
-    }
-    let mut port_map = TEMP_SINGBOX_PROXY_PORT_MAP.lock().await;
-    take_temp_singbox_proxy_port(&mut port_map, original_tag)
-        .map(|proxy_port| TempProxyTarget { proxy_port })
 }
 
 async fn current_latency_test_cancel_token() -> CancellationToken {
@@ -438,13 +386,12 @@ async fn is_latency_test_batch_cancelled(run_id: Option<u64>) -> bool {
     }
 }
 
-async fn first_temp_singbox_proxy_target(original_tag: &str) -> Option<TempProxyTarget> {
-    TEMP_SINGBOX_PROXY_PORT_MAP
+async fn first_temp_singbox_tag(original_tag: &str) -> Option<String> {
+    TEMP_SINGBOX_TAG_MAP
         .lock()
         .await
         .get(original_tag)
-        .and_then(|ports| ports.first().copied())
-        .map(|proxy_port| TempProxyTarget { proxy_port })
+        .and_then(|tags| tags.first().cloned())
 }
 
 fn take_temp_singbox_tag(
@@ -465,24 +412,6 @@ fn take_temp_singbox_tag(
     tag_map
         .get_mut(original_tag)
         .map(|aliases| aliases.remove(0))
-}
-
-fn take_temp_singbox_proxy_port(
-    port_map: &mut std::collections::HashMap<String, Vec<u16>>,
-    original_tag: &str,
-) -> Option<u16> {
-    let should_remove = match port_map.get(original_tag) {
-        Some(ports) => ports.len() <= 1,
-        None => return None,
-    };
-
-    if should_remove {
-        return port_map
-            .remove(original_tag)
-            .and_then(|mut ports| ports.drain(..1).next());
-    }
-
-    port_map.get_mut(original_tag).map(|ports| ports.remove(0))
 }
 
 fn make_temp_latency_tag(index: usize) -> String {
@@ -528,6 +457,23 @@ fn apply_temp_latency_domain_resolver(
             "strategy": "ipv4_only"
         }),
     );
+}
+
+fn temp_dns_domain_resolver(remote_dns: &str, active_node_has_ech: bool) -> Option<&'static str> {
+    if active_node_has_ech || dns_server_uses_domain_address(remote_dns) {
+        Some("dns-local")
+    } else {
+        None
+    }
+}
+
+fn dns_server_uses_domain_address(remote_dns: &str) -> bool {
+    let server = crate::commands::singbox::build_dns_server(remote_dns, "dns-probe", "direct");
+    let Some(host) = server.get("server").and_then(|value| value.as_str()) else {
+        return false;
+    };
+
+    !host.trim().is_empty() && !is_ip_literal(host)
 }
 
 pub(crate) async fn cleanup_temp_singbox(state: &AppState) {
@@ -2517,12 +2463,6 @@ pub async fn node_test_all(
     } else {
         None
     };
-    let mut temp_proxy_port_map = if temp_used {
-        Some(read_temp_singbox_proxy_port_map().await)
-    } else {
-        None
-    };
-
     // Test in chunks for concurrency
     let chunk_size = 5;
     for chunk in nodes.chunks(chunk_size) {
@@ -2532,20 +2472,11 @@ pub async fn node_test_all(
 
         let futures: Vec<_> = chunk
             .iter()
-            .filter_map(|node| {
-                node.tag
-                    .clone()
-                    .map(|tag| (tag, node.server.clone(), node.server_port))
-            })
-            .map(|(tag, server, server_port)| {
+            .filter_map(|node| node.tag.clone())
+            .map(|tag| {
                 let tag_clone = tag.clone();
                 let cancel_token = cancel_token.clone();
                 let test_url = test_url.clone();
-                let lookup_proxy_port = if let Some(port_map) = temp_proxy_port_map.as_mut() {
-                    take_temp_singbox_proxy_port(port_map, &tag)
-                } else {
-                    None
-                };
                 let lookup_tag = if let Some(tag_map) = temp_tag_map.as_mut() {
                     take_temp_singbox_tag(tag_map, &tag).unwrap_or_else(|| tag.clone())
                 } else {
@@ -2554,9 +2485,14 @@ pub async fn node_test_all(
                 let ports_clone = ports.clone();
                 async move {
                     let mut latency = -1;
-                    if let Some(proxy_port) = lookup_proxy_port {
-                        match test_latency_via_local_proxy_cancellable(
-                            proxy_port,
+                    for p in ports_clone {
+                        if cancel_token.is_cancelled() {
+                            break;
+                        }
+
+                        match test_latency_via_clash_api_cancellable(
+                            &lookup_tag,
+                            p,
                             &test_url,
                             timeout_ms,
                             cancel_token.clone(),
@@ -2565,77 +2501,24 @@ pub async fn node_test_all(
                         {
                             Ok(v) if v > 0 => {
                                 latency = v;
+                                break;
                             }
                             Ok(_) | Err(LatencyProbeError::Timeout) => {}
                             Err(LatencyProbeError::ProxyFailed) => {
                                 log::debug!(
-                                    "Proxy latency test failed on local port {} for '{}'",
-                                    proxy_port,
-                                    tag_clone
+                                    "Proxy latency test failed on port {} for '{}' via '{}'",
+                                    p,
+                                    tag_clone,
+                                    lookup_tag
                                 );
                             }
                             Err(LatencyProbeError::Failed) => {
                                 log::debug!(
-                                    "Local proxy latency test failed on port {} for '{}'",
-                                    proxy_port,
-                                    tag_clone
+                                    "Latency test failed on port {} for '{}' via '{}'",
+                                    p,
+                                    tag_clone,
+                                    lookup_tag
                                 );
-                            }
-                        }
-                        if latency <= 0 {
-                            if let (Some(server), Some(server_port)) =
-                                (server.as_deref(), server_port)
-                            {
-                                if let Ok(v) = test_latency_via_tcp_connect_cancellable(
-                                    server,
-                                    server_port,
-                                    timeout_ms,
-                                    cancel_token.clone(),
-                                )
-                                .await
-                                {
-                                    if v > 0 {
-                                        latency = v;
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        for p in ports_clone {
-                            if cancel_token.is_cancelled() {
-                                break;
-                            }
-
-                            match test_latency_via_clash_api_cancellable(
-                                &lookup_tag,
-                                p,
-                                &test_url,
-                                timeout_ms,
-                                cancel_token.clone(),
-                            )
-                            .await
-                            {
-                                Ok(v) if v > 0 => {
-                                    latency = v;
-                                    break;
-                                }
-                                Ok(_) | Err(LatencyProbeError::Timeout) => {}
-                                Err(LatencyProbeError::ProxyFailed) => {
-                                    log::debug!(
-                                        "Proxy latency test failed on port {} for '{}' via '{}'",
-                                        p,
-                                        tag_clone,
-                                        lookup_tag
-                                    );
-                                }
-                                Err(LatencyProbeError::Failed) => {
-                                    log::debug!(
-                                        "Latency test failed on port {} for '{}' via '{}'",
-                                        p,
-                                        tag_clone,
-                                        lookup_tag
-                                    );
-                                }
                             }
                         }
                     }
@@ -2747,126 +2630,6 @@ async fn test_latency_via_clash_api_cancellable(
     tokio::select! {
         _ = cancel_token.cancelled() => Err(LatencyProbeError::Failed),
         result = test_latency_via_clash_api(proxy_name, port, test_url, timeout_ms) => result,
-    }
-}
-
-async fn wait_for_local_tcp_port(port: u16, timeout_ms: u64) -> bool {
-    let deadline = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_millis(timeout_ms.max(1)))
-        .unwrap_or_else(std::time::Instant::now);
-
-    loop {
-        let connect = tokio::net::TcpStream::connect(("127.0.0.1", port));
-        match tokio::time::timeout(std::time::Duration::from_millis(100), connect).await {
-            Ok(Ok(_)) => return true,
-            _ => {
-                if std::time::Instant::now() >= deadline {
-                    return false;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            }
-        }
-    }
-}
-
-async fn test_latency_via_local_proxy(
-    proxy_port: u16,
-    test_url: &str,
-    timeout_ms: u32,
-) -> Result<i64, LatencyProbeError> {
-    let effective_timeout_ms = timeout_ms.max(1) as u64;
-    if !wait_for_local_tcp_port(proxy_port, effective_timeout_ms.min(3_000)).await {
-        return Err(LatencyProbeError::Failed);
-    }
-
-    let proxy = reqwest::Proxy::all(format!("http://127.0.0.1:{}", proxy_port))
-        .map_err(|_| LatencyProbeError::Failed)?;
-    let client = reqwest::Client::builder()
-        .proxy(proxy)
-        .timeout(std::time::Duration::from_millis(
-            effective_timeout_ms.saturating_add(2_000),
-        ))
-        .connect_timeout(std::time::Duration::from_millis(effective_timeout_ms))
-        .build()
-        .map_err(|_| LatencyProbeError::Failed)?;
-
-    let started = std::time::Instant::now();
-    let response = client.get(test_url).send().await.map_err(|e| {
-        if e.is_timeout() {
-            LatencyProbeError::Timeout
-        } else {
-            LatencyProbeError::ProxyFailed
-        }
-    })?;
-
-    let latency_ms = started.elapsed().as_millis().max(1);
-    let latency_ms = i64::try_from(latency_ms).unwrap_or(i64::MAX);
-    if latency_ms > effective_timeout_ms as i64 {
-        return Err(LatencyProbeError::Timeout);
-    }
-
-    if response.status().as_u16() < 400 {
-        return Ok(latency_ms);
-    }
-    if response.status() == reqwest::StatusCode::GATEWAY_TIMEOUT
-        || response.status() == reqwest::StatusCode::REQUEST_TIMEOUT
-    {
-        return Err(LatencyProbeError::Timeout);
-    }
-
-    Err(LatencyProbeError::ProxyFailed)
-}
-
-async fn test_latency_via_local_proxy_cancellable(
-    proxy_port: u16,
-    test_url: &str,
-    timeout_ms: u32,
-    cancel_token: CancellationToken,
-) -> Result<i64, LatencyProbeError> {
-    tokio::select! {
-        _ = cancel_token.cancelled() => Err(LatencyProbeError::Failed),
-        result = test_latency_via_local_proxy(proxy_port, test_url, timeout_ms) => result,
-    }
-}
-
-async fn test_latency_via_tcp_connect(
-    server: &str,
-    port: u16,
-    timeout_ms: u32,
-) -> Result<i64, LatencyProbeError> {
-    let server = server.trim();
-    if server.is_empty() || port == 0 {
-        return Err(LatencyProbeError::Failed);
-    }
-
-    let effective_timeout_ms = timeout_ms.max(1) as u64;
-    let started = std::time::Instant::now();
-    let connect = tokio::net::TcpStream::connect((server, port));
-    match tokio::time::timeout(
-        std::time::Duration::from_millis(effective_timeout_ms),
-        connect,
-    )
-    .await
-    {
-        Ok(Ok(stream)) => {
-            drop(stream);
-            let latency_ms = started.elapsed().as_millis().max(1);
-            Ok(i64::try_from(latency_ms).unwrap_or(i64::MAX))
-        }
-        Ok(Err(_)) => Err(LatencyProbeError::ProxyFailed),
-        Err(_) => Err(LatencyProbeError::Timeout),
-    }
-}
-
-async fn test_latency_via_tcp_connect_cancellable(
-    server: &str,
-    port: u16,
-    timeout_ms: u32,
-    cancel_token: CancellationToken,
-) -> Result<i64, LatencyProbeError> {
-    tokio::select! {
-        _ = cancel_token.cancelled() => Err(LatencyProbeError::Failed),
-        result = test_latency_via_tcp_connect(server, port, timeout_ms) => result,
     }
 }
 
@@ -3356,7 +3119,8 @@ fn generate_temp_config_raw(
         .clone()
         .unwrap_or_else(|| remote_dns.to_string());
     let remote_dns_detour = "direct";
-    let remote_dns_domain_resolver = active_node_has_ech.then_some("dns-local");
+    let remote_dns_domain_resolver =
+        temp_dns_domain_resolver(&effective_remote_dns, active_node_has_ech);
 
     // 处理节点，移除不合法字段并添加必要配置
     let mut tag_map = std::collections::HashMap::new();
@@ -4281,24 +4045,6 @@ mod tests {
         assert_eq!(result.latency_ms, None);
     }
 
-    #[tokio::test]
-    async fn tcp_connect_latency_returns_positive_for_open_port() {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .expect("bind test tcp listener");
-        let port = listener.local_addr().expect("listener addr").port();
-        let accept_task = tokio::spawn(async move {
-            let _ = listener.accept().await;
-        });
-
-        let latency = test_latency_via_tcp_connect("127.0.0.1", port, 1_000)
-            .await
-            .expect("tcp connect should succeed");
-
-        assert!(latency > 0);
-        accept_task.await.expect("accept task");
-    }
-
     #[test]
     fn removes_temp_singbox_directory_recursively() {
         let temp_dir = unique_test_dir("temp-cleanup");
@@ -4486,6 +4232,10 @@ mod tests {
         assert!(outbound.get("network").is_none());
         assert!(outbound.get("transport").is_none());
         assert_eq!(
+            outbound.get("quic").and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
             outbound
                 .get("tls")
                 .and_then(|value| value.get("server_name"))
@@ -4544,6 +4294,12 @@ mod tests {
             remote_dns.get("path").and_then(|value| value.as_str()),
             Some("/dns-query")
         );
+        assert_eq!(
+            remote_dns
+                .get("domain_resolver")
+                .and_then(|value| value.as_str()),
+            Some("dns-local")
+        );
         assert_eq!(remote_dns.get("detour"), None);
         assert_eq!(
             config
@@ -4559,6 +4315,35 @@ mod tests {
                 .and_then(|value| value.as_bool()),
             Some(true)
         );
+    }
+
+    #[test]
+    fn generate_temp_config_does_not_add_domain_resolver_for_ip_dns_server() {
+        let nodes = vec![serde_json::json!({
+            "type": "trojan",
+            "tag": "Trojan",
+            "server": "trojan.example.com",
+            "server_port": 443,
+            "password": "pass"
+        })];
+
+        let (config, _, _, _) =
+            generate_temp_config_raw(&nodes, TEMP_SINGBOX_PORT, true, "223.5.5.5");
+        let dns_servers = config
+            .get("dns")
+            .and_then(|value| value.get("servers"))
+            .and_then(|value| value.as_array())
+            .expect("expected dns servers");
+        let remote_dns = dns_servers
+            .iter()
+            .find(|server| server.get("tag").and_then(|value| value.as_str()) == Some("dns-remote"))
+            .expect("expected dns-remote");
+
+        assert_eq!(
+            remote_dns.get("server").and_then(|value| value.as_str()),
+            Some("223.5.5.5")
+        );
+        assert!(remote_dns.get("domain_resolver").is_none());
     }
 
     #[test]
