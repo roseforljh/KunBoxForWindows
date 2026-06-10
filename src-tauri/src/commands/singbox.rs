@@ -859,6 +859,40 @@ fn sanitize_naive_tls(obj: &mut serde_json::Map<String, serde_json::Value>, serv
     obj.insert("tls".to_string(), serde_json::Value::Object(tls));
 }
 
+fn outbound_server_uses_domain(obj: &serde_json::Map<String, serde_json::Value>) -> bool {
+    let server = obj
+        .get("server")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+
+    !server.is_empty() && server.parse::<std::net::IpAddr>().is_err()
+}
+
+fn apply_outbound_domain_resolver(
+    obj: &mut serde_json::Map<String, serde_json::Value>,
+    resolver_tag: &str,
+) {
+    if !outbound_server_uses_domain(obj) {
+        return;
+    }
+
+    obj.entry("domain_strategy".to_string())
+        .or_insert_with(|| serde_json::Value::String("ipv4_only".to_string()));
+
+    if !obj.contains_key("domain_resolver") {
+        obj.insert(
+            "domain_resolver".to_string(),
+            serde_json::json!({
+                "server": resolver_tag,
+                "strategy": "ipv4_only"
+            }),
+        );
+    }
+}
+
 fn sanitize_naive_outbound(obj: &mut serde_json::Map<String, serde_json::Value>, server: &str) {
     for key in [
         "network",
@@ -885,6 +919,7 @@ fn sanitize_naive_outbound(obj: &mut serde_json::Map<String, serde_json::Value>,
     sanitize_naive_tls(obj, server);
     obj.entry("quic".to_string())
         .or_insert_with(|| serde_json::Value::Bool(false));
+    apply_outbound_domain_resolver(obj, "dns-bootstrap");
 }
 
 fn config_value_has_outbound_type(config: &serde_json::Value, outbound_type: &str) -> bool {
@@ -963,6 +998,10 @@ fn process_node(node: &serde_json::Value) -> serde_json::Value {
 
         if node_type == "naive" {
             sanitize_naive_outbound(obj, &server);
+        }
+
+        if is_proxy_type(&node_type) {
+            apply_outbound_domain_resolver(obj, "dns-bootstrap");
         }
     }
     node
@@ -1335,6 +1374,20 @@ pub(crate) fn build_dns_server(address: &str, tag: &str, detour: &str) -> serde_
     server_obj
 }
 
+pub(crate) fn build_dns_bootstrap_server() -> serde_json::Value {
+    build_dns_server("https://223.5.5.5/dns-query", "dns-bootstrap", "direct")
+}
+
+fn dns_server_uses_domain_address(address: &str) -> bool {
+    let server = build_dns_server(address, "dns-probe", "direct");
+    let Some(host) = server.get("server").and_then(|value| value.as_str()) else {
+        return false;
+    };
+    let host = host.trim().trim_start_matches('[').trim_end_matches(']');
+
+    !host.is_empty() && host.parse::<std::net::IpAddr>().is_err()
+}
+
 pub(crate) fn build_dns_server_with_resolver(
     address: &str,
     tag: &str,
@@ -1675,7 +1728,12 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
             .and_then(|profile| profile.dns_server.clone())
             .unwrap_or_else(|| settings.remote_dns.clone())
     };
-    let remote_dns_domain_resolver = active_node_has_ech.then_some("dns-local");
+    let remote_dns_domain_resolver =
+        if active_node_has_ech || dns_server_uses_domain_address(&effective_remote_dns) {
+            Some("dns-bootstrap")
+        } else {
+            None
+        };
 
     // 加载所有配置文件信息（用于跨配置分流）
     let all_profiles = load_all_profiles(state, &profiles_data);
@@ -1741,6 +1799,7 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
 
     // 构建 DNS 服务器列表（sing-box 1.12+ 新格式）
     let mut dns_servers = vec![
+        build_dns_bootstrap_server(),
         build_dns_server(&settings.local_dns, "dns-local", "direct"),
         build_dns_server_with_resolver(
             &effective_remote_dns,
@@ -1962,7 +2021,10 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
         "inbounds": inbounds,
         "route": {
             "auto_detect_interface": true,
-            "default_domain_resolver": "dns-local",
+            "default_domain_resolver": {
+                "server": "dns-bootstrap",
+                "strategy": "ipv4_only"
+            },
             "final": route_final
         }
     });
@@ -3345,8 +3407,24 @@ mod tests {
 
         assert_eq!(dns_remote.get("server").and_then(|value| value.as_str()), Some("dns.alidns.com"));
         assert_eq!(dns_remote.get("path").and_then(|value| value.as_str()), Some("/dns-query"));
-        assert_eq!(dns_remote.get("domain_resolver").and_then(|value| value.as_str()), Some("dns-local"));
+        assert_eq!(dns_remote.get("domain_resolver").and_then(|value| value.as_str()), Some("dns-bootstrap"));
         assert!(dns_remote.get("detour").is_none(), "ECH bootstrap DNS must not detour through proxy");
+
+        let dns_bootstrap = config["dns"]["servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|server| server.get("tag").and_then(|value| value.as_str()) == Some("dns-bootstrap"))
+            .unwrap();
+
+        assert_eq!(dns_bootstrap.get("type").and_then(|value| value.as_str()), Some("https"));
+        assert_eq!(dns_bootstrap.get("server").and_then(|value| value.as_str()), Some("223.5.5.5"));
+        assert_eq!(
+            config["route"]["default_domain_resolver"]
+                .get("server")
+                .and_then(|value| value.as_str()),
+            Some("dns-bootstrap")
+        );
 
         let outbound = config["outbounds"]
             .as_array()
@@ -3418,7 +3496,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(dns_remote.get("detour").and_then(|value| value.as_str()), Some("PROXY"));
-        assert!(dns_remote.get("domain_resolver").is_none());
+        assert_eq!(
+            dns_remote.get("domain_resolver").and_then(|value| value.as_str()),
+            Some("dns-bootstrap")
+        );
 
         let _ = fs::remove_dir_all(data_dir);
     }
@@ -3617,6 +3698,26 @@ mod tests {
         assert_eq!(outbound.get("quic").and_then(|value| value.as_bool()), Some(false));
         assert_eq!(
             outbound
+                .get("domain_strategy")
+                .and_then(|value| value.as_str()),
+            Some("ipv4_only")
+        );
+        assert_eq!(
+            outbound
+                .get("domain_resolver")
+                .and_then(|value| value.get("server"))
+                .and_then(|value| value.as_str()),
+            Some("dns-bootstrap")
+        );
+        assert_eq!(
+            outbound
+                .get("domain_resolver")
+                .and_then(|value| value.get("strategy"))
+                .and_then(|value| value.as_str()),
+            Some("ipv4_only")
+        );
+        assert_eq!(
+            outbound
                 .get("tls")
                 .and_then(|value| value.get("server_name"))
                 .and_then(|value| value.as_str()),
@@ -3630,6 +3731,41 @@ mod tests {
             Some(true)
         );
         assert!(outbound.get("tls").and_then(|value| value.get("insecure")).is_none());
+    }
+
+    #[test]
+    fn node_for_singbox_adds_bootstrap_resolver_for_domain_proxy_server() {
+        let node = serde_json::json!({
+            "tag": "VMess",
+            "type": "vmess",
+            "server": "vmess.example.com",
+            "server_port": 443,
+            "uuid": "00000000-0000-0000-0000-000000000000"
+        });
+        let mut bridge_specs = Vec::new();
+
+        let outbound = node_for_singbox_with_plugin_bridge(&node, &mut bridge_specs);
+
+        assert_eq!(
+            outbound
+                .get("domain_resolver")
+                .and_then(|value| value.get("server"))
+                .and_then(|value| value.as_str()),
+            Some("dns-bootstrap")
+        );
+        assert_eq!(
+            outbound
+                .get("domain_strategy")
+                .and_then(|value| value.as_str()),
+            Some("ipv4_only")
+        );
+        assert_eq!(
+            outbound
+                .get("domain_resolver")
+                .and_then(|value| value.get("strategy"))
+                .and_then(|value| value.as_str()),
+            Some("ipv4_only")
+        );
     }
 
     #[test]
