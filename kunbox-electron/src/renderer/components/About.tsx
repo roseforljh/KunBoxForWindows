@@ -15,6 +15,7 @@ export default function About() {
   const [checking, setChecking] = useState(false)
   const [updating, setUpdating] = useState(false)
   const [progress, setProgress] = useState(0)
+  const [currentVersion, setCurrentVersion] = useState(__APP_VERSION__)
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
   const checkingRef = useRef(false)
 
@@ -27,6 +28,7 @@ export default function About() {
     setChecking(true)
     try {
       const info = await window.api.updater.check()
+      setCurrentVersion(info.currentVersion)
       setUpdateInfo(info)
       if (!silent) {
         if (!info.hasUpdate) {
@@ -44,6 +46,22 @@ export default function About() {
       setChecking(false)
     }
   }, [toast, updating])
+
+  useEffect(() => {
+    let mounted = true
+
+    window.api.updater.getCurrentVersion()
+      .then((version) => {
+        if (mounted && version) setCurrentVersion(version)
+      })
+      .catch((error) => {
+        console.error('Failed to get app version:', error)
+      })
+
+    return () => {
+      mounted = false
+    }
+  }, [])
 
   const installUpdate = useCallback(async () => {
     if (updating) return
@@ -99,7 +117,7 @@ export default function About() {
           <div className="space-y-2 text-sm">
             <div className="flex justify-between">
               <span className="text-[var(--text-muted)]">当前版本</span>
-              <span className="text-[var(--text-primary)]">{updateInfo?.currentVersion || '-'}</span>
+              <span className="text-[var(--text-primary)]">{currentVersion || '-'}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-[var(--text-muted)]">最新版本</span>
