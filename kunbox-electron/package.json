@@ -1,6 +1,6 @@
 {
   "name": "kunbox",
-  "version": "1.0.0",
+  "version": "0.0.24",
   "type": "module",
   "description": "KunBox - Cross-platform sing-box proxy client",
   "author": "KunBox",

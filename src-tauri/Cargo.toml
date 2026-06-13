@@ -1,6 +1,6 @@
 [package]
 name = "kunbox"
-version = "1.0.0"
+version = "0.0.24"
 description = "KunBox - Cross-platform sing-box proxy client"
 authors = ["KunBox"]
 license = "MIT"
