@@ -1197,6 +1197,7 @@ fn parse_clash_proxies(proxies: &[serde_json::Value]) -> Result<Vec<SingBoxOutbo
                 || proxy_type == "hysteria2"
                 || proxy_type == "hysteria"
                 || proxy_type == "tuic"
+                || proxy_type == "anytls"
             {
                 let mut tls = serde_json::Map::new();
                 tls.insert("enabled".to_string(), serde_json::Value::Bool(true));
@@ -3764,6 +3765,53 @@ mod tests {
             Some("naive.example.com")
         );
         assert!(node.extra.get("network").is_none());
+    }
+
+    #[test]
+    fn parse_clash_anytls_adds_required_tls() {
+        let proxies = vec![serde_json::json!({
+            "name": "AnyTLS",
+            "type": "anytls",
+            "server": "204.136.11.104",
+            "port": 31424,
+            "password": "secret",
+            "sni": "anyway.example.com",
+            "skip-cert-verify": false,
+            "udp": true
+        })];
+
+        let nodes = parse_clash_proxies(&proxies).expect("expected anytls node");
+        assert_eq!(nodes.len(), 1);
+        let node = &nodes[0];
+
+        assert_eq!(node.outbound_type.as_deref(), Some("anytls"));
+        assert_eq!(node.server.as_deref(), Some("204.136.11.104"));
+        assert_eq!(node.server_port, Some(31424));
+        assert_eq!(
+            node.extra.get("password").and_then(|value| value.as_str()),
+            Some("secret")
+        );
+        assert_eq!(
+            node.extra
+                .get("tls")
+                .and_then(|value| value.get("enabled"))
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            node.extra
+                .get("tls")
+                .and_then(|value| value.get("server_name"))
+                .and_then(|value| value.as_str()),
+            Some("anyway.example.com")
+        );
+        assert_eq!(
+            node.extra
+                .get("tls")
+                .and_then(|value| value.get("insecure"))
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
     }
 
     #[test]

@@ -963,6 +963,10 @@ fn process_node(node: &serde_json::Value) -> serde_json::Value {
         let node_type = obj.get("type").and_then(|t| t.as_str()).unwrap_or("").to_string();
         let server = obj.get("server").and_then(|s| s.as_str()).unwrap_or("").to_string();
         let port = obj.get("server_port").and_then(|p| p.as_u64()).unwrap_or(0);
+        let tls_insecure = obj
+            .get("skip-cert-verify")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
 
         obj.remove(crate::commands::profiles::ECH_DNS_SERVER_META_KEY);
 
@@ -971,24 +975,37 @@ fn process_node(node: &serde_json::Value) -> serde_json::Value {
         }
 
         if !obj.contains_key("tls") {
+            let tls_server_name = obj
+                .get("servername")
+                .or_else(|| obj.get("sni"))
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| server.clone());
             match node_type.as_str() {
-                "hysteria2" | "hysteria" | "tuic" | "naive" => {
+                "hysteria2" | "hysteria" | "tuic" | "naive" | "anytls" => {
                     obj.insert("tls".to_string(), serde_json::json!({
                         "enabled": true,
-                        "server_name": server,
-                        "insecure": false
+                        "server_name": tls_server_name,
+                        "insecure": tls_insecure
                     }));
                 }
                 "vless" | "vmess" | "trojan" => {
                     if port == 443 || port == 8443 || port == 2053 {
                         obj.insert("tls".to_string(), serde_json::json!({
                             "enabled": true,
-                            "server_name": server,
-                            "insecure": false
+                            "server_name": tls_server_name,
+                            "insecure": tls_insecure
                         }));
                     }
                 }
                 _ => {}
+            }
+        }
+
+        if node_type == "anytls" {
+            for key in ["sni", "servername", "skip-cert-verify", "udp"] {
+                obj.remove(key);
             }
         }
 
@@ -3731,6 +3748,52 @@ mod tests {
             Some(true)
         );
         assert!(outbound.get("tls").and_then(|value| value.get("insecure")).is_none());
+    }
+
+    #[test]
+    fn node_for_singbox_adds_tls_to_anytls() {
+        let node = serde_json::json!({
+            "type": "anytls",
+            "tag": "AnyTLS",
+            "server": "204.136.11.104",
+            "server_port": 31424,
+            "password": "secret",
+            "sni": "anyway.example.com",
+            "skip-cert-verify": true,
+            "udp": true
+        });
+        let mut bridge_specs = Vec::new();
+
+        let outbound = node_for_singbox_with_plugin_bridge(&node, &mut bridge_specs);
+
+        assert_eq!(
+            outbound.get("type").and_then(|value| value.as_str()),
+            Some("anytls")
+        );
+        assert_eq!(
+            outbound
+                .get("tls")
+                .and_then(|value| value.get("enabled"))
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            outbound
+                .get("tls")
+                .and_then(|value| value.get("server_name"))
+                .and_then(|value| value.as_str()),
+            Some("anyway.example.com")
+        );
+        assert_eq!(
+            outbound
+                .get("tls")
+                .and_then(|value| value.get("insecure"))
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert!(outbound.get("sni").is_none());
+        assert!(outbound.get("skip-cert-verify").is_none());
+        assert!(outbound.get("udp").is_none());
     }
 
     #[test]
