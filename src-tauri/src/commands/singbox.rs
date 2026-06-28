@@ -2001,7 +2001,8 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
         "servers": dns_servers,
         "rules": dns_rules,
         "final": dns_final,
-        "independent_cache": true
+        "independent_cache": true,
+        "reverse_mapping": true
     });
 
     // 避免 1.13+ 硬错误，始终不生成已弃用 outbound DNS rule item
@@ -2219,6 +2220,7 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
     // ========== 构建路由规则 ==========
     let mut rules: Vec<serde_json::Value> = vec![
         serde_json::json!({ "inbound": "mixed-in", "action": "sniff" }),
+        serde_json::json!({ "inbound": "socks-in", "action": "sniff" }),
         serde_json::json!({
             "type": "logical",
             "mode": "or",
@@ -2966,6 +2968,23 @@ mod tests {
         serde_json::from_str(&content).unwrap()
     }
 
+    fn rule_matches_inbound(rule: &serde_json::Value, tag: &str) -> bool {
+        match rule.get("inbound") {
+            Some(value) if value.as_str() == Some(tag) => true,
+            Some(value) => value
+                .as_array()
+                .is_some_and(|items| items.iter().any(|item| item.as_str() == Some(tag))),
+            None => false,
+        }
+    }
+
+    fn has_sniff_rule_for_inbound(rules: &[serde_json::Value], tag: &str) -> bool {
+        rules.iter().any(|rule| {
+            rule.get("action").and_then(|action| action.as_str()) == Some("sniff")
+                && rule_matches_inbound(rule, tag)
+        })
+    }
+
     #[test]
     fn detects_local_proxy_server_values() {
         assert!(looks_like_local_proxy_server("127.0.0.1:7890"));
@@ -3669,6 +3688,57 @@ mod tests {
         let inbound = fake_dns_rule.get("inbound").and_then(|v| v.as_array()).unwrap();
         assert_eq!(inbound.len(), 1);
         assert_eq!(inbound[0].as_str(), Some("tun-in"));
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn generate_config_preserves_domain_routing_for_non_tun_inbounds() {
+        let data_dir = unique_test_dir("non-tun-domain-routing");
+        let state = AppState::new(data_dir.clone());
+
+        let profiles_data = ProfilesData {
+            profiles: vec![make_profile("profile-a", "Profile A")],
+            active_profile_id: Some("profile-a".to_string()),
+            active_node_tag: Some("node-a".to_string()),
+            node_selections: HashMap::new(),
+        };
+
+        write_json_file(&state.profiles_file(), &profiles_data);
+        write_json_file(&state.configs_dir().join("profile-a.json"), &vec![make_node("node-a")]);
+        *state.custom_rules.lock().await = CustomRules {
+            domain_rules: vec![DomainRule {
+                id: "rule-direct".to_string(),
+                name: "direct example".to_string(),
+                rule_type: "domain_suffix".to_string(),
+                value: "example.com".to_string(),
+                outbound_mode: "direct".to_string(),
+                outbound_value: None,
+                enabled: true,
+            }],
+        };
+
+        let result = generate_config(&state).await.unwrap();
+        assert!(result.success);
+
+        let config = read_generated_config(&state);
+        let inbounds = config["inbounds"].as_array().unwrap();
+        assert!(inbounds.iter().all(|inbound| {
+            inbound.get("tag").and_then(|tag| tag.as_str()) != Some("tun-in")
+        }));
+
+        assert_eq!(config["dns"].get("reverse_mapping").and_then(|value| value.as_bool()), Some(true));
+
+        let route_rules = config["route"]["rules"].as_array().unwrap();
+        assert!(has_sniff_rule_for_inbound(route_rules, "mixed-in"));
+        assert!(has_sniff_rule_for_inbound(route_rules, "socks-in"));
+
+        assert!(route_rules.iter().any(|rule| {
+            rule.get("domain_suffix")
+                .and_then(|value| value.as_array())
+                .is_some_and(|domains| domains.iter().any(|domain| domain.as_str() == Some("example.com")))
+                && rule.get("outbound").and_then(|value| value.as_str()) == Some("direct")
+        }));
 
         let _ = fs::remove_dir_all(data_dir);
     }
