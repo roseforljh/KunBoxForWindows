@@ -1,5 +1,5 @@
 // Mock API for browser-only environments (dev/QA testing without Tauri/Electron)
-import type { AppSettings, Profile, SingBoxOutbound, TrafficStats, LogEntry, DomainRule, CustomRules, NodeWithProfile, NodeLatencyResult } from './types'
+import type { AppSettings, Profile, SingBoxOutbound, TrafficStats, LogEntry, DomainRule, CustomRules, NodeWithProfile, NodeLatencyResult, HealthEvent } from './types'
 
 const noop = () => {}
 const noopUnlisten = () => noop
@@ -20,6 +20,9 @@ const defaultSettings: AppSettings = {
   defaultRule: 'proxy',
   latencyTestUrl: 'https://www.gstatic.com/generate_204',
   latencyTestTimeout: 3000,
+  healthMonitorEnabled: true,
+  mainNodeAutoFailover: false,
+  healthProbeIntervalSec: 15,
   autoConnect: false,
   minimizeToTray: true,
   startWithWindows: false,
@@ -77,6 +80,7 @@ export const mockApi = {
     testSelectorLatency: (_selectorTag: string, _testUrl?: string) =>
       Promise.resolve({ success: true, selector: _selectorTag, total: 5, tested: 5, timeout: 0 }),
     onSelectorSwitch: (_callback: (data: any) => void) => noopUnlisten(),
+    onHealthEvent: (_callback: (data: HealthEvent) => void) => noopUnlisten(),
   },
 
   tray: {

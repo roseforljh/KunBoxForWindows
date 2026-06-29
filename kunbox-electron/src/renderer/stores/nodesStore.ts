@@ -1,10 +1,11 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import type { SingBoxOutbound, NodeWithProfile, NodeLatencyResult, NodeLatencyStatus } from '@shared/types'
+import type { SingBoxOutbound, NodeWithProfile, NodeLatencyResult, NodeLatencyStatus, HealthStatus } from '@shared/types'
 
 interface NodeItem extends SingBoxOutbound {
   latencyMs?: number | null
   latencyStatus?: NodeLatencyStatus
+  healthStatus?: HealthStatus
   isTimeout?: boolean
   isTesting?: boolean
 }
@@ -12,6 +13,7 @@ interface NodeItem extends SingBoxOutbound {
 interface AllNodeItem extends NodeWithProfile {
   latencyMs?: number | null
   latencyStatus?: NodeLatencyStatus
+  healthStatus?: HealthStatus
   isTimeout?: boolean
 }
 
@@ -82,9 +84,11 @@ interface NodesState {
   testTotal: number
   latencyCache: LatencyCache
   nodeSelections: Record<string, string>
+  nodeHealth: Record<string, HealthStatus>
 
   setNodes: (nodes: SingBoxOutbound[]) => Promise<void>
   setActiveNode: (tag: string | null) => void
+  setNodeHealth: (tag: string, status: HealthStatus) => void
   setSearchText: (text: string) => void
   setSortMode: (mode: NodesState['sortMode']) => void
   setNodeFilter: (filter: NodeFilter) => void
@@ -117,28 +121,47 @@ export const useNodesStore = create<NodesState>()(
       testTotal: 0,
       latencyCache: {},
       nodeSelections: {},
+      nodeHealth: {},
 
       setNodes: async (nodes: SingBoxOutbound[]) => {
-        const { latencyCache } = get()
+        const { latencyCache, nodeHealth } = get()
         const now = Date.now()
         const activeProfileId = await window.api.profile.getActive()
         
         const nodesWithLatency = nodes.map((n: SingBoxOutbound) => {
           const cacheKey = activeProfileId && n.tag ? `${activeProfileId}::${n.tag}` : null
           const cached = cacheKey ? latencyCache[cacheKey] : null
+          const healthStatus = n.tag ? nodeHealth[n.tag] : undefined
           if (isUsableCachedLatency(cached, now)) {
             return {
               ...n,
               latencyMs: cached.latencyMs,
               latencyStatus: cached.latencyStatus,
+              healthStatus,
               isTimeout: cached.isTimeout,
             }
           }
-          return { ...n }
+          return { ...n, healthStatus }
         })
         set({ nodes: nodesWithLatency })
       },
       setActiveNode: (tag: string | null) => set({ activeNodeTag: tag }),
+      setNodeHealth: (tag: string, status: HealthStatus) => {
+        set((state: NodesState) => ({
+          nodeHealth: {
+            ...state.nodeHealth,
+            [tag]: status
+          },
+          nodes: state.nodes.map((node) => node.tag === tag
+            ? { ...node, healthStatus: status }
+            : node
+          ),
+          allNodes: state.allNodes.map((node) => node.tag === tag
+            ? { ...node, healthStatus: status }
+            : node
+          )
+        }))
+      },
       setSearchText: (text: string) => set({ searchText: text }),
       setSortMode: (mode: NodesState['sortMode']) => set({ sortMode: mode }),
       setNodeFilter: (filter: NodeFilter) => set({ nodeFilter: filter }),
@@ -342,7 +365,7 @@ export const useNodesStore = create<NodesState>()(
         const nodes = await window.api.node.list()
         const activeProfileId = await window.api.profile.getActive()
         const backendActiveNodeTag = await window.api.node.getActive()
-        const { activeNodeTag, latencyCache } = get()
+        const { activeNodeTag, latencyCache, nodeHealth } = get()
         const now = Date.now()
 
         const newCache = { ...latencyCache }
@@ -357,15 +380,17 @@ export const useNodesStore = create<NodesState>()(
         const nodesWithLatency = nodes.map((n: SingBoxOutbound) => {
           const cacheKey = activeProfileId && n.tag ? `${activeProfileId}::${n.tag}` : null
           const cached = cacheKey ? newCache[cacheKey] : null
+          const healthStatus = n.tag ? nodeHealth[n.tag] : undefined
           if (cached) {
             return {
               ...n,
               latencyMs: cached.latencyMs,
               latencyStatus: cached.latencyStatus,
+              healthStatus,
               isTimeout: cached.isTimeout,
             }
           }
-          return { ...n }
+          return { ...n, healthStatus }
         })
 
         const nodeTags = new Set(nodes.map((node) => node.tag).filter(Boolean))
@@ -390,21 +415,23 @@ export const useNodesStore = create<NodesState>()(
 
       loadAllNodes: async () => {
         const allNodes = await window.api.node.listAll()
-        const { latencyCache } = get()
+        const { latencyCache, nodeHealth } = get()
         const now = Date.now()
         
         const nodesWithLatency = allNodes.map((n: NodeWithProfile) => {
           const cacheKey = n.sourceProfileId && n.tag ? `${n.sourceProfileId}::${n.tag}` : null
           const cached = cacheKey ? latencyCache[cacheKey] : null
+          const healthStatus = n.tag ? nodeHealth[n.tag] : undefined
           if (cached && now - cached.timestamp < 3600000) {
             return {
               ...n,
               latencyMs: cached.latencyMs,
               latencyStatus: cached.latencyStatus,
+              healthStatus,
               isTimeout: cached.isTimeout,
             }
           }
-          return { ...n }
+          return { ...n, healthStatus }
         })
         
         set({ allNodes: nodesWithLatency })

@@ -25,6 +25,37 @@ pub struct TrafficStats {
     pub duration: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HealthStatus {
+    Unknown,
+    Healthy,
+    Suspect,
+    Failed,
+    Recovering,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HealthEventKind {
+    SelectorFailedOver,
+    SelectorNoBackup,
+    FixedNodeFailed,
+    MainNodeNeedsManualSwitch,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HealthEvent {
+    pub kind: HealthEventKind,
+    pub selector: Option<String>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub node: Option<String>,
+    pub rule: Option<String>,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Profile {
     pub id: String,
@@ -97,6 +128,18 @@ pub struct AppSettings {
     pub latency_test_url: String,
     #[serde(rename = "latencyTestTimeout")]
     pub latency_test_timeout: u32,
+    #[serde(
+        rename = "healthMonitorEnabled",
+        default = "default_health_monitor_enabled"
+    )]
+    pub health_monitor_enabled: bool,
+    #[serde(rename = "mainNodeAutoFailover", default)]
+    pub main_node_auto_failover: bool,
+    #[serde(
+        rename = "healthProbeIntervalSec",
+        default = "default_health_probe_interval_sec"
+    )]
+    pub health_probe_interval_sec: u64,
     #[serde(rename = "autoConnect")]
     pub auto_connect: bool,
     #[serde(rename = "minimizeToTray")]
@@ -121,6 +164,14 @@ fn default_enable_runtime_logs() -> bool {
     true
 }
 
+fn default_health_monitor_enabled() -> bool {
+    true
+}
+
+fn default_health_probe_interval_sec() -> u64 {
+    15
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -139,6 +190,9 @@ impl Default for AppSettings {
             default_rule: "proxy".to_string(),
             latency_test_url: "https://www.gstatic.com/generate_204".to_string(),
             latency_test_timeout: 5000,
+            health_monitor_enabled: true,
+            main_node_auto_failover: false,
+            health_probe_interval_sec: 15,
             auto_connect: false,
             minimize_to_tray: true,
             start_with_windows: false,
@@ -192,15 +246,27 @@ pub struct CommandResult {
 
 impl CommandResult {
     pub fn ok() -> Self {
-        Self { success: true, error: None, warning: None }
+        Self {
+            success: true,
+            error: None,
+            warning: None,
+        }
     }
 
     pub fn ok_with_warning(msg: impl Into<String>) -> Self {
-        Self { success: true, error: None, warning: Some(msg.into()) }
+        Self {
+            success: true,
+            error: None,
+            warning: Some(msg.into()),
+        }
     }
 
     pub fn err(msg: impl Into<String>) -> Self {
-        Self { success: false, error: Some(msg.into()), warning: None }
+        Self {
+            success: false,
+            error: Some(msg.into()),
+            warning: None,
+        }
     }
 }
 

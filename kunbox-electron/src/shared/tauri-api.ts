@@ -1,7 +1,7 @@
 // Tauri API adapter - provides the same interface as Electron's window.api
 import { invoke } from '@tauri-apps/api/core';
 import { listen, emit } from '@tauri-apps/api/event';
-import type { AppSettings, Profile, SingBoxOutbound, ProxyState, TrafficStats, LogEntry, DomainRule, CustomRules, NodeWithProfile, NodeLatencyResult } from './types';
+import type { AppSettings, Profile, SingBoxOutbound, ProxyState, TrafficStats, LogEntry, DomainRule, CustomRules, NodeWithProfile, NodeLatencyResult, HealthEvent } from './types';
 
 function bindUnlisten(unlistenPromise: Promise<() => void>) {
   let cancelled = false;
@@ -65,6 +65,12 @@ export const api = {
     }> => invoke('singbox_test_selector_latency', { selectorTag, testUrl }),
     onSelectorSwitch: (callback: (data: { selector: string; node: string; delay: number; stage: 'first' | 'final' }) => void) => {
       const unlisten = listen<{ selector: string; node: string; delay: number; stage: 'first' | 'final' }>('singbox:selector-switch', (event) => {
+        callback(event.payload);
+      });
+      return bindUnlisten(unlisten);
+    },
+    onHealthEvent: (callback: (data: HealthEvent) => void) => {
+      const unlisten = listen<HealthEvent>('singbox:health', (event) => {
         callback(event.payload);
       });
       return bindUnlisten(unlisten);

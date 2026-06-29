@@ -1,9 +1,10 @@
+use crate::types::{AppSettings, CustomRules, ProfilesData, ProxyState, RuleSet, TrafficStats};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
-use crate::types::{AppSettings, ProfilesData, RuleSet, ProxyState, TrafficStats, CustomRules};
 
+#[derive(Clone)]
 pub struct AppState {
     pub data_dir: PathBuf,
     pub config_dir: PathBuf,
@@ -17,6 +18,7 @@ pub struct AppState {
     pub plugin_processes: Arc<Mutex<Vec<tokio::process::Child>>>,
     pub start_time: Arc<Mutex<Option<u64>>>,
     pub traffic_cancel: Arc<Mutex<Option<CancellationToken>>>,
+    pub health_cancel: Arc<Mutex<Option<CancellationToken>>>,
     pub shutdown_in_progress: Arc<Mutex<bool>>,
     pub lifecycle_lock: Arc<Mutex<()>>,
     pub clash_api_port: Arc<Mutex<u16>>,
@@ -38,6 +40,7 @@ impl AppState {
             plugin_processes: Arc::new(Mutex::new(Vec::new())),
             start_time: Arc::new(Mutex::new(None)),
             traffic_cancel: Arc::new(Mutex::new(None)),
+            health_cancel: Arc::new(Mutex::new(None)),
             shutdown_in_progress: Arc::new(Mutex::new(false)),
             lifecycle_lock: Arc::new(Mutex::new(())),
             clash_api_port: Arc::new(Mutex::new(9090)),
@@ -66,5 +69,26 @@ impl AppState {
 
     pub fn custom_rules_file(&self) -> PathBuf {
         self.data_dir.join("custom_rules.json")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_test_path(name: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("kunbox-state-{}-{}", name, suffix))
+    }
+
+    #[tokio::test]
+    async fn app_state_initializes_empty_health_cancel() {
+        let state = AppState::new(unique_test_path("health-cancel"));
+
+        assert!(state.health_cancel.lock().await.is_none());
     }
 }

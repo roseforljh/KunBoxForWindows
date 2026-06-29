@@ -1,17 +1,20 @@
-use tauri::{AppHandle, Emitter, Manager, State};
+use crate::state::AppState;
+use crate::types::{
+    AppSettings, CommandResult, HealthEvent, HealthEventKind, HealthStatus, ProxyState,
+    TrafficStats,
+};
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use std::fs;
+use std::fs::OpenOptions;
 use std::future::Future;
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::fs::OpenOptions;
-use std::io::Write;
-use futures_util::stream::{FuturesUnordered, StreamExt};
-use tokio::process::Command;
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
-use crate::state::AppState;
-use crate::types::{AppSettings, CommandResult, ProxyState, TrafficStats};
 
 #[cfg(windows)]
 fn decode_windows_output(bytes: &[u8]) -> String {
@@ -65,6 +68,10 @@ const DEFAULT_CLASH_API_PORT: u16 = 9090;
 const KUNBOX_TUN_ALIAS: &str = "kunbox-tun";
 const PLUGIN_BRIDGES_FILE: &str = "plugin-bridges.json";
 const XRAY_PLUGIN_FILENAME: &str = "xray.exe";
+const HEALTH_FAILED_BACKOFF_BASE_MS: i64 = 30_000;
+const HEALTH_FAILED_BACKOFF_MAX_MS: i64 = 300_000;
+const HEALTH_SELECTOR_SWITCH_COOLDOWN_MS: i64 = 60_000;
+const HEALTH_BACKUP_PROBE_LIMIT: usize = 3;
 
 #[cfg(windows)]
 #[derive(Debug, serde::Deserialize)]
@@ -136,7 +143,10 @@ async fn detect_foreign_wintun_aliases() -> Result<Vec<String>, String> {
 
 #[cfg(windows)]
 async fn kill_stray_singbox_processes(state: &AppState) -> Result<(), String> {
-    append_startup_diagnostic(state, "startup cleanup: killing stray sing-box.exe processes");
+    append_startup_diagnostic(
+        state,
+        "startup cleanup: killing stray sing-box.exe processes",
+    );
 
     let output = Command::new("taskkill")
         .args(["/F", "/T", "/IM", "sing-box.exe"])
@@ -146,7 +156,10 @@ async fn kill_stray_singbox_processes(state: &AppState) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     if output.status.success() {
-        append_startup_diagnostic(state, "startup cleanup: stray sing-box.exe processes terminated");
+        append_startup_diagnostic(
+            state,
+            "startup cleanup: stray sing-box.exe processes terminated",
+        );
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         return Ok(());
     }
@@ -156,17 +169,28 @@ async fn kill_stray_singbox_processes(state: &AppState) -> Result<(), String> {
     let combined = if !stderr.is_empty() { stderr } else { stdout };
     let lower = combined.to_lowercase();
 
-    if lower.contains("not found") || lower.contains("没有运行的任务") || lower.contains("没有找到") {
-        append_startup_diagnostic(state, "startup cleanup: no stray sing-box.exe process found");
+    if lower.contains("not found") || lower.contains("没有运行的任务") || lower.contains("没有找到")
+    {
+        append_startup_diagnostic(
+            state,
+            "startup cleanup: no stray sing-box.exe process found",
+        );
         return Ok(());
     }
 
-    append_startup_diagnostic(state, &format!("startup cleanup: taskkill failed: {}", combined));
+    append_startup_diagnostic(
+        state,
+        &format!("startup cleanup: taskkill failed: {}", combined),
+    );
     Err(format!("清理残留 sing-box 进程失败: {}", combined))
 }
 
 fn inbound_listen_addr(settings: &AppSettings) -> &'static str {
-    if settings.allow_lan { "0.0.0.0" } else { "127.0.0.1" }
+    if settings.allow_lan {
+        "0.0.0.0"
+    } else {
+        "127.0.0.1"
+    }
 }
 
 fn reserve_tcp_port(listen_addr: &str, port: u16) -> Result<std::net::TcpListener, std::io::Error> {
@@ -187,7 +211,10 @@ async fn reserve_available_tcp_port_avoiding(
     Err("无法分配可用本地端口".to_string())
 }
 
-async fn find_available_tcp_port_avoiding(listen_addr: &str, avoid_ports: &[u16]) -> Result<u16, String> {
+async fn find_available_tcp_port_avoiding(
+    listen_addr: &str,
+    avoid_ports: &[u16],
+) -> Result<u16, String> {
     let (port, listener) = reserve_available_tcp_port_avoiding(listen_addr, avoid_ports).await?;
     drop(listener);
     Ok(port)
@@ -209,11 +236,15 @@ async fn resolve_available_inbound_ports(
         Ok(listener) => reservations.push(listener),
         Err(err) => {
             let old_port = settings.local_port;
-            let (fallback, listener) = reserve_available_tcp_port_avoiding(listen_addr, &[settings.socks_port]).await?;
-            append_startup_diagnostic(state, &format!(
-                "mixed-in port {} unavailable ({}), using fallback port {}",
-                old_port, err, fallback
-            ));
+            let (fallback, listener) =
+                reserve_available_tcp_port_avoiding(listen_addr, &[settings.socks_port]).await?;
+            append_startup_diagnostic(
+                state,
+                &format!(
+                    "mixed-in port {} unavailable ({}), using fallback port {}",
+                    old_port, err, fallback
+                ),
+            );
             settings.local_port = fallback;
             reservations.push(listener);
             changed = true;
@@ -230,11 +261,15 @@ async fn resolve_available_inbound_ports(
         Ok(listener) => reservations.push(listener),
         Err(err) => {
             let old_port = settings.socks_port;
-            let (fallback, listener) = reserve_available_tcp_port_avoiding(listen_addr, &[settings.local_port]).await?;
-            append_startup_diagnostic(state, &format!(
-                "socks-in port {} unavailable ({}), using fallback port {}",
-                old_port, err, fallback
-            ));
+            let (fallback, listener) =
+                reserve_available_tcp_port_avoiding(listen_addr, &[settings.local_port]).await?;
+            append_startup_diagnostic(
+                state,
+                &format!(
+                    "socks-in port {} unavailable ({}), using fallback port {}",
+                    old_port, err, fallback
+                ),
+            );
             settings.socks_port = fallback;
             reservations.push(listener);
             changed = true;
@@ -251,8 +286,11 @@ fn write_settings_file(state: &AppState, settings: &AppSettings) -> Result<(), S
 }
 
 async fn allocate_clash_api_port(state: &AppState) -> Result<u16, String> {
-    let default_port_available = std::net::TcpListener::bind(("127.0.0.1", DEFAULT_CLASH_API_PORT)).is_ok();
-    let port = if !default_port_available || crate::commands::profiles::check_clash_api_running(DEFAULT_CLASH_API_PORT).await {
+    let default_port_available =
+        std::net::TcpListener::bind(("127.0.0.1", DEFAULT_CLASH_API_PORT)).is_ok();
+    let port = if !default_port_available
+        || crate::commands::profiles::check_clash_api_running(DEFAULT_CLASH_API_PORT).await
+    {
         find_available_tcp_port().await?
     } else {
         DEFAULT_CLASH_API_PORT
@@ -274,8 +312,8 @@ fn build_foreign_wintun_warning(aliases: &[String]) -> String {
 
 #[cfg(windows)]
 fn is_running_as_admin() -> bool {
-    use std::process::Command as StdCommand;
     use std::os::windows::process::CommandExt;
+    use std::process::Command as StdCommand;
 
     let output = StdCommand::new("net")
         .args(["session"])
@@ -293,22 +331,34 @@ fn is_running_as_admin() -> bool {
     false
 }
 
-pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Result<CommandResult, String> {
+pub(crate) async fn singbox_start_impl(
+    app: AppHandle,
+    state: &AppState,
+) -> Result<CommandResult, String> {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
     append_startup_diagnostic(state, "singbox_start invoked");
+    cancel_health_monitor(state.health_cancel.clone()).await;
     let singbox_path = get_singbox_path(&app)?;
-    append_startup_diagnostic(state, &format!("resolved sing-box path: {:?}", singbox_path));
+    append_startup_diagnostic(
+        state,
+        &format!("resolved sing-box path: {:?}", singbox_path),
+    );
 
     #[cfg(windows)]
     {
-        append_startup_diagnostic(state, "checking for stale proxy configuration before startup");
+        append_startup_diagnostic(
+            state,
+            "checking for stale proxy configuration before startup",
+        );
         repair_stale_proxy_if_needed(state).await?;
         append_startup_diagnostic(state, "stale proxy repair check completed");
     }
-    
+
     if !singbox_path.exists() {
         append_startup_diagnostic(state, "sing-box kernel missing on startup");
-        return Ok(CommandResult::err("未检测到 sing-box 内核，请先到【设置 → 内核】下载并安装后再启动 VPN。"));
+        return Ok(CommandResult::err(
+            "未检测到 sing-box 内核，请先到【设置 → 内核】下载并安装后再启动 VPN。",
+        ));
     }
 
     // Check if TUN mode is enabled and admin rights are required
@@ -319,14 +369,17 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
         state,
         &format!(
             "startup connect settings: tun_enabled={}, system_proxy={}, local_port={}",
-            settings.tun_enabled,
-            settings.system_proxy,
-            settings.local_port,
+            settings.tun_enabled, settings.system_proxy, settings.local_port,
         ),
     );
     if settings.tun_enabled && !is_running_as_admin() {
-        append_startup_diagnostic(state, "startup blocked because TUN mode requires admin privileges");
-        return Ok(CommandResult::err("TUN 模式需要管理员权限。请右键点击应用图标，选择「以管理员身份运行」后重试。"));
+        append_startup_diagnostic(
+            state,
+            "startup blocked because TUN mode requires admin privileges",
+        );
+        return Ok(CommandResult::err(
+            "TUN 模式需要管理员权限。请右键点击应用图标，选择「以管理员身份运行」后重试。",
+        ));
     }
 
     #[cfg(windows)]
@@ -341,12 +394,15 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
                 state,
                 &format!("startup degraded to non-TUN mode because foreign wintun adapters are active: {}", foreign_wintun_aliases.join(", ")),
             );
-            let _ = app.emit("singbox:log", serde_json::json!({
-                "timestamp": chrono::Utc::now().timestamp_millis(),
-                "level": "warn",
-                "tag": "sing-box",
-                "message": warning,
-            }));
+            let _ = app.emit(
+                "singbox:log",
+                serde_json::json!({
+                    "timestamp": chrono::Utc::now().timestamp_millis(),
+                    "level": "warn",
+                    "tag": "sing-box",
+                    "message": warning,
+                }),
+            );
         }
     }
 
@@ -361,7 +417,8 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
     #[cfg(windows)]
     kill_stray_singbox_processes(state).await?;
 
-    let (ports_changed, inbound_port_reservations) = resolve_available_inbound_ports(state, &mut effective_settings).await?;
+    let (ports_changed, inbound_port_reservations) =
+        resolve_available_inbound_ports(state, &mut effective_settings).await?;
     if ports_changed {
         let persisted_settings = {
             let locked = state.settings.lock().await;
@@ -380,15 +437,21 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
             Some(existing) => format!("{}\n{}", existing, port_warning),
             None => port_warning,
         });
-        append_startup_diagnostic(state, &format!(
-            "persisted auto-selected inbound ports: mixed-in={}, socks-in={}",
-            effective_settings.local_port, effective_settings.socks_port
-        ));
+        append_startup_diagnostic(
+            state,
+            &format!(
+                "persisted auto-selected inbound ports: mixed-in={}, socks-in={}",
+                effective_settings.local_port, effective_settings.socks_port
+            ),
+        );
     }
 
     // Generate config
     let clash_api_port = allocate_clash_api_port(state).await?;
-    append_startup_diagnostic(state, &format!("selected clash api port: {}", clash_api_port));
+    append_startup_diagnostic(
+        state,
+        &format!("selected clash api port: {}", clash_api_port),
+    );
     let config_result = generate_config_with_settings(&state, &effective_settings).await?;
     if !config_result.success {
         return Ok(config_result);
@@ -401,7 +464,8 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
 
     let config_path = state.config_dir.join("config.json");
 
-    let config_path_str = config_path.to_str()
+    let config_path_str = config_path
+        .to_str()
         .ok_or_else(|| "Config path contains invalid UTF-8 characters".to_string())?;
 
     #[cfg(windows)]
@@ -437,7 +501,10 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
         let stderr = decode_windows_output(&check_output.stderr);
         let stdout = decode_windows_output(&check_output.stdout);
         let detail = if !stderr.is_empty() { stderr } else { stdout };
-        append_startup_diagnostic(state, &format!("sing-box preflight check failed: {}", detail));
+        append_startup_diagnostic(
+            state,
+            &format!("sing-box preflight check failed: {}", detail),
+        );
         let message = if detail.is_empty() {
             "内核配置检查失败，请检查节点与DNS设置".to_string()
         } else {
@@ -500,12 +567,15 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
                 }
                 let enable_runtime_logs = settings_ref.lock().await.enable_runtime_logs;
                 if enable_runtime_logs {
-                    let _ = app_clone.emit("singbox:log", serde_json::json!({
-                        "timestamp": chrono::Utc::now().timestamp_millis(),
-                        "level": "info",
-                        "tag": "sing-box",
-                        "message": line
-                    }));
+                    let _ = app_clone.emit(
+                        "singbox:log",
+                        serde_json::json!({
+                            "timestamp": chrono::Utc::now().timestamp_millis(),
+                            "level": "info",
+                            "tag": "sing-box",
+                            "message": line
+                        }),
+                    );
                 }
             }
         });
@@ -526,6 +596,7 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
     let start_time_state = state.start_time.clone();
     let process_slot = state.singbox_process.clone();
     let traffic_cancel = state.traffic_cancel.clone();
+    let health_cancel = state.health_cancel.clone();
     let shutdown_in_progress = state.shutdown_in_progress.clone();
     tokio::spawn(async move {
         // Poll the child process by periodically checking if it has exited.
@@ -550,12 +621,18 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
 
                             let current_state = proxy_state.lock().await.clone();
                             let shutting_down = *shutdown_in_progress.lock().await;
-                            if !shutting_down && !matches!(current_state, ProxyState::Idle | ProxyState::Disconnecting) {
+                            if !shutting_down
+                                && !matches!(
+                                    current_state,
+                                    ProxyState::Idle | ProxyState::Disconnecting
+                                )
+                            {
                                 *proxy_state.lock().await = ProxyState::Error;
                                 *start_time_state.lock().await = None;
                                 if let Some(cancel) = traffic_cancel.lock().await.take() {
                                     cancel.cancel();
                                 }
+                                cancel_health_monitor(health_cancel.clone()).await;
                                 let _ = disable_system_proxy_for_state_on_crash(&wait_app).await;
                                 let _ = wait_app.emit("singbox:state", "error");
                                 let _ = wait_app.emit("singbox:log", serde_json::json!({
@@ -577,12 +654,18 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
 
                             let current_state = proxy_state.lock().await.clone();
                             let shutting_down = *shutdown_in_progress.lock().await;
-                            if !shutting_down && !matches!(current_state, ProxyState::Idle | ProxyState::Disconnecting) {
+                            if !shutting_down
+                                && !matches!(
+                                    current_state,
+                                    ProxyState::Idle | ProxyState::Disconnecting
+                                )
+                            {
                                 *proxy_state.lock().await = ProxyState::Error;
                                 *start_time_state.lock().await = None;
                                 if let Some(cancel) = traffic_cancel.lock().await.take() {
                                     cancel.cancel();
                                 }
+                                cancel_health_monitor(health_cancel.clone()).await;
                                 let _ = disable_system_proxy_for_state_on_crash(&wait_app).await;
                                 let _ = wait_app.emit("singbox:state", "error");
                             }
@@ -597,17 +680,28 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
     let mut clash_api_ready = false;
     for _ in 0..20 {
         let startup_detail = startup_error_message.lock().await.clone();
-        if startup_detail.as_deref().is_some_and(|detail| !detail.trim().is_empty()) {
+        if startup_detail
+            .as_deref()
+            .is_some_and(|detail| !detail.trim().is_empty())
+        {
             if let Some(mut child) = state.singbox_process.lock().await.take() {
                 let _ = child.kill().await;
                 let _ = child.wait().await;
             }
-        stop_plugin_bridges(state).await;
+            stop_plugin_bridges(state).await;
             *state.proxy_state.lock().await = ProxyState::Error;
             *state.start_time.lock().await = None;
-            append_startup_diagnostic(state, &format!("fatal startup error detected before Clash API ready: {}", startup_detail.clone().unwrap_or_default()));
+            append_startup_diagnostic(
+                state,
+                &format!(
+                    "fatal startup error detected before Clash API ready: {}",
+                    startup_detail.clone().unwrap_or_default()
+                ),
+            );
             let _ = app.emit("singbox:state", "error");
-            return Ok(CommandResult::err(format_startup_failure_message(startup_detail)));
+            return Ok(CommandResult::err(format_startup_failure_message(
+                startup_detail,
+            )));
         }
 
         if crate::commands::profiles::check_clash_api_running(clash_api_port).await {
@@ -622,7 +716,7 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
             let _ = child.kill().await;
             let _ = child.wait().await;
         }
-            stop_plugin_bridges(state).await;
+        stop_plugin_bridges(state).await;
         *state.proxy_state.lock().await = ProxyState::Error;
         *state.start_time.lock().await = None;
         append_startup_diagnostic(state, "main Clash API not ready in time");
@@ -633,7 +727,7 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
     }
 
     *state.proxy_state.lock().await = ProxyState::Connected;
-    
+
     let _ = app.emit("singbox:state", "connected");
 
     // 连接成功后，后台自动测试 profile selector 延迟并切换
@@ -644,8 +738,18 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
             // 给 Clash API 一点准备时间
             tokio::time::sleep(std::time::Duration::from_millis(800)).await;
             for selector_tag in selector_tags {
-                if let Err(err) = test_selector_latency_internal(&app_for_selector_test, selector_tag.clone(), None).await {
-                    log::warn!("Auto selector latency test failed for '{}': {}", selector_tag, err);
+                if let Err(err) = test_selector_latency_internal(
+                    &app_for_selector_test,
+                    selector_tag.clone(),
+                    None,
+                )
+                .await
+                {
+                    log::warn!(
+                        "Auto selector latency test failed for '{}': {}",
+                        selector_tag,
+                        err
+                    );
                 }
             }
         });
@@ -658,15 +762,35 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
     let app_for_traffic = app.clone();
     let traffic_stats = state.traffic_stats.clone();
     tokio::spawn(async move {
-        start_traffic_polling(app_for_traffic, clash_api_port, traffic_stats, start_time_val, cancel_token).await;
+        start_traffic_polling(
+            app_for_traffic,
+            clash_api_port,
+            traffic_stats,
+            start_time_val,
+            cancel_token,
+        )
+        .await;
     });
+
+    if effective_settings.health_monitor_enabled {
+        start_health_monitor(app.clone(), state, effective_settings.clone()).await;
+    }
 
     // Enable system proxy
     if effective_settings.system_proxy {
-        append_startup_diagnostic(state, &format!("enabling system proxy on port {}", effective_settings.local_port));
+        append_startup_diagnostic(
+            state,
+            &format!(
+                "enabling system proxy on port {}",
+                effective_settings.local_port
+            ),
+        );
         let _ = enable_system_proxy_for_state(state, effective_settings.local_port).await;
     } else {
-        append_startup_diagnostic(state, "system proxy disabled in settings, skipping enable step");
+        append_startup_diagnostic(
+            state,
+            "system proxy disabled in settings, skipping enable step",
+        );
     }
 
     append_startup_diagnostic(state, "singbox_start finished successfully");
@@ -676,7 +800,10 @@ pub(crate) async fn singbox_start_impl(app: AppHandle, state: &AppState) -> Resu
     })
 }
 
-pub(crate) async fn singbox_stop_impl(app: AppHandle, state: &AppState) -> Result<CommandResult, String> {
+pub(crate) async fn singbox_stop_impl(
+    app: AppHandle,
+    state: &AppState,
+) -> Result<CommandResult, String> {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
     append_startup_diagnostic(state, "singbox_stop invoked");
     *state.shutdown_in_progress.lock().await = true;
@@ -685,7 +812,8 @@ pub(crate) async fn singbox_stop_impl(app: AppHandle, state: &AppState) -> Resul
     if let Some(cancel) = state.traffic_cancel.lock().await.take() {
         cancel.cancel();
     }
-    
+    cancel_health_monitor(state.health_cancel.clone()).await;
+
     *state.proxy_state.lock().await = ProxyState::Disconnecting;
     let _ = app.emit("singbox:state", "disconnecting");
 
@@ -693,7 +821,10 @@ pub(crate) async fn singbox_stop_impl(app: AppHandle, state: &AppState) -> Resul
     if let Some(mut child) = state.singbox_process.lock().await.take() {
         match child.try_wait() {
             Ok(Some(status)) => {
-                append_startup_diagnostic(state, &format!("singbox_stop: child already exited with status {}", status));
+                append_startup_diagnostic(
+                    state,
+                    &format!("singbox_stop: child already exited with status {}", status),
+                );
             }
             Ok(None) => {
                 child.kill().await.map_err(|e| {
@@ -704,7 +835,10 @@ pub(crate) async fn singbox_stop_impl(app: AppHandle, state: &AppState) -> Resul
                     append_startup_diagnostic(state, &format!("singbox_stop: wait failed: {}", e));
                     e.to_string()
                 })?;
-                append_startup_diagnostic(state, "singbox_stop: child killed and waited successfully");
+                append_startup_diagnostic(
+                    state,
+                    "singbox_stop: child killed and waited successfully",
+                );
             }
             Err(e) => {
                 append_startup_diagnostic(state, &format!("singbox_stop: try_wait failed: {}", e));
@@ -722,7 +856,8 @@ pub(crate) async fn singbox_stop_impl(app: AppHandle, state: &AppState) -> Resul
     #[cfg(windows)]
     let _ = write_proxy_session_marker(state, ProxySessionFlag::Cleaning);
 
-    let cleanup_result = disable_system_proxy_for_state(state, ProxyCleanupMode::RestoreSnapshot).await;
+    let cleanup_result =
+        disable_system_proxy_for_state(state, ProxyCleanupMode::RestoreSnapshot).await;
     if cleanup_result.is_err() {
         let _ = disable_system_proxy_for_state(state, ProxyCleanupMode::ForceClear).await;
     }
@@ -743,17 +878,26 @@ pub(crate) async fn singbox_stop_impl(app: AppHandle, state: &AppState) -> Resul
 }
 
 #[tauri::command]
-pub async fn singbox_start(app: AppHandle, state: State<'_, AppState>) -> Result<CommandResult, String> {
+pub async fn singbox_start(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<CommandResult, String> {
     singbox_start_impl(app, &state).await
 }
 
 #[tauri::command]
-pub async fn singbox_stop(app: AppHandle, state: State<'_, AppState>) -> Result<CommandResult, String> {
+pub async fn singbox_stop(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<CommandResult, String> {
     singbox_stop_impl(app, &state).await
 }
 
 #[tauri::command]
-pub async fn singbox_restart(app: AppHandle, state: State<'_, AppState>) -> Result<CommandResult, String> {
+pub async fn singbox_restart(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<CommandResult, String> {
     singbox_stop(app.clone(), state.clone()).await?;
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     singbox_start(app, state).await
@@ -763,7 +907,7 @@ pub async fn singbox_restart(app: AppHandle, state: State<'_, AppState>) -> Resu
 pub async fn singbox_get_status(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let proxy_state = state.proxy_state.lock().await.clone();
     let start_time = state.start_time.lock().await.clone();
-    
+
     Ok(serde_json::json!({
         "state": proxy_state,
         "startTime": start_time
@@ -771,7 +915,11 @@ pub async fn singbox_get_status(state: State<'_, AppState>) -> Result<serde_json
 }
 
 #[tauri::command]
-pub async fn singbox_switch_node(app: AppHandle, state: State<'_, AppState>, node_tag: String) -> Result<CommandResult, String> {
+pub async fn singbox_switch_node(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    node_tag: String,
+) -> Result<CommandResult, String> {
     let mut profiles_data = load_profiles_data_from_file(&state).await;
     let active_profile_id = match profiles_data.active_profile_id.clone() {
         Some(id) => id,
@@ -780,7 +928,8 @@ pub async fn singbox_switch_node(app: AppHandle, state: State<'_, AppState>, nod
     let previous_active_node_tag = profiles_data.active_node_tag.clone();
 
     profiles_data.active_node_tag = Some(node_tag.clone());
-    let profiles_content = serde_json::to_string_pretty(&profiles_data).map_err(|e| e.to_string())?;
+    let profiles_content =
+        serde_json::to_string_pretty(&profiles_data).map_err(|e| e.to_string())?;
     fs::write(state.profiles_file(), profiles_content).map_err(|e| e.to_string())?;
     *state.profiles_data.lock().await = profiles_data;
 
@@ -797,8 +946,12 @@ pub async fn singbox_switch_node(app: AppHandle, state: State<'_, AppState>, nod
         Vec::new()
     };
 
-    let previous_signature = node_bootstrap_signature(active_or_first_node(&raw_nodes, previous_active_node_tag.as_deref()));
-    let target_signature = node_bootstrap_signature(active_or_first_node(&raw_nodes, Some(&node_tag)));
+    let previous_signature = node_bootstrap_signature(active_or_first_node(
+        &raw_nodes,
+        previous_active_node_tag.as_deref(),
+    ));
+    let target_signature =
+        node_bootstrap_signature(active_or_first_node(&raw_nodes, Some(&node_tag)));
 
     if previous_signature != target_signature {
         return singbox_restart(app, state).await;
@@ -806,7 +959,10 @@ pub async fn singbox_switch_node(app: AppHandle, state: State<'_, AppState>, nod
 
     let client = reqwest::Client::new();
     let res = client
-        .put(format!("http://127.0.0.1:{}/proxies/PROXY", get_clash_api_port(&state).await))
+        .put(format!(
+            "http://127.0.0.1:{}/proxies/PROXY",
+            get_clash_api_port(&state).await
+        ))
         .json(&serde_json::json!({ "name": node_tag }))
         .send()
         .await
@@ -834,11 +990,22 @@ pub async fn singbox_disable_system_proxy() -> Result<CommandResult, String> {
 
 /// 判断节点类型是否是代理类型
 pub(crate) fn is_proxy_type(node_type: &str) -> bool {
-    matches!(node_type,
-        "shadowsocks" | "vmess" | "vless" | "trojan" |
-        "hysteria" | "hysteria2" | "tuic" | "anytls" |
-        "http" | "socks" | "wireguard" | "ssh" | "shadowtls" |
-        "naive"
+    matches!(
+        node_type,
+        "shadowsocks"
+            | "vmess"
+            | "vless"
+            | "trojan"
+            | "hysteria"
+            | "hysteria2"
+            | "tuic"
+            | "anytls"
+            | "http"
+            | "socks"
+            | "wireguard"
+            | "ssh"
+            | "shadowtls"
+            | "naive"
     )
 }
 
@@ -848,12 +1015,21 @@ fn sanitize_naive_tls(obj: &mut serde_json::Map<String, serde_json::Value>, serv
         .and_then(|value| value.as_object().cloned())
         .unwrap_or_default();
 
-    let allowed_keys = ["enabled", "server_name", "certificate", "certificate_path", "ech"];
+    let allowed_keys = [
+        "enabled",
+        "server_name",
+        "certificate",
+        "certificate_path",
+        "ech",
+    ];
     tls.retain(|key, _| allowed_keys.contains(&key.as_str()));
     tls.insert("enabled".to_string(), serde_json::Value::Bool(true));
 
     if !server.is_empty() && !tls.contains_key("server_name") {
-        tls.insert("server_name".to_string(), serde_json::Value::String(server.to_string()));
+        tls.insert(
+            "server_name".to_string(),
+            serde_json::Value::String(server.to_string()),
+        );
     }
 
     obj.insert("tls".to_string(), serde_json::Value::Object(tls));
@@ -936,14 +1112,20 @@ fn config_value_has_outbound_type(config: &serde_json::Value, outbound_type: &st
         })
 }
 
-fn config_file_has_outbound_type(config_path: &std::path::Path, outbound_type: &str) -> Result<bool, String> {
+fn config_file_has_outbound_type(
+    config_path: &std::path::Path,
+    outbound_type: &str,
+) -> Result<bool, String> {
     let content = fs::read_to_string(config_path).map_err(|e| e.to_string())?;
     let config: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
     Ok(config_value_has_outbound_type(&config, outbound_type))
 }
 
 #[cfg(windows)]
-fn support_file_available_for_executable(executable_path: &std::path::Path, filename: &str) -> bool {
+fn support_file_available_for_executable(
+    executable_path: &std::path::Path,
+    filename: &str,
+) -> bool {
     if executable_path
         .parent()
         .is_some_and(|dir| dir.join(filename).exists())
@@ -960,8 +1142,16 @@ fn support_file_available_for_executable(executable_path: &std::path::Path, file
 fn process_node(node: &serde_json::Value) -> serde_json::Value {
     let mut node = node.clone();
     if let Some(obj) = node.as_object_mut() {
-        let node_type = obj.get("type").and_then(|t| t.as_str()).unwrap_or("").to_string();
-        let server = obj.get("server").and_then(|s| s.as_str()).unwrap_or("").to_string();
+        let node_type = obj
+            .get("type")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .to_string();
+        let server = obj
+            .get("server")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string();
         let port = obj.get("server_port").and_then(|p| p.as_u64()).unwrap_or(0);
         let tls_insecure = obj
             .get("skip-cert-verify")
@@ -984,19 +1174,25 @@ fn process_node(node: &serde_json::Value) -> serde_json::Value {
                 .unwrap_or_else(|| server.clone());
             match node_type.as_str() {
                 "hysteria2" | "hysteria" | "tuic" | "naive" | "anytls" => {
-                    obj.insert("tls".to_string(), serde_json::json!({
-                        "enabled": true,
-                        "server_name": tls_server_name,
-                        "insecure": tls_insecure
-                    }));
-                }
-                "vless" | "vmess" | "trojan" => {
-                    if port == 443 || port == 8443 || port == 2053 {
-                        obj.insert("tls".to_string(), serde_json::json!({
+                    obj.insert(
+                        "tls".to_string(),
+                        serde_json::json!({
                             "enabled": true,
                             "server_name": tls_server_name,
                             "insecure": tls_insecure
-                        }));
+                        }),
+                    );
+                }
+                "vless" | "vmess" | "trojan" => {
+                    if port == 443 || port == 8443 || port == 2053 {
+                        obj.insert(
+                            "tls".to_string(),
+                            serde_json::json!({
+                                "enabled": true,
+                                "server_name": tls_server_name,
+                                "insecure": tls_insecure
+                            }),
+                        );
                     }
                 }
                 _ => {}
@@ -1010,7 +1206,10 @@ fn process_node(node: &serde_json::Value) -> serde_json::Value {
         }
 
         if node_type == "vless" && !obj.contains_key("packet_encoding") {
-            obj.insert("packet_encoding".to_string(), serde_json::Value::String("xudp".to_string()));
+            obj.insert(
+                "packet_encoding".to_string(),
+                serde_json::Value::String("xudp".to_string()),
+            );
         }
 
         if node_type == "naive" {
@@ -1081,17 +1280,26 @@ pub(crate) fn xray_plugin_path(app: &AppHandle) -> Result<PathBuf, String> {
     }
 
     let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
-    Ok(resource_dir.join("resources").join("libs").join(XRAY_PLUGIN_FILENAME))
+    Ok(resource_dir
+        .join("resources")
+        .join("libs")
+        .join(XRAY_PLUGIN_FILENAME))
 }
 
 fn xray_tls_settings(tls: &serde_json::Value) -> serde_json::Value {
     let mut settings = serde_json::Map::new();
 
     if let Some(server_name) = tls.get("server_name").and_then(|value| value.as_str()) {
-        settings.insert("serverName".to_string(), serde_json::Value::String(server_name.to_string()));
+        settings.insert(
+            "serverName".to_string(),
+            serde_json::Value::String(server_name.to_string()),
+        );
     }
     if let Some(insecure) = tls.get("insecure").and_then(|value| value.as_bool()) {
-        settings.insert("allowInsecure".to_string(), serde_json::Value::Bool(insecure));
+        settings.insert(
+            "allowInsecure".to_string(),
+            serde_json::Value::Bool(insecure),
+        );
     }
     if let Some(alpn) = tls.get("alpn").and_then(|value| value.as_array()) {
         settings.insert("alpn".to_string(), serde_json::Value::Array(alpn.clone()));
@@ -1101,15 +1309,24 @@ fn xray_tls_settings(tls: &serde_json::Value) -> serde_json::Value {
         .and_then(|value| value.get("fingerprint"))
         .and_then(|value| value.as_str())
     {
-        settings.insert("fingerprint".to_string(), serde_json::Value::String(fingerprint.to_string()));
+        settings.insert(
+            "fingerprint".to_string(),
+            serde_json::Value::String(fingerprint.to_string()),
+        );
     }
 
     if let Some(reality) = tls.get("reality").and_then(|value| value.as_object()) {
         if let Some(public_key) = reality.get("public_key").and_then(|value| value.as_str()) {
-            settings.insert("publicKey".to_string(), serde_json::Value::String(public_key.to_string()));
+            settings.insert(
+                "publicKey".to_string(),
+                serde_json::Value::String(public_key.to_string()),
+            );
         }
         if let Some(short_id) = reality.get("short_id").and_then(|value| value.as_str()) {
-            settings.insert("shortId".to_string(), serde_json::Value::String(short_id.to_string()));
+            settings.insert(
+                "shortId".to_string(),
+                serde_json::Value::String(short_id.to_string()),
+            );
         }
     }
 
@@ -1117,8 +1334,7 @@ fn xray_tls_settings(tls: &serde_json::Value) -> serde_json::Value {
 }
 
 fn vless_encryption(node: &serde_json::Value) -> &str {
-    node
-        .get("encryption")
+    node.get("encryption")
         .and_then(|value| value.as_str())
         .filter(|value| !value.is_empty())
         .or_else(|| {
@@ -1139,7 +1355,10 @@ fn xray_stream_settings(node: &serde_json::Value) -> serde_json::Value {
         .and_then(|value| value.get("type"))
         .and_then(|value| value.as_str())
         .unwrap_or("tcp");
-    stream.insert("network".to_string(), serde_json::Value::String(network.to_string()));
+    stream.insert(
+        "network".to_string(),
+        serde_json::Value::String(network.to_string()),
+    );
 
     if network.eq_ignore_ascii_case("xhttp") {
         let mut xhttp = serde_json::Map::new();
@@ -1163,11 +1382,17 @@ fn xray_stream_settings(node: &serde_json::Value) -> serde_json::Value {
                 }
             }
         }
-        stream.insert("xhttpSettings".to_string(), serde_json::Value::Object(xhttp));
+        stream.insert(
+            "xhttpSettings".to_string(),
+            serde_json::Value::Object(xhttp),
+        );
     }
 
     if let Some(tls) = node.get("tls").filter(|value| {
-        value.get("enabled").and_then(|enabled| enabled.as_bool()).unwrap_or(false)
+        value
+            .get("enabled")
+            .and_then(|enabled| enabled.as_bool())
+            .unwrap_or(false)
     }) {
         let security = if tls
             .get("reality")
@@ -1179,26 +1404,48 @@ fn xray_stream_settings(node: &serde_json::Value) -> serde_json::Value {
         } else {
             "tls"
         };
-        stream.insert("security".to_string(), serde_json::Value::String(security.to_string()));
+        stream.insert(
+            "security".to_string(),
+            serde_json::Value::String(security.to_string()),
+        );
         stream.insert(format!("{}Settings", security), xray_tls_settings(tls));
     } else {
-        stream.insert("security".to_string(), serde_json::Value::String("none".to_string()));
+        stream.insert(
+            "security".to_string(),
+            serde_json::Value::String("none".to_string()),
+        );
     }
 
     serde_json::Value::Object(stream)
 }
 
-pub(crate) fn build_xray_plugin_config(node: &serde_json::Value, port: u16) -> Result<serde_json::Value, String> {
-    let server = node.get("server").and_then(|value| value.as_str()).ok_or("Xray plugin node missing server")?;
-    let server_port = node.get("server_port").and_then(|value| value.as_u64()).ok_or("Xray plugin node missing server_port")?;
-    let uuid = node.get("uuid").and_then(|value| value.as_str()).ok_or("Xray plugin node missing uuid")?;
+pub(crate) fn build_xray_plugin_config(
+    node: &serde_json::Value,
+    port: u16,
+) -> Result<serde_json::Value, String> {
+    let server = node
+        .get("server")
+        .and_then(|value| value.as_str())
+        .ok_or("Xray plugin node missing server")?;
+    let server_port = node
+        .get("server_port")
+        .and_then(|value| value.as_u64())
+        .ok_or("Xray plugin node missing server_port")?;
+    let uuid = node
+        .get("uuid")
+        .and_then(|value| value.as_str())
+        .ok_or("Xray plugin node missing uuid")?;
 
     let encryption = vless_encryption(node);
     let mut user = serde_json::json!({
         "id": uuid,
         "encryption": encryption
     });
-    if let Some(flow) = node.get("flow").and_then(|value| value.as_str()).filter(|value| !value.is_empty()) {
+    if let Some(flow) = node
+        .get("flow")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+    {
         user["flow"] = serde_json::Value::String(flow.to_string());
     }
 
@@ -1252,7 +1499,8 @@ async fn start_plugin_bridges(app: &AppHandle, state: &AppState) -> Result<(), S
     }
 
     let content = fs::read_to_string(&bridge_path).map_err(|e| e.to_string())?;
-    let specs: Vec<serde_json::Value> = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    let specs: Vec<serde_json::Value> =
+        serde_json::from_str(&content).map_err(|e| e.to_string())?;
     if specs.is_empty() {
         return Ok(());
     }
@@ -1264,18 +1512,26 @@ async fn start_plugin_bridges(app: &AppHandle, state: &AppState) -> Result<(), S
 
     let mut started = Vec::new();
     for (index, spec) in specs.iter().enumerate() {
-        let core = spec.get("core").and_then(|value| value.as_str()).unwrap_or("");
+        let core = spec
+            .get("core")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
         if core != "xray" {
             continue;
         }
 
-        let port = spec.get("port").and_then(|value| value.as_u64()).ok_or("Plugin bridge missing port")? as u16;
+        let port = spec
+            .get("port")
+            .and_then(|value| value.as_u64())
+            .ok_or("Plugin bridge missing port")? as u16;
         let node = spec.get("node").ok_or("Plugin bridge missing node")?;
         let config = build_xray_plugin_config(node, port)?;
         let config_path = state.config_dir.join(format!("plugin-xray-{}.json", index));
         let config_str = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
         fs::write(&config_path, config_str).map_err(|e| e.to_string())?;
-        let config_path_str = config_path.to_str().ok_or("Xray plugin config path contains invalid UTF-8")?;
+        let config_path_str = config_path
+            .to_str()
+            .ok_or("Xray plugin config path contains invalid UTF-8")?;
 
         #[cfg(windows)]
         let child = Command::new(&xray_path)
@@ -1315,25 +1571,26 @@ pub(crate) fn build_dns_server(address: &str, tag: &str, detour: &str) -> serde_
     }
 
     // 解析协议类型、服务器地址（可能含路径）、默认端口、可选路径
-    let (server_type, server_with_path, default_port) = if let Some(v) = value.strip_prefix("udp://") {
-        ("udp", v.to_string(), 53u16)
-    } else if let Some(v) = value.strip_prefix("tcp://") {
-        ("tcp", v.to_string(), 53)
-    } else if let Some(v) = value.strip_prefix("tls://") {
-        ("tls", v.to_string(), 853)
-    } else if let Some(v) = value.strip_prefix("https://") {
-        ("https", v.to_string(), 443)
-    } else if let Some(v) = value.strip_prefix("h3://") {
-        ("h3", v.to_string(), 443)
-    } else if let Some(v) = value.strip_prefix("quic://") {
-        ("quic", v.to_string(), 853)
-    } else if value.contains("://") {
-        ("udp", value.to_string(), 53)
-    } else if value.contains("/dns-query") || value.contains("/resolve") {
-        ("https", value.to_string(), 443)
-    } else {
-        ("udp", value.to_string(), 53)
-    };
+    let (server_type, server_with_path, default_port) =
+        if let Some(v) = value.strip_prefix("udp://") {
+            ("udp", v.to_string(), 53u16)
+        } else if let Some(v) = value.strip_prefix("tcp://") {
+            ("tcp", v.to_string(), 53)
+        } else if let Some(v) = value.strip_prefix("tls://") {
+            ("tls", v.to_string(), 853)
+        } else if let Some(v) = value.strip_prefix("https://") {
+            ("https", v.to_string(), 443)
+        } else if let Some(v) = value.strip_prefix("h3://") {
+            ("h3", v.to_string(), 443)
+        } else if let Some(v) = value.strip_prefix("quic://") {
+            ("quic", v.to_string(), 853)
+        } else if value.contains("://") {
+            ("udp", value.to_string(), 53)
+        } else if value.contains("/dns-query") || value.contains("/resolve") {
+            ("https", value.to_string(), 443)
+        } else {
+            ("udp", value.to_string(), 53)
+        };
 
     // 从 server_with_path 中分离 host:port 和路径（如 /dns-query）
     // 例如 "1.1.1.1/dns-query" → host="1.1.1.1", path="/dns-query"
@@ -1469,7 +1726,10 @@ fn extract_ech_dns_server_override(
     (values.len() == 1).then(|| values[0].to_string())
 }
 
-fn active_or_first_node<'a>(raw_nodes: &'a [serde_json::Value], active_node_tag: Option<&str>) -> Option<&'a serde_json::Value> {
+fn active_or_first_node<'a>(
+    raw_nodes: &'a [serde_json::Value],
+    active_node_tag: Option<&str>,
+) -> Option<&'a serde_json::Value> {
     active_node_tag
         .and_then(|active_tag| {
             raw_nodes
@@ -1495,9 +1755,15 @@ fn node_bootstrap_signature(node: Option<&serde_json::Value>) -> (bool, Option<S
 fn apply_route_target(mut rule: serde_json::Value, target: &str) -> serde_json::Value {
     if let Some(obj) = rule.as_object_mut() {
         if target == "block" {
-            obj.insert("action".to_string(), serde_json::Value::String("reject".to_string()));
+            obj.insert(
+                "action".to_string(),
+                serde_json::Value::String("reject".to_string()),
+            );
         } else {
-            obj.insert("outbound".to_string(), serde_json::Value::String(target.to_string()));
+            obj.insert(
+                "outbound".to_string(),
+                serde_json::Value::String(target.to_string()),
+            );
         }
     }
 
@@ -1566,6 +1832,348 @@ fn normalized_node_reference_tag(node_ref: &str) -> String {
     }
 }
 
+fn collect_route_profile_and_node_references(
+    rulesets: &[crate::types::RuleSet],
+    custom_rules: &crate::types::CustomRules,
+) -> (
+    std::collections::HashSet<String>,
+    std::collections::HashSet<String>,
+) {
+    let mut referenced_profile_ids = std::collections::HashSet::new();
+    let mut referenced_profile_scoped_node_refs = std::collections::HashSet::new();
+
+    for rs in rulesets.iter().filter(|r| r.enabled) {
+        if let Some(ref value) = rs.outbound_value {
+            match rs.outbound_mode.as_str() {
+                "profile" | "配置" => {
+                    referenced_profile_ids.insert(value.clone());
+                }
+                "node" | "节点" => {
+                    if parse_profile_scoped_node_ref(value).is_some() {
+                        referenced_profile_scoped_node_refs.insert(value.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    for rule in custom_rules.domain_rules.iter().filter(|r| r.enabled) {
+        if let Some(ref value) = rule.outbound_value {
+            match rule.outbound_mode.as_str() {
+                "profile" => {
+                    referenced_profile_ids.insert(value.clone());
+                }
+                "node" => {
+                    if parse_profile_scoped_node_ref(value).is_some() {
+                        referenced_profile_scoped_node_refs.insert(value.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    (referenced_profile_ids, referenced_profile_scoped_node_refs)
+}
+
+fn selector_tag_collides(
+    candidate: &str,
+    nodes: &[serde_json::Value],
+    referenced_profile_scoped_node_refs: &std::collections::HashSet<String>,
+    referenced_profile_ids: &std::collections::HashSet<String>,
+) -> bool {
+    nodes
+        .iter()
+        .any(|node| node.get("tag").and_then(|tag| tag.as_str()) == Some(candidate))
+        || referenced_profile_scoped_node_refs.iter().any(|node_ref| {
+            parse_profile_scoped_node_ref(node_ref)
+                .map(|(_, node_tag)| node_tag == candidate)
+                .unwrap_or(false)
+        })
+        || referenced_profile_ids
+            .iter()
+            .any(|profile_id| profile_selector_tag(profile_id) == candidate)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HealthTargetKind {
+    Selector,
+    FixedNode,
+}
+
+#[derive(Debug, Clone)]
+struct HealthTarget {
+    kind: HealthTargetKind,
+    selector_tag: Option<String>,
+    node_tag: Option<String>,
+    rule_label: Option<String>,
+    auto_failover: bool,
+}
+
+#[derive(Debug, Clone)]
+struct NodeHealth {
+    status: HealthStatus,
+    last_latency_ms: Option<u32>,
+    success_streak: u8,
+    failure_streak: u8,
+    last_checked_at: i64,
+    next_probe_after: i64,
+    cooldown_until: Option<i64>,
+    last_error: Option<String>,
+}
+
+impl NodeHealth {
+    fn new(_tag: String) -> Self {
+        Self {
+            status: HealthStatus::Unknown,
+            last_latency_ms: None,
+            success_streak: 0,
+            failure_streak: 0,
+            last_checked_at: 0,
+            next_probe_after: 0,
+            cooldown_until: None,
+            last_error: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SelectorHealth {
+    selector_tag: String,
+    current_node: Option<String>,
+    backup_nodes: Vec<String>,
+    last_switch_at: Option<i64>,
+    switch_cooldown_until: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HealthAction {
+    None,
+    SwitchSelector {
+        selector: String,
+        from: String,
+        to: String,
+    },
+    NotifyFixedNodeFailed {
+        node: String,
+        rule: Option<String>,
+    },
+    NotifyMainNodeNeedsManualSwitch {
+        selector: String,
+        from: String,
+        to: String,
+        reason: String,
+    },
+    NotifyNoBackup {
+        selector: String,
+    },
+}
+
+fn failed_probe_backoff_ms(failure_streak: u8) -> i64 {
+    let exponent = failure_streak.saturating_sub(3).min(3) as u32;
+    (HEALTH_FAILED_BACKOFF_BASE_MS * 2_i64.pow(exponent)).min(HEALTH_FAILED_BACKOFF_MAX_MS)
+}
+
+fn record_probe_success(health: &mut NodeHealth, latency_ms: u32, now_ms: i64) {
+    health.success_streak = health.success_streak.saturating_add(1);
+    health.failure_streak = 0;
+    health.last_latency_ms = Some(latency_ms);
+    health.last_checked_at = now_ms;
+    health.next_probe_after = now_ms;
+    health.last_error = None;
+    health.status = if health.success_streak >= 2 {
+        HealthStatus::Healthy
+    } else {
+        HealthStatus::Recovering
+    };
+}
+
+fn record_probe_failure(health: &mut NodeHealth, error: String, now_ms: i64) {
+    health.failure_streak = health.failure_streak.saturating_add(1);
+    health.success_streak = 0;
+    health.last_checked_at = now_ms;
+    health.last_error = Some(error);
+
+    if health.failure_streak >= 3 {
+        health.status = HealthStatus::Failed;
+        health.next_probe_after = now_ms + failed_probe_backoff_ms(health.failure_streak);
+    } else {
+        health.status = HealthStatus::Suspect;
+        health.next_probe_after = now_ms;
+    }
+}
+
+fn should_probe(health: &NodeHealth, now_ms: i64) -> bool {
+    if health
+        .cooldown_until
+        .is_some_and(|cooldown_until| now_ms < cooldown_until)
+    {
+        return false;
+    }
+
+    now_ms >= health.next_probe_after
+}
+
+fn decide_health_action(
+    target: &HealthTarget,
+    selector: Option<&SelectorHealth>,
+    node_health: &std::collections::HashMap<String, NodeHealth>,
+    now_ms: i64,
+) -> HealthAction {
+    if target.kind == HealthTargetKind::FixedNode {
+        let Some(node_tag) = target.node_tag.as_deref() else {
+            return HealthAction::None;
+        };
+        return match node_health.get(node_tag) {
+            Some(health)
+                if health.status == HealthStatus::Failed && health.last_checked_at == now_ms =>
+            {
+                HealthAction::NotifyFixedNodeFailed {
+                    node: node_tag.to_string(),
+                    rule: target.rule_label.clone(),
+                }
+            }
+            _ => HealthAction::None,
+        };
+    }
+
+    if !target.auto_failover {
+        return HealthAction::None;
+    }
+
+    let Some(selector) = selector else {
+        return HealthAction::None;
+    };
+    if selector
+        .switch_cooldown_until
+        .is_some_and(|cooldown_until| now_ms < cooldown_until)
+    {
+        return HealthAction::None;
+    }
+
+    let selector_tag = target
+        .selector_tag
+        .as_deref()
+        .unwrap_or(selector.selector_tag.as_str());
+    let Some(current_node) = selector.current_node.as_deref() else {
+        return HealthAction::None;
+    };
+    let Some(current_health) = node_health.get(current_node) else {
+        return HealthAction::None;
+    };
+    if current_health.status != HealthStatus::Failed || current_health.last_checked_at != now_ms {
+        return HealthAction::None;
+    }
+
+    let best_backup = selector
+        .backup_nodes
+        .iter()
+        .filter(|node| node.as_str() != current_node)
+        .filter_map(|node| {
+            let health = node_health.get(node)?;
+            (health.status == HealthStatus::Healthy)
+                .then_some((node, health.last_latency_ms.unwrap_or(u32::MAX)))
+        })
+        .min_by_key(|(_, latency)| *latency)
+        .map(|(node, _)| node.clone());
+
+    match best_backup {
+        Some(to) => HealthAction::SwitchSelector {
+            selector: selector_tag.to_string(),
+            from: current_node.to_string(),
+            to,
+        },
+        None => HealthAction::NotifyNoBackup {
+            selector: selector_tag.to_string(),
+        },
+    }
+}
+
+fn is_main_selector_tag(selector: &str) -> bool {
+    matches!(selector, "PROXY" | "PROXY-kb")
+}
+
+fn gate_main_selector_health_action(
+    action: HealthAction,
+    settings: &AppSettings,
+    previous_signature: (bool, Option<String>),
+    target_signature: (bool, Option<String>),
+) -> HealthAction {
+    let HealthAction::SwitchSelector { selector, from, to } = action else {
+        return action;
+    };
+
+    if !is_main_selector_tag(&selector) {
+        return HealthAction::SwitchSelector { selector, from, to };
+    }
+
+    if !settings.main_node_auto_failover {
+        return HealthAction::NotifyMainNodeNeedsManualSwitch {
+            selector,
+            from,
+            to,
+            reason: "主节点故障自动切换未开启".to_string(),
+        };
+    }
+
+    if previous_signature != target_signature {
+        return HealthAction::NotifyMainNodeNeedsManualSwitch {
+            selector,
+            from,
+            to,
+            reason: "目标节点需要不同的 DNS bootstrap，未自动切换".to_string(),
+        };
+    }
+
+    HealthAction::SwitchSelector { selector, from, to }
+}
+
+fn health_event_for_action(action: &HealthAction) -> Option<HealthEvent> {
+    match action {
+        HealthAction::None => None,
+        HealthAction::SwitchSelector { selector, from, to } => Some(HealthEvent {
+            kind: HealthEventKind::SelectorFailedOver,
+            selector: Some(selector.clone()),
+            from: Some(from.clone()),
+            to: Some(to.clone()),
+            node: None,
+            rule: None,
+            message: format!("分流 {} 已从 {} 自动切换到 {}", selector, from, to),
+        }),
+        HealthAction::NotifyFixedNodeFailed { node, rule } => Some(HealthEvent {
+            kind: HealthEventKind::FixedNodeFailed,
+            selector: None,
+            from: None,
+            to: None,
+            node: Some(node.clone()),
+            rule: rule.clone(),
+            message: format!(
+                "分流节点不可用：{}。该规则绑定了固定节点，KunBox 未自动更换，请手动调整规则或节点。",
+                node
+            ),
+        }),
+        HealthAction::NotifyMainNodeNeedsManualSwitch { selector, from, to, reason } => Some(HealthEvent {
+            kind: HealthEventKind::MainNodeNeedsManualSwitch,
+            selector: Some(selector.clone()),
+            from: Some(from.clone()),
+            to: Some(to.clone()),
+            node: Some(from.clone()),
+            rule: None,
+            message: format!("主节点 {} 不可用，未自动切换到 {}：{}", from, to, reason),
+        }),
+        HealthAction::NotifyNoBackup { selector } => Some(HealthEvent {
+            kind: HealthEventKind::SelectorNoBackup,
+            selector: Some(selector.clone()),
+            from: None,
+            to: None,
+            node: None,
+            rule: None,
+            message: format!("分流 {} 当前节点不可用，暂无健康备用节点。", selector),
+        }),
+    }
+}
+
 fn resolve_node_route_outbound(
     node_ref: &str,
     available_outbound_tags: &std::collections::HashSet<String>,
@@ -1578,7 +2186,10 @@ fn resolve_node_route_outbound(
 
 fn with_outbound_tag(mut node: serde_json::Value, tag: &str) -> serde_json::Value {
     if let Some(obj) = node.as_object_mut() {
-        obj.insert("tag".to_string(), serde_json::Value::String(tag.to_string()));
+        obj.insert(
+            "tag".to_string(),
+            serde_json::Value::String(tag.to_string()),
+        );
     }
     node
 }
@@ -1586,13 +2197,17 @@ fn with_outbound_tag(mut node: serde_json::Value, tag: &str) -> serde_json::Valu
 fn is_valid_profile_id(profile_id: &str) -> bool {
     !profile_id.is_empty()
         && profile_id.len() <= 64
-        && profile_id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+        && profile_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
 }
 
 fn is_valid_ruleset_tag(tag: &str) -> bool {
     !tag.is_empty()
         && tag.len() <= 128
-        && tag.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+        && tag
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
 }
 
 fn profile_nodes_path(state: &AppState, profile_id: &str) -> Result<PathBuf, String> {
@@ -1619,9 +2234,12 @@ struct ProfileInfo {
 }
 
 /// 加载所有配置文件的节点信息
-fn load_all_profiles(state: &AppState, profiles_data: &crate::types::ProfilesData) -> Vec<ProfileInfo> {
+fn load_all_profiles(
+    state: &AppState,
+    profiles_data: &crate::types::ProfilesData,
+) -> Vec<ProfileInfo> {
     let mut result = Vec::new();
-    
+
     for profile in &profiles_data.profiles {
         let nodes_file = match profile_nodes_path(state, &profile.id) {
             Ok(path) => path,
@@ -1639,7 +2257,7 @@ fn load_all_profiles(state: &AppState, profiles_data: &crate::types::ProfilesDat
             }
         }
     }
-    
+
     result
 }
 
@@ -1649,7 +2267,10 @@ async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
     generate_config_with_settings(state, &settings).await
 }
 
-async fn generate_config_with_settings(state: &AppState, settings: &crate::types::AppSettings) -> Result<CommandResult, String> {
+async fn generate_config_with_settings(
+    state: &AppState,
+    settings: &crate::types::AppSettings,
+) -> Result<CommandResult, String> {
     // Always reload profiles data from file to ensure we have the latest
     let profiles_file = state.profiles_file();
     let profiles_data: crate::types::ProfilesData = if profiles_file.exists() {
@@ -1658,7 +2279,7 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
     } else {
         return Ok(CommandResult::err("No profiles file found"));
     };
-    
+
     let rulesets = state.rulesets.lock().await;
     let custom_rules = state.custom_rules.lock().await;
 
@@ -1673,7 +2294,8 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
     }
 
     let nodes_content = fs::read_to_string(&nodes_file).map_err(|e| e.to_string())?;
-    let mut raw_nodes: Vec<serde_json::Value> = serde_json::from_str(&nodes_content).map_err(|e| e.to_string())?;
+    let mut raw_nodes: Vec<serde_json::Value> =
+        serde_json::from_str(&nodes_content).map_err(|e| e.to_string())?;
 
     if raw_nodes.is_empty() {
         return Ok(CommandResult::err("No nodes in active profile"));
@@ -1693,16 +2315,25 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
                 Ok(repaired_nodes) if !repaired_nodes.is_empty() => {
                     if let Ok(repaired_content) = serde_json::to_string_pretty(&repaired_nodes) {
                         if fs::write(&nodes_file, &repaired_content).is_ok() {
-                            if let Ok(repaired_raw_nodes) = serde_json::from_str::<Vec<serde_json::Value>>(&repaired_content) {
+                            if let Ok(repaired_raw_nodes) =
+                                serde_json::from_str::<Vec<serde_json::Value>>(&repaired_content)
+                            {
                                 raw_nodes = repaired_raw_nodes;
-                                log::info!("Repaired legacy ECH subscription nodes for profile '{}'", profile.name);
+                                log::info!(
+                                    "Repaired legacy ECH subscription nodes for profile '{}'",
+                                    profile.name
+                                );
                             }
                         }
                     }
                 }
                 Ok(_) => {}
                 Err(err) => {
-                    log::warn!("Failed to refresh legacy ECH nodes for profile '{}': {}", profile.name, err);
+                    log::warn!(
+                        "Failed to refresh legacy ECH nodes for profile '{}': {}",
+                        profile.name,
+                        err
+                    );
                 }
             }
         }
@@ -1723,15 +2354,22 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
         return Ok(CommandResult::err("当前配置没有可用的受支持代理节点"));
     }
 
-    let active_node_tag = profiles_data.active_node_tag.clone()
+    let active_node_tag = profiles_data
+        .active_node_tag
+        .clone()
         .filter(|tag| {
             nodes
                 .iter()
                 .any(|node| node.get("tag").and_then(|value| value.as_str()) == Some(tag.as_str()))
         })
-        .or_else(|| nodes.first().and_then(|n| n.get("tag").and_then(|t| t.as_str()).map(|s| s.to_string())));
+        .or_else(|| {
+            nodes
+                .first()
+                .and_then(|n| n.get("tag").and_then(|t| t.as_str()).map(|s| s.to_string()))
+        });
 
-    let inferred_ech_dns_server = extract_ech_dns_server_override(&raw_nodes, active_node_tag.as_deref());
+    let inferred_ech_dns_server =
+        extract_ech_dns_server_override(&raw_nodes, active_node_tag.as_deref());
     let active_node_has_ech = active_or_first_node(&raw_nodes, active_node_tag.as_deref())
         .map(node_has_ech)
         .unwrap_or(false);
@@ -1757,61 +2395,42 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
 
     // 收集规则集引用的 profile ID 和 node tag
     let enabled_rulesets: Vec<_> = rulesets.iter().filter(|r| r.enabled).collect();
-    let mut referenced_profile_ids = std::collections::HashSet::new();
-    let mut referenced_profile_scoped_node_refs = std::collections::HashSet::new();
-    
-    for rs in &enabled_rulesets {
-        if let Some(ref value) = rs.outbound_value {
-            match rs.outbound_mode.as_str() {
-                "profile" | "配置" => { referenced_profile_ids.insert(value.clone()); }
-                "node" | "节点" => {
-                    if parse_profile_scoped_node_ref(value).is_some() {
-                        referenced_profile_scoped_node_refs.insert(value.clone());
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    // 收集自定义规则引用的 profile 和 node
-    for rule in custom_rules.domain_rules.iter().filter(|r| r.enabled) {
-        if let Some(ref value) = rule.outbound_value {
-            match rule.outbound_mode.as_str() {
-                "profile" => { referenced_profile_ids.insert(value.clone()); }
-                "node" => { 
-                    if parse_profile_scoped_node_ref(value).is_some() {
-                        referenced_profile_scoped_node_refs.insert(value.clone());
-                    };
-                }
-                _ => {}
-            }
-        }
-    }
+    let (referenced_profile_ids, referenced_profile_scoped_node_refs) =
+        collect_route_profile_and_node_references(&rulesets, &custom_rules);
 
     // Pre-scan for tag collisions to avoid conflict with node tags named "PROXY" or "auto"
-    let will_proxy_collide = nodes.iter().any(|n| n.get("tag").and_then(|t| t.as_str()) == Some("PROXY"))
-        || referenced_profile_scoped_node_refs.iter().any(|r| {
-            parse_profile_scoped_node_ref(r)
-                .map(|(_, node_tag)| node_tag == "PROXY")
-                .unwrap_or(false)
-        })
-        || referenced_profile_ids.iter().any(|id| profile_selector_tag(id) == "PROXY");
-    let will_auto_collide = nodes.iter().any(|n| n.get("tag").and_then(|t| t.as_str()) == Some("auto"))
-        || referenced_profile_scoped_node_refs.iter().any(|r| {
-            parse_profile_scoped_node_ref(r)
-                .map(|(_, node_tag)| node_tag == "auto")
-                .unwrap_or(false)
-        })
-        || referenced_profile_ids.iter().any(|id| profile_selector_tag(id) == "auto");
+    let will_proxy_collide = selector_tag_collides(
+        "PROXY",
+        &nodes,
+        &referenced_profile_scoped_node_refs,
+        &referenced_profile_ids,
+    );
+    let will_auto_collide = selector_tag_collides(
+        "auto",
+        &nodes,
+        &referenced_profile_scoped_node_refs,
+        &referenced_profile_ids,
+    );
 
-    let proxy_tag = if will_proxy_collide { "PROXY-kb" } else { "PROXY" };
+    let proxy_tag = if will_proxy_collide {
+        "PROXY-kb"
+    } else {
+        "PROXY"
+    };
     let auto_tag = if will_auto_collide { "auto-kb" } else { "auto" };
-    let remote_dns_detour = if active_node_has_ech { "direct" } else { proxy_tag };
+    let remote_dns_detour = if active_node_has_ech {
+        "direct"
+    } else {
+        proxy_tag
+    };
 
     // Build config - 使用 sing-box 1.11+ 新格式
-    let listen_addr = if settings.allow_lan { "0.0.0.0" } else { "127.0.0.1" };
-    
+    let listen_addr = if settings.allow_lan {
+        "0.0.0.0"
+    } else {
+        "127.0.0.1"
+    };
+
     let routing_mode = settings.routing_mode.as_str();
 
     // 构建 DNS 服务器列表（sing-box 1.12+ 新格式）
@@ -1869,39 +2488,65 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
         }
 
         // 生成 direct 域名的 DNS 规则 → dns-local
-        if !direct_domains.is_empty() || !direct_domain_suffixes.is_empty() || !direct_domain_keywords.is_empty() {
+        if !direct_domains.is_empty()
+            || !direct_domain_suffixes.is_empty()
+            || !direct_domain_keywords.is_empty()
+        {
             let mut dns_rule = serde_json::Map::new();
             if !direct_domains.is_empty() {
                 dns_rule.insert("domain".to_string(), serde_json::json!(direct_domains));
             }
             if !direct_domain_suffixes.is_empty() {
-                dns_rule.insert("domain_suffix".to_string(), serde_json::json!(direct_domain_suffixes));
+                dns_rule.insert(
+                    "domain_suffix".to_string(),
+                    serde_json::json!(direct_domain_suffixes),
+                );
             }
             if !direct_domain_keywords.is_empty() {
-                dns_rule.insert("domain_keyword".to_string(), serde_json::json!(direct_domain_keywords));
+                dns_rule.insert(
+                    "domain_keyword".to_string(),
+                    serde_json::json!(direct_domain_keywords),
+                );
             }
             dns_rule.insert("server".to_string(), serde_json::json!("dns-local"));
             dns_rules.push(serde_json::Value::Object(dns_rule));
-            log::info!("Added DNS rule for direct domains: {} domain, {} suffix, {} keyword",
-                direct_domains.len(), direct_domain_suffixes.len(), direct_domain_keywords.len());
+            log::info!(
+                "Added DNS rule for direct domains: {} domain, {} suffix, {} keyword",
+                direct_domains.len(),
+                direct_domain_suffixes.len(),
+                direct_domain_keywords.len()
+            );
         }
 
         // 生成 proxy 域名的 DNS 规则 → dns-remote
-        if !proxy_domains.is_empty() || !proxy_domain_suffixes.is_empty() || !proxy_domain_keywords.is_empty() {
+        if !proxy_domains.is_empty()
+            || !proxy_domain_suffixes.is_empty()
+            || !proxy_domain_keywords.is_empty()
+        {
             let mut dns_rule = serde_json::Map::new();
             if !proxy_domains.is_empty() {
                 dns_rule.insert("domain".to_string(), serde_json::json!(proxy_domains));
             }
             if !proxy_domain_suffixes.is_empty() {
-                dns_rule.insert("domain_suffix".to_string(), serde_json::json!(proxy_domain_suffixes));
+                dns_rule.insert(
+                    "domain_suffix".to_string(),
+                    serde_json::json!(proxy_domain_suffixes),
+                );
             }
             if !proxy_domain_keywords.is_empty() {
-                dns_rule.insert("domain_keyword".to_string(), serde_json::json!(proxy_domain_keywords));
+                dns_rule.insert(
+                    "domain_keyword".to_string(),
+                    serde_json::json!(proxy_domain_keywords),
+                );
             }
             dns_rule.insert("server".to_string(), serde_json::json!("dns-remote"));
             dns_rules.push(serde_json::Value::Object(dns_rule));
-            log::info!("Added DNS rule for proxy domains: {} domain, {} suffix, {} keyword",
-                proxy_domains.len(), proxy_domain_suffixes.len(), proxy_domain_keywords.len());
+            log::info!(
+                "Added DNS rule for proxy domains: {} domain, {} suffix, {} keyword",
+                proxy_domains.len(),
+                proxy_domain_suffixes.len(),
+                proxy_domain_keywords.len()
+            );
         }
     }
 
@@ -1923,7 +2568,9 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
 
             match rs.outbound_mode.as_str() {
                 "direct" => direct_rulesets.push(rs.tag.clone()),
-                "proxy" | "node" | "节点" | "profile" | "配置" => proxy_rulesets.push(rs.tag.clone()),
+                "proxy" | "node" | "节点" | "profile" | "配置" => {
+                    proxy_rulesets.push(rs.tag.clone())
+                }
                 _ => {} // block 不需要 DNS 规则
             }
         }
@@ -1933,7 +2580,10 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
                 "rule_set": direct_rulesets,
                 "server": "dns-local"
             }));
-            log::info!("Added DNS rule for {} direct rulesets", direct_rulesets.len());
+            log::info!(
+                "Added DNS rule for {} direct rulesets",
+                direct_rulesets.len()
+            );
         }
 
         if !proxy_rulesets.is_empty() {
@@ -1962,7 +2612,7 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
         }
         dns_rules.push(fake_dns_rule);
     }
-    
+
     // 构建 inbounds
     let mut inbounds = vec![
         serde_json::json!({
@@ -1976,9 +2626,9 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
             "tag": "socks-in",
             "listen": listen_addr,
             "listen_port": settings.socks_port
-        })
+        }),
     ];
-    
+
     // 如果启用 TUN 模式，添加 TUN inbound
     if settings.tun_enabled {
         inbounds.push(serde_json::json!({
@@ -1992,7 +2642,7 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
             "stack": settings.tun_stack
         }));
     }
-    
+
     let dns_final = match routing_mode {
         "global-direct" => "dns-local",
         _ => "dns-remote",
@@ -2057,7 +2707,10 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
     for node in &nodes {
         let node_type = node.get("type").and_then(|t| t.as_str()).unwrap_or("");
         if is_proxy_type(node_type) {
-            outbounds.push(node_for_singbox_with_plugin_bridge(node, &mut plugin_bridge_specs));
+            outbounds.push(node_for_singbox_with_plugin_bridge(
+                node,
+                &mut plugin_bridge_specs,
+            ));
             if let Some(tag) = node.get("tag").and_then(|t| t.as_str()) {
                 proxy_tags.push(tag.to_string());
                 existing_tags.insert(tag.to_string());
@@ -2075,13 +2728,18 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
         }
 
         if let Some(profile) = all_profiles.iter().find(|p| p.id == profile_id) {
-            if let Some(node) = profile.nodes.iter().find(|n| {
-                n.get("tag").and_then(|t| t.as_str()) == Some(node_tag)
-            }) {
+            if let Some(node) = profile
+                .nodes
+                .iter()
+                .find(|n| n.get("tag").and_then(|t| t.as_str()) == Some(node_tag))
+            {
                 let node_type = node.get("type").and_then(|t| t.as_str()).unwrap_or("");
                 if is_proxy_type(node_type) {
                     let scoped_node = with_outbound_tag(process_node(node), &outbound_tag);
-                    outbounds.push(node_for_singbox_with_plugin_bridge(&scoped_node, &mut plugin_bridge_specs));
+                    outbounds.push(node_for_singbox_with_plugin_bridge(
+                        &scoped_node,
+                        &mut plugin_bridge_specs,
+                    ));
                     existing_tags.insert(outbound_tag.clone());
                     log::info!(
                         "Added profile-scoped node: {} from profile {}",
@@ -2095,7 +2753,7 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
 
     // 3. 处理配置分流（profile 模式）- 创建 urltest selector
     let mut profile_id_to_selector = std::collections::HashMap::new();
-    
+
     for profile_id in &referenced_profile_ids {
         if let Some(profile) = all_profiles.iter().find(|p| &p.id == profile_id) {
             let selector_tag = profile_selector_tag(&profile.id);
@@ -2118,10 +2776,17 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
                         // 如果节点不存在，添加到 outbounds
                         if !existing_tags.contains(&outbound_tag) {
                             if outbound_tag == tag {
-                                outbounds.push(node_for_singbox_with_plugin_bridge(node, &mut plugin_bridge_specs));
+                                outbounds.push(node_for_singbox_with_plugin_bridge(
+                                    node,
+                                    &mut plugin_bridge_specs,
+                                ));
                             } else {
-                                let scoped_node = with_outbound_tag(process_node(node), &outbound_tag);
-                                outbounds.push(node_for_singbox_with_plugin_bridge(&scoped_node, &mut plugin_bridge_specs));
+                                let scoped_node =
+                                    with_outbound_tag(process_node(node), &outbound_tag);
+                                outbounds.push(node_for_singbox_with_plugin_bridge(
+                                    &scoped_node,
+                                    &mut plugin_bridge_specs,
+                                ));
                             }
                             existing_tags.insert(outbound_tag.clone());
                         }
@@ -2142,7 +2807,9 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
                     .and_then(|saved_tag| {
                         profile_proxy_entries
                             .iter()
-                            .find(|(raw_tag, outbound_tag)| raw_tag == saved_tag || outbound_tag == saved_tag)
+                            .find(|(raw_tag, outbound_tag)| {
+                                raw_tag == saved_tag || outbound_tag == saved_tag
+                            })
                             .map(|(_, outbound_tag)| outbound_tag.clone())
                     })
                     .or_else(|| {
@@ -2152,7 +2819,9 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
                             .and_then(|active_tag| {
                                 profile_proxy_entries
                                     .iter()
-                                    .find(|(raw_tag, outbound_tag)| raw_tag == &active_tag || outbound_tag == &active_tag)
+                                    .find(|(raw_tag, outbound_tag)| {
+                                        raw_tag == &active_tag || outbound_tag == &active_tag
+                                    })
                                     .map(|(_, outbound_tag)| outbound_tag.clone())
                             })
                     })
@@ -2167,7 +2836,11 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
                 }));
                 existing_tags.insert(selector_tag.clone());
                 profile_id_to_selector.insert(profile_id.clone(), selector_tag.clone());
-                log::info!("Created profile selector: {} with {} nodes", selector_tag, profile_proxy_tags.len());
+                log::info!(
+                    "Created profile selector: {} with {} nodes",
+                    selector_tag,
+                    profile_proxy_tags.len()
+                );
             }
         }
     }
@@ -2176,13 +2849,16 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
     let default_tag = active_node_tag.clone();
     if !proxy_tags.is_empty() {
         let proxy_outbounds: Vec<String> = proxy_tags.iter().cloned().collect();
-        outbounds.insert(0, serde_json::json!({
-            "type": "selector",
-            "tag": proxy_tag,
-            "outbounds": proxy_outbounds.clone(),
-            "default": default_tag,
-            "interrupt_exist_connections": false
-        }));
+        outbounds.insert(
+            0,
+            serde_json::json!({
+                "type": "selector",
+                "tag": proxy_tag,
+                "outbounds": proxy_outbounds.clone(),
+                "default": default_tag,
+                "interrupt_exist_connections": false
+            }),
+        );
         existing_tags.insert(proxy_tag.to_string());
     }
 
@@ -2213,7 +2889,8 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
     }
 
     // 收集所有可用的 outbound tags
-    let available_outbound_tags: std::collections::HashSet<String> = outbounds.iter()
+    let available_outbound_tags: std::collections::HashSet<String> = outbounds
+        .iter()
         .filter_map(|o| o.get("tag").and_then(|t| t.as_str()).map(|s| s.to_string()))
         .collect();
 
@@ -2236,7 +2913,10 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
     let mut rule_set_refs = Vec::new();
 
     if settings.tun_enabled {
-        rules.insert(1, serde_json::json!({ "inbound": "tun-in", "action": "sniff" }));
+        rules.insert(
+            1,
+            serde_json::json!({ "inbound": "tun-in", "action": "sniff" }),
+        );
     }
 
     if settings.bypass_lan {
@@ -2258,16 +2938,23 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
                 "block" => "block".to_string(),
                 "node" => {
                     if let Some(ref node_ref) = rule.outbound_value {
-                        if let Some(node_tag) = resolve_node_route_outbound(node_ref, &available_outbound_tags) {
+                        if let Some(node_tag) =
+                            resolve_node_route_outbound(node_ref, &available_outbound_tags)
+                        {
                             node_tag
                         } else {
-                            log::warn!("Node '{}' not found for domain rule '{}', falling back to {}", node_ref, rule.value, proxy_tag);
+                            log::warn!(
+                                "Node '{}' not found for domain rule '{}', falling back to {}",
+                                node_ref,
+                                rule.value,
+                                proxy_tag
+                            );
                             proxy_tag.to_string()
                         }
                     } else {
                         proxy_tag.to_string()
                     }
-                },
+                }
                 "profile" => {
                     if let Some(ref profile_id) = rule.outbound_value {
                         if let Some(selector_tag) = profile_id_to_selector.get(profile_id) {
@@ -2278,32 +2965,54 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
                                 proxy_tag.to_string()
                             }
                         } else {
-                            log::warn!("Profile '{}' not found for domain rule '{}', falling back to {}", profile_id, rule.value, proxy_tag);
+                            log::warn!(
+                                "Profile '{}' not found for domain rule '{}', falling back to {}",
+                                profile_id,
+                                rule.value,
+                                proxy_tag
+                            );
                             proxy_tag.to_string()
                         }
                     } else {
                         proxy_tag.to_string()
                     }
-                },
-                other => other.to_string()
+                }
+                other => other.to_string(),
             };
 
             let rule_json = match rule.rule_type.as_str() {
-                "domain" => apply_route_target(serde_json::json!({
-                    "domain": [&rule.value]
-                }), &outbound),
-                "domain_suffix" => apply_route_target(serde_json::json!({
-                    "domain_suffix": [&rule.value]
-                }), &outbound),
-                "domain_keyword" => apply_route_target(serde_json::json!({
-                    "domain_keyword": [&rule.value]
-                }), &outbound),
-                _ => apply_route_target(serde_json::json!({
-                    "domain_suffix": [&rule.value]
-                }), &outbound)
+                "domain" => apply_route_target(
+                    serde_json::json!({
+                        "domain": [&rule.value]
+                    }),
+                    &outbound,
+                ),
+                "domain_suffix" => apply_route_target(
+                    serde_json::json!({
+                        "domain_suffix": [&rule.value]
+                    }),
+                    &outbound,
+                ),
+                "domain_keyword" => apply_route_target(
+                    serde_json::json!({
+                        "domain_keyword": [&rule.value]
+                    }),
+                    &outbound,
+                ),
+                _ => apply_route_target(
+                    serde_json::json!({
+                        "domain_suffix": [&rule.value]
+                    }),
+                    &outbound,
+                ),
             };
             rules.push(rule_json);
-            log::info!("Added domain rule: {} ({}) -> {}", rule.value, rule.rule_type, outbound);
+            log::info!(
+                "Added domain rule: {} ({}) -> {}",
+                rule.value,
+                rule.rule_type,
+                outbound
+            );
         }
     }
 
@@ -2311,71 +3020,86 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
 
     if routing_mode == "rule" {
         for rs in &enabled_rulesets {
-        // 检查本地缓存文件是否存在
-        let local_path = match ruleset_cache_path(state, &rs.tag) {
-            Ok(path) => path,
-            Err(_) => {
-                log::warn!("Invalid ruleset tag '{}', skipping", rs.tag);
+            // 检查本地缓存文件是否存在
+            let local_path = match ruleset_cache_path(state, &rs.tag) {
+                Ok(path) => path,
+                Err(_) => {
+                    log::warn!("Invalid ruleset tag '{}', skipping", rs.tag);
+                    continue;
+                }
+            };
+
+            if !local_path.exists() {
+                log::warn!("Ruleset cache not found, skipping: {}", rs.tag);
                 continue;
             }
-        };
-        
-        if !local_path.exists() {
-            log::warn!("Ruleset cache not found, skipping: {}", rs.tag);
-            continue;
-        }
 
-        // 添加规则集引用
-        rule_set_refs.push(serde_json::json!({
-            "tag": rs.tag,
-            "type": "local",
-            "format": rs.format,
-            "path": local_path.to_string_lossy()
-        }));
+            // 添加规则集引用
+            rule_set_refs.push(serde_json::json!({
+                "tag": rs.tag,
+                "type": "local",
+                "format": rs.format,
+                "path": local_path.to_string_lossy()
+            }));
 
-        // 映射 outbound_mode 到正确的出站名称
-        let outbound = match rs.outbound_mode.as_str() {
-            "proxy" => proxy_tag.to_string(),
-            "direct" => "direct".to_string(),
-            "block" => "block".to_string(),
-            // node 模式：验证节点是否存在
-            "node" | "节点" => {
-                if let Some(ref node_ref) = rs.outbound_value {
-                    if let Some(node_tag) = resolve_node_route_outbound(node_ref, &available_outbound_tags) {
-                        node_tag
-                    } else {
-                        log::warn!("Node '{}' not found for ruleset '{}', falling back to {}", node_ref, rs.tag, proxy_tag);
-                        proxy_tag.to_string()
-                    }
-                } else {
-                    proxy_tag.to_string()
-                }
-            },
-            // profile 模式：使用配置的 urltest selector
-            "profile" | "配置" => {
-                if let Some(ref profile_id) = rs.outbound_value {
-                    if let Some(selector_tag) = profile_id_to_selector.get(profile_id) {
-                        if available_outbound_tags.contains(selector_tag) {
-                            selector_tag.clone()
+            // 映射 outbound_mode 到正确的出站名称
+            let outbound = match rs.outbound_mode.as_str() {
+                "proxy" => proxy_tag.to_string(),
+                "direct" => "direct".to_string(),
+                "block" => "block".to_string(),
+                // node 模式：验证节点是否存在
+                "node" | "节点" => {
+                    if let Some(ref node_ref) = rs.outbound_value {
+                        if let Some(node_tag) =
+                            resolve_node_route_outbound(node_ref, &available_outbound_tags)
+                        {
+                            node_tag
                         } else {
-                            log::warn!("Profile selector '{}' not found for ruleset '{}', falling back to {}", selector_tag, rs.tag, proxy_tag);
+                            log::warn!(
+                                "Node '{}' not found for ruleset '{}', falling back to {}",
+                                node_ref,
+                                rs.tag,
+                                proxy_tag
+                            );
                             proxy_tag.to_string()
                         }
                     } else {
-                        log::warn!("Profile '{}' not found for ruleset '{}', falling back to {}", profile_id, rs.tag, proxy_tag);
                         proxy_tag.to_string()
                     }
-                } else {
-                    proxy_tag.to_string()
                 }
-            },
-            other => other.to_string()
-        };
+                // profile 模式：使用配置的 urltest selector
+                "profile" | "配置" => {
+                    if let Some(ref profile_id) = rs.outbound_value {
+                        if let Some(selector_tag) = profile_id_to_selector.get(profile_id) {
+                            if available_outbound_tags.contains(selector_tag) {
+                                selector_tag.clone()
+                            } else {
+                                log::warn!("Profile selector '{}' not found for ruleset '{}', falling back to {}", selector_tag, rs.tag, proxy_tag);
+                                proxy_tag.to_string()
+                            }
+                        } else {
+                            log::warn!(
+                                "Profile '{}' not found for ruleset '{}', falling back to {}",
+                                profile_id,
+                                rs.tag,
+                                proxy_tag
+                            );
+                            proxy_tag.to_string()
+                        }
+                    } else {
+                        proxy_tag.to_string()
+                    }
+                }
+                other => other.to_string(),
+            };
 
-        let rule_json = apply_route_target(serde_json::json!({
-            "rule_set": [rs.tag]
-        }), &outbound);
-        rules.push(rule_json);
+            let rule_json = apply_route_target(
+                serde_json::json!({
+                    "rule_set": [rs.tag]
+                }),
+                &outbound,
+            );
+            rules.push(rule_json);
         }
     }
 
@@ -2394,7 +3118,8 @@ async fn generate_config_with_settings(state: &AppState, settings: &crate::types
     let config_path = state.config_dir.join("config.json");
     let config_str = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
     fs::write(&config_path, config_str).map_err(|e| e.to_string())?;
-    let plugin_bridge_str = serde_json::to_string_pretty(&plugin_bridge_specs).map_err(|e| e.to_string())?;
+    let plugin_bridge_str =
+        serde_json::to_string_pretty(&plugin_bridge_specs).map_err(|e| e.to_string())?;
     fs::write(plugin_bridge_path(state), plugin_bridge_str).map_err(|e| e.to_string())?;
 
     Ok(CommandResult::ok())
@@ -2472,7 +3197,9 @@ async fn query_registry_value(name: &str) -> Result<Option<String>, String> {
 #[cfg(windows)]
 async fn snapshot_system_proxy_if_needed() -> Result<(), String> {
     let already_snapshotted = {
-        let guard = SYSTEM_PROXY_SNAPSHOT.lock().map_err(|_| "系统代理快照锁失败".to_string())?;
+        let guard = SYSTEM_PROXY_SNAPSHOT
+            .lock()
+            .map_err(|_| "系统代理快照锁失败".to_string())?;
         guard.is_some()
     };
 
@@ -2487,7 +3214,9 @@ async fn snapshot_system_proxy_if_needed() -> Result<(), String> {
         auto_config_url: query_registry_value("AutoConfigURL").await?,
     };
 
-    let mut guard = SYSTEM_PROXY_SNAPSHOT.lock().map_err(|_| "系统代理快照锁失败".to_string())?;
+    let mut guard = SYSTEM_PROXY_SNAPSHOT
+        .lock()
+        .map_err(|_| "系统代理快照锁失败".to_string())?;
     if guard.is_none() {
         *guard = Some(snapshot);
     }
@@ -2497,7 +3226,9 @@ async fn snapshot_system_proxy_if_needed() -> Result<(), String> {
 #[cfg(windows)]
 async fn snapshot_system_proxy_if_needed_for_state(state: &AppState) -> Result<(), String> {
     let already_snapshotted = {
-        let guard = SYSTEM_PROXY_SNAPSHOT.lock().map_err(|_| "系统代理快照锁失败".to_string())?;
+        let guard = SYSTEM_PROXY_SNAPSHOT
+            .lock()
+            .map_err(|_| "系统代理快照锁失败".to_string())?;
         guard.is_some()
     };
 
@@ -2514,7 +3245,9 @@ async fn snapshot_system_proxy_if_needed_for_state(state: &AppState) -> Result<(
 
     save_persisted_proxy_snapshot(state, &snapshot)?;
 
-    let mut guard = SYSTEM_PROXY_SNAPSHOT.lock().map_err(|_| "系统代理快照锁失败".to_string())?;
+    let mut guard = SYSTEM_PROXY_SNAPSHOT
+        .lock()
+        .map_err(|_| "系统代理快照锁失败".to_string())?;
     if guard.is_none() {
         *guard = Some(snapshot);
     }
@@ -2567,7 +3300,8 @@ async fn delete_registry_value(name: &str) -> Result<(), String> {
     }
 
     let stderr = decode_windows_output(&output.stderr).to_lowercase();
-    if stderr.contains("unable to find") || stderr.contains("无法找到") || stderr.contains("找不到") {
+    if stderr.contains("unable to find") || stderr.contains("无法找到") || stderr.contains("找不到")
+    {
         return Ok(());
     }
 
@@ -2614,7 +3348,10 @@ fn read_proxy_session_marker(state: &AppState) -> Result<Option<String>, String>
 }
 
 #[cfg(windows)]
-fn save_persisted_proxy_snapshot(state: &AppState, snapshot: &SystemProxySnapshot) -> Result<(), String> {
+fn save_persisted_proxy_snapshot(
+    state: &AppState,
+    snapshot: &SystemProxySnapshot,
+) -> Result<(), String> {
     let persisted = PersistedSystemProxySnapshot {
         proxy_enable: snapshot.proxy_enable.clone(),
         proxy_server: snapshot.proxy_server.clone(),
@@ -2634,7 +3371,8 @@ fn load_persisted_proxy_snapshot(state: &AppState) -> Result<Option<SystemProxyS
     }
 
     let content = fs::read(path).map_err(|e| e.to_string())?;
-    let persisted: PersistedSystemProxySnapshot = serde_json::from_slice(&content).map_err(|e| e.to_string())?;
+    let persisted: PersistedSystemProxySnapshot =
+        serde_json::from_slice(&content).map_err(|e| e.to_string())?;
     Ok(Some(SystemProxySnapshot {
         proxy_enable: persisted.proxy_enable,
         proxy_server: persisted.proxy_server,
@@ -2673,7 +3411,9 @@ async fn force_clear_system_proxy() -> Result<(), String> {
 #[cfg(windows)]
 async fn restore_system_proxy_snapshot(mode: ProxyCleanupMode) -> Result<(), String> {
     let snapshot = {
-        let mut guard = SYSTEM_PROXY_SNAPSHOT.lock().map_err(|_| "系统代理快照锁失败".to_string())?;
+        let mut guard = SYSTEM_PROXY_SNAPSHOT
+            .lock()
+            .map_err(|_| "系统代理快照锁失败".to_string())?;
         guard.take()
     };
 
@@ -2710,7 +3450,12 @@ async fn restore_system_proxy_snapshot(mode: ProxyCleanupMode) -> Result<(), Str
 #[cfg(windows)]
 async fn restore_persisted_or_clear(state: &AppState) -> Result<(), String> {
     if let Some(snapshot) = load_persisted_proxy_snapshot(state)? {
-        set_registry_value("ProxyEnable", "REG_DWORD", snapshot.proxy_enable.as_deref().unwrap_or("0")).await?;
+        set_registry_value(
+            "ProxyEnable",
+            "REG_DWORD",
+            snapshot.proxy_enable.as_deref().unwrap_or("0"),
+        )
+        .await?;
 
         if let Some(proxy_server) = snapshot.proxy_server {
             set_registry_value("ProxyServer", "REG_SZ", &proxy_server).await?;
@@ -2739,7 +3484,7 @@ async fn restore_persisted_or_clear(state: &AppState) -> Result<(), String> {
 
 async fn enable_system_proxy_internal(port: u16) -> Result<(), String> {
     let proxy = format!("127.0.0.1:{}", port);
-    
+
     #[cfg(windows)]
     {
         snapshot_system_proxy_if_needed().await?;
@@ -2770,7 +3515,10 @@ async fn enable_system_proxy_for_state(_state: &AppState, port: u16) -> Result<(
 }
 
 #[cfg(windows)]
-async fn disable_system_proxy_for_state(state: &AppState, mode: ProxyCleanupMode) -> Result<(), String> {
+async fn disable_system_proxy_for_state(
+    state: &AppState,
+    mode: ProxyCleanupMode,
+) -> Result<(), String> {
     match mode {
         ProxyCleanupMode::RestoreSnapshot => restore_persisted_or_clear(state).await,
         ProxyCleanupMode::ForceClear => {
@@ -2782,7 +3530,10 @@ async fn disable_system_proxy_for_state(state: &AppState, mode: ProxyCleanupMode
 }
 
 #[cfg(not(windows))]
-async fn disable_system_proxy_for_state(_state: &AppState, mode: ProxyCleanupMode) -> Result<(), String> {
+async fn disable_system_proxy_for_state(
+    _state: &AppState,
+    mode: ProxyCleanupMode,
+) -> Result<(), String> {
     disable_system_proxy_internal(mode).await
 }
 
@@ -2829,7 +3580,10 @@ async fn repair_stale_proxy_if_needed(state: &AppState) -> Result<(), String> {
             .unwrap_or(false);
 
     if should_repair {
-        append_startup_diagnostic(state, "detected stale proxy configuration, forcing restore/clear");
+        append_startup_diagnostic(
+            state,
+            "detected stale proxy configuration, forcing restore/clear",
+        );
         log::warn!("Detected stale proxy configuration from previous session, forcing cleanup");
         restore_persisted_or_clear(state).await?;
         clear_proxy_session_marker(state)?;
@@ -2858,6 +3612,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
     use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn update_max(target: &AtomicUsize, candidate: usize) {
         let mut current = target.load(Ordering::SeqCst);
@@ -2988,13 +3743,18 @@ mod tests {
     #[test]
     fn detects_local_proxy_server_values() {
         assert!(looks_like_local_proxy_server("127.0.0.1:7890"));
-        assert!(looks_like_local_proxy_server("http=127.0.0.1:7890;https=127.0.0.1:7890"));
+        assert!(looks_like_local_proxy_server(
+            "http=127.0.0.1:7890;https=127.0.0.1:7890"
+        ));
         assert!(!looks_like_local_proxy_server("10.0.0.1:7890"));
     }
 
     #[test]
     fn force_clear_mode_is_distinct() {
-        assert_ne!(ProxyCleanupMode::RestoreSnapshot, ProxyCleanupMode::ForceClear);
+        assert_ne!(
+            ProxyCleanupMode::RestoreSnapshot,
+            ProxyCleanupMode::ForceClear
+        );
     }
 
     #[tokio::test]
@@ -3010,7 +3770,9 @@ mod tests {
             .await
             .unwrap();
 
-        let (changed, reservations) = resolve_available_inbound_ports(&state, &mut settings).await.unwrap();
+        let (changed, reservations) = resolve_available_inbound_ports(&state, &mut settings)
+            .await
+            .unwrap();
 
         assert!(changed);
         assert_ne!(settings.local_port, blocked_port);
@@ -3039,7 +3801,8 @@ mod tests {
 
     #[test]
     fn parse_foreign_wintun_aliases_handles_single_object_payload() {
-        let json = r#"{"InterfaceAlias":"vgate0","InterfaceDescription":"Wintun Userspace Tunnel"}"#;
+        let json =
+            r#"{"InterfaceAlias":"vgate0","InterfaceDescription":"Wintun Userspace Tunnel"}"#;
         let aliases = parse_foreign_wintun_aliases(json, KUNBOX_TUN_ALIAS);
         assert_eq!(aliases, vec!["vgate0".to_string()]);
     }
@@ -3057,7 +3820,10 @@ mod tests {
         };
 
         write_json_file(&state.profiles_file(), &profiles_data);
-        write_json_file(&state.configs_dir().join("profile-a.json"), &vec![make_node("node-a")]);
+        write_json_file(
+            &state.configs_dir().join("profile-a.json"),
+            &vec![make_node("node-a")],
+        );
 
         let result = generate_config(&state).await.unwrap();
         assert!(result.success);
@@ -3066,15 +3832,30 @@ mod tests {
         let rules = config["route"]["rules"].as_array().unwrap();
         let dns_hijack_rule = rules
             .iter()
-            .find(|rule| rule.get("action").and_then(|action| action.as_str()) == Some("hijack-dns"))
+            .find(|rule| {
+                rule.get("action").and_then(|action| action.as_str()) == Some("hijack-dns")
+            })
             .expect("dns hijack rule should be generated");
 
-        assert_eq!(dns_hijack_rule.get("type").and_then(|value| value.as_str()), Some("logical"));
-        assert_eq!(dns_hijack_rule.get("mode").and_then(|value| value.as_str()), Some("or"));
+        assert_eq!(
+            dns_hijack_rule.get("type").and_then(|value| value.as_str()),
+            Some("logical")
+        );
+        assert_eq!(
+            dns_hijack_rule.get("mode").and_then(|value| value.as_str()),
+            Some("or")
+        );
 
-        let nested_rules = dns_hijack_rule.get("rules").and_then(|value| value.as_array()).unwrap();
-        assert!(nested_rules.iter().any(|rule| rule.get("protocol").and_then(|value| value.as_str()) == Some("dns")));
-        assert!(nested_rules.iter().any(|rule| rule.get("port").and_then(|value| value.as_u64()) == Some(53)));
+        let nested_rules = dns_hijack_rule
+            .get("rules")
+            .and_then(|value| value.as_array())
+            .unwrap();
+        assert!(nested_rules
+            .iter()
+            .any(|rule| rule.get("protocol").and_then(|value| value.as_str()) == Some("dns")));
+        assert!(nested_rules
+            .iter()
+            .any(|rule| rule.get("port").and_then(|value| value.as_u64()) == Some(53)));
 
         let _ = fs::remove_dir_all(data_dir);
     }
@@ -3098,7 +3879,10 @@ mod tests {
         };
 
         write_json_file(&state.profiles_file(), &profiles_data);
-        write_json_file(&state.configs_dir().join("profile-a.json"), &vec![make_node("node-a")]);
+        write_json_file(
+            &state.configs_dir().join("profile-a.json"),
+            &vec![make_node("node-a")],
+        );
 
         let result = generate_config(&state).await.unwrap();
         assert!(result.success);
@@ -3111,7 +3895,12 @@ mod tests {
             .find(|inbound| inbound.get("tag").and_then(|tag| tag.as_str()) == Some("tun-in"))
             .expect("tun inbound should be generated");
 
-        assert_eq!(tun_inbound.get("strict_route").and_then(|value| value.as_bool()), Some(true));
+        assert_eq!(
+            tun_inbound
+                .get("strict_route")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
 
         let _ = fs::remove_dir_all(data_dir);
     }
@@ -3129,13 +3918,19 @@ mod tests {
         };
 
         write_json_file(&state.profiles_file(), &profiles_data);
-        write_json_file(&state.configs_dir().join("profile-a.json"), &vec![make_node("node-a")]);
+        write_json_file(
+            &state.configs_dir().join("profile-a.json"),
+            &vec![make_node("node-a")],
+        );
 
         let result = generate_config(&state).await.unwrap();
         assert!(result.success);
 
         let config = read_generated_config(&state);
-        assert_eq!(config["experimental"]["cache_file"]["store_rdrc"].as_bool(), Some(true));
+        assert_eq!(
+            config["experimental"]["cache_file"]["store_rdrc"].as_bool(),
+            Some(true)
+        );
 
         let _ = fs::remove_dir_all(data_dir);
     }
@@ -3156,8 +3951,14 @@ mod tests {
         };
 
         write_json_file(&state.profiles_file(), &profiles_data);
-        write_json_file(&state.configs_dir().join("profile-a.json"), &vec![make_node("node-a")]);
-        write_json_file(&state.configs_dir().join("profile-b.json"), &vec![make_node("node-b")]);
+        write_json_file(
+            &state.configs_dir().join("profile-a.json"),
+            &vec![make_node("node-a")],
+        );
+        write_json_file(
+            &state.configs_dir().join("profile-b.json"),
+            &vec![make_node("node-b")],
+        );
 
         *state.rulesets.lock().await = vec![
             make_ruleset("rs-a", "profile", Some("profile-a")),
@@ -3179,6 +3980,536 @@ mod tests {
         assert!(!tags.contains("P:Same Name"));
 
         let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn collect_health_targets_separates_selectors_and_fixed_nodes() {
+        let data_dir = unique_test_dir("health-targets");
+        let state = AppState::new(data_dir.clone());
+
+        let profiles_data = ProfilesData {
+            profiles: vec![
+                make_profile("profile-a", "Profile A"),
+                make_profile("profile-b", "Profile B"),
+            ],
+            active_profile_id: Some("profile-a".to_string()),
+            active_node_tag: Some("node-a".to_string()),
+            node_selections: HashMap::new(),
+        };
+
+        write_json_file(&state.profiles_file(), &profiles_data);
+
+        *state.custom_rules.lock().await = CustomRules {
+            domain_rules: vec![
+                DomainRule {
+                    id: "profile-domain".to_string(),
+                    name: "profile domain".to_string(),
+                    rule_type: "domain".to_string(),
+                    value: "profile.example.com".to_string(),
+                    outbound_mode: "profile".to_string(),
+                    outbound_value: Some("profile-b".to_string()),
+                    enabled: true,
+                },
+                DomainRule {
+                    id: "fixed-domain".to_string(),
+                    name: "fixed domain".to_string(),
+                    rule_type: "domain".to_string(),
+                    value: "fixed.example.com".to_string(),
+                    outbound_mode: "node".to_string(),
+                    outbound_value: Some("fixed-node".to_string()),
+                    enabled: true,
+                },
+            ],
+        };
+        *state.rulesets.lock().await = vec![
+            make_ruleset("rs-profile", "profile", Some("profile-b")),
+            make_ruleset("rs-fixed", "节点", Some("ruleset-node")),
+        ];
+
+        let targets = collect_health_targets(&state).await;
+        let selector_tags: std::collections::HashSet<&str> = targets
+            .iter()
+            .filter(|target| target.kind == HealthTargetKind::Selector)
+            .filter_map(|target| target.selector_tag.as_deref())
+            .collect();
+        assert!(selector_tags.contains("PROXY"));
+        assert!(selector_tags.contains("P:profile-b"));
+
+        let fixed_domain = targets
+            .iter()
+            .find(|target| target.node_tag.as_deref() == Some("fixed-node"))
+            .expect("fixed domain node should be collected");
+        assert_eq!(fixed_domain.kind, HealthTargetKind::FixedNode);
+        assert_eq!(
+            fixed_domain.rule_label.as_deref(),
+            Some("fixed.example.com")
+        );
+        assert!(!fixed_domain.auto_failover);
+
+        let fixed_ruleset = targets
+            .iter()
+            .find(|target| target.node_tag.as_deref() == Some("ruleset-node"))
+            .expect("fixed ruleset node should be collected");
+        assert_eq!(fixed_ruleset.kind, HealthTargetKind::FixedNode);
+        assert_eq!(fixed_ruleset.rule_label.as_deref(), Some("rs-fixed"));
+        assert!(!fixed_ruleset.auto_failover);
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn collect_health_targets_uses_renamed_main_selector_when_proxy_tag_collides() {
+        let data_dir = unique_test_dir("health-targets-proxy-collision");
+        let state = AppState::new(data_dir.clone());
+
+        let profiles_data = ProfilesData {
+            profiles: vec![make_profile("profile-a", "Profile A")],
+            active_profile_id: Some("profile-a".to_string()),
+            active_node_tag: Some("PROXY".to_string()),
+            node_selections: HashMap::new(),
+        };
+
+        write_json_file(&state.profiles_file(), &profiles_data);
+        write_json_file(
+            &state.configs_dir().join("profile-a.json"),
+            &vec![make_node("PROXY")],
+        );
+
+        let targets = collect_health_targets(&state).await;
+        let selector_tags: std::collections::HashSet<&str> = targets
+            .iter()
+            .filter(|target| target.kind == HealthTargetKind::Selector)
+            .filter_map(|target| target.selector_tag.as_deref())
+            .collect();
+
+        assert!(selector_tags.contains("PROXY-kb"));
+        assert!(!selector_tags.contains("PROXY"));
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn health_state_fails_after_three_consecutive_failures() {
+        let mut health = NodeHealth::new("node-a".to_string());
+
+        record_probe_failure(&mut health, "timeout".to_string(), 1_000);
+        assert_eq!(health.status, HealthStatus::Suspect);
+        assert_eq!(health.failure_streak, 1);
+
+        record_probe_failure(&mut health, "timeout".to_string(), 2_000);
+        assert_eq!(health.status, HealthStatus::Suspect);
+        assert_eq!(health.failure_streak, 2);
+
+        record_probe_failure(&mut health, "timeout".to_string(), 3_000);
+        assert_eq!(health.status, HealthStatus::Failed);
+        assert_eq!(health.failure_streak, 3);
+        assert_eq!(health.last_error.as_deref(), Some("timeout"));
+    }
+
+    #[test]
+    fn health_state_recovers_after_two_consecutive_successes() {
+        let mut health = NodeHealth::new("node-a".to_string());
+
+        record_probe_failure(&mut health, "timeout".to_string(), 1_000);
+        record_probe_failure(&mut health, "timeout".to_string(), 2_000);
+        record_probe_failure(&mut health, "timeout".to_string(), 3_000);
+        assert_eq!(health.status, HealthStatus::Failed);
+
+        record_probe_success(&mut health, 120, 4_000);
+        assert_eq!(health.status, HealthStatus::Recovering);
+        assert_eq!(health.success_streak, 1);
+
+        record_probe_success(&mut health, 90, 5_000);
+        assert_eq!(health.status, HealthStatus::Healthy);
+        assert_eq!(health.success_streak, 2);
+        assert_eq!(health.failure_streak, 0);
+        assert_eq!(health.last_latency_ms, Some(90));
+        assert!(health.last_error.is_none());
+    }
+
+    #[test]
+    fn failed_node_uses_backoff_before_next_probe() {
+        let mut health = NodeHealth::new("node-a".to_string());
+
+        record_probe_failure(&mut health, "timeout".to_string(), 1_000);
+        record_probe_failure(&mut health, "timeout".to_string(), 2_000);
+        record_probe_failure(&mut health, "timeout".to_string(), 3_000);
+
+        assert_eq!(health.status, HealthStatus::Failed);
+        assert_eq!(health.next_probe_after, 33_000);
+        assert!(!should_probe(&health, 32_999));
+        assert!(should_probe(&health, 33_000));
+
+        record_probe_failure(&mut health, "timeout".to_string(), 33_000);
+        assert_eq!(health.next_probe_after, 93_000);
+    }
+
+    #[tokio::test]
+    async fn selector_latency_probe_uses_configured_timeout() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (request_tx, request_rx) = tokio::sync::oneshot::channel();
+
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0_u8; 4096];
+            let n = socket.read(&mut buffer).await.unwrap();
+            let request = String::from_utf8_lossy(&buffer[..n]).to_string();
+            let _ = request_tx.send(request);
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 12\r\n\r\n{\"delay\":42}",
+                )
+                .await
+                .unwrap();
+        });
+
+        let result = probe_selector_node_latency(
+            reqwest::Client::new(),
+            port,
+            "node-a".to_string(),
+            "https://example.com/probe".to_string(),
+            1_234,
+        )
+        .await;
+
+        assert_eq!(result, ("node-a".to_string(), Some(42)));
+        let request = request_rx.await.unwrap();
+        assert!(request.contains("timeout=1234"));
+    }
+
+    #[tokio::test]
+    async fn real_proxy_path_probe_succeeds_for_204_through_proxy() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (request_tx, request_rx) = tokio::sync::oneshot::channel();
+
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0_u8; 4096];
+            let n = socket.read(&mut buffer).await.unwrap();
+            let request = String::from_utf8_lossy(&buffer[..n]).to_string();
+            let _ = request_tx.send(request);
+            socket
+                .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+        });
+
+        let latency = probe_real_proxy_path(port, "http://probe.test/generate_204", 1_000)
+            .await
+            .unwrap();
+
+        let request = request_rx.await.unwrap();
+        assert!(request.contains("http://probe.test/generate_204"));
+        assert!(latency < 1_000);
+    }
+
+    #[tokio::test]
+    async fn real_proxy_path_probe_fails_for_503_through_proxy() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0_u8; 4096];
+            let _ = socket.read(&mut buffer).await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+        });
+
+        let err = probe_real_proxy_path(port, "http://probe.test/generate_204", 1_000)
+            .await
+            .unwrap_err();
+
+        assert!(err.contains("503"));
+    }
+
+    #[tokio::test]
+    async fn switch_selector_to_node_reports_http_failure() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0_u8; 4096];
+            let _ = socket.read(&mut buffer).await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+        });
+
+        let err =
+            switch_selector_to_node(&reqwest::Client::new(), port, "P:profile-a", "backup-node")
+                .await
+                .unwrap_err();
+
+        assert!(err.contains("500"));
+    }
+
+    #[test]
+    fn selector_failover_selects_lowest_latency_healthy_backup() {
+        let target = HealthTarget {
+            kind: HealthTargetKind::Selector,
+            selector_tag: Some("P:profile-a".to_string()),
+            node_tag: None,
+            rule_label: None,
+            auto_failover: true,
+        };
+        let selector = SelectorHealth {
+            selector_tag: "P:profile-a".to_string(),
+            current_node: Some("node-a".to_string()),
+            backup_nodes: vec!["node-b".to_string(), "node-c".to_string()],
+            last_switch_at: None,
+            switch_cooldown_until: None,
+        };
+        let mut current = NodeHealth::new("node-a".to_string());
+        current.status = HealthStatus::Failed;
+        current.last_checked_at = 10_000;
+        let mut slow_backup = NodeHealth::new("node-b".to_string());
+        slow_backup.status = HealthStatus::Healthy;
+        slow_backup.last_latency_ms = Some(180);
+        let mut fast_backup = NodeHealth::new("node-c".to_string());
+        fast_backup.status = HealthStatus::Healthy;
+        fast_backup.last_latency_ms = Some(80);
+        let node_health = HashMap::from([
+            ("node-a".to_string(), current),
+            ("node-b".to_string(), slow_backup),
+            ("node-c".to_string(), fast_backup),
+        ]);
+
+        let action = decide_health_action(&target, Some(&selector), &node_health, 10_000);
+
+        assert_eq!(
+            action,
+            HealthAction::SwitchSelector {
+                selector: "P:profile-a".to_string(),
+                from: "node-a".to_string(),
+                to: "node-c".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn selector_failover_does_not_switch_during_cooldown() {
+        let target = HealthTarget {
+            kind: HealthTargetKind::Selector,
+            selector_tag: Some("P:profile-a".to_string()),
+            node_tag: None,
+            rule_label: None,
+            auto_failover: true,
+        };
+        let selector = SelectorHealth {
+            selector_tag: "P:profile-a".to_string(),
+            current_node: Some("node-a".to_string()),
+            backup_nodes: vec!["node-b".to_string()],
+            last_switch_at: Some(1_000),
+            switch_cooldown_until: Some(60_000),
+        };
+        let mut current = NodeHealth::new("node-a".to_string());
+        current.status = HealthStatus::Failed;
+        current.last_checked_at = 30_000;
+        let mut backup = NodeHealth::new("node-b".to_string());
+        backup.status = HealthStatus::Healthy;
+        backup.last_latency_ms = Some(60);
+        let node_health = HashMap::from([
+            ("node-a".to_string(), current),
+            ("node-b".to_string(), backup),
+        ]);
+
+        let action = decide_health_action(&target, Some(&selector), &node_health, 30_000);
+
+        assert_eq!(action, HealthAction::None);
+    }
+
+    #[test]
+    fn selector_without_backup_returns_notify_no_backup() {
+        let target = HealthTarget {
+            kind: HealthTargetKind::Selector,
+            selector_tag: Some("P:profile-a".to_string()),
+            node_tag: None,
+            rule_label: None,
+            auto_failover: true,
+        };
+        let selector = SelectorHealth {
+            selector_tag: "P:profile-a".to_string(),
+            current_node: Some("node-a".to_string()),
+            backup_nodes: vec!["node-b".to_string()],
+            last_switch_at: None,
+            switch_cooldown_until: None,
+        };
+        let mut current = NodeHealth::new("node-a".to_string());
+        current.status = HealthStatus::Failed;
+        current.last_checked_at = 10_000;
+        let mut backup = NodeHealth::new("node-b".to_string());
+        backup.status = HealthStatus::Failed;
+        let node_health = HashMap::from([
+            ("node-a".to_string(), current),
+            ("node-b".to_string(), backup),
+        ]);
+
+        let action = decide_health_action(&target, Some(&selector), &node_health, 10_000);
+
+        assert_eq!(
+            action,
+            HealthAction::NotifyNoBackup {
+                selector: "P:profile-a".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn fixed_node_failure_never_returns_switch_action() {
+        let target = HealthTarget {
+            kind: HealthTargetKind::FixedNode,
+            selector_tag: None,
+            node_tag: Some("fixed-node".to_string()),
+            rule_label: Some("fixed.example.com".to_string()),
+            auto_failover: false,
+        };
+        let mut fixed = NodeHealth::new("fixed-node".to_string());
+        fixed.status = HealthStatus::Failed;
+        fixed.last_checked_at = 10_000;
+        let node_health = HashMap::from([("fixed-node".to_string(), fixed)]);
+
+        let action = decide_health_action(&target, None, &node_health, 10_000);
+
+        assert_eq!(
+            action,
+            HealthAction::NotifyFixedNodeFailed {
+                node: "fixed-node".to_string(),
+                rule: Some("fixed.example.com".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn fixed_node_failure_is_not_reported_again_before_next_probe() {
+        let target = HealthTarget {
+            kind: HealthTargetKind::FixedNode,
+            selector_tag: None,
+            node_tag: Some("fixed-node".to_string()),
+            rule_label: Some("fixed.example.com".to_string()),
+            auto_failover: false,
+        };
+        let mut fixed = NodeHealth::new("fixed-node".to_string());
+        fixed.status = HealthStatus::Failed;
+        fixed.last_checked_at = 1_000;
+        fixed.next_probe_after = 31_000;
+        let node_health = HashMap::from([("fixed-node".to_string(), fixed)]);
+
+        let action = decide_health_action(&target, None, &node_health, 10_000);
+
+        assert_eq!(action, HealthAction::None);
+    }
+
+    #[tokio::test]
+    async fn health_monitor_disabled_does_not_install_cancel_token() {
+        let data_dir = unique_test_dir("health-monitor-disabled");
+        let state = AppState::new(data_dir.clone());
+
+        let cancel = prepare_health_monitor_cancel(&state, false).await;
+
+        assert!(cancel.is_none());
+        assert!(state.health_cancel.lock().await.is_none());
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn cancel_health_monitor_cancels_existing_token() {
+        let data_dir = unique_test_dir("health-monitor-cancel");
+        let state = AppState::new(data_dir.clone());
+        let token = CancellationToken::new();
+        *state.health_cancel.lock().await = Some(token.clone());
+
+        cancel_health_monitor(state.health_cancel.clone()).await;
+
+        assert!(token.is_cancelled());
+        assert!(state.health_cancel.lock().await.is_none());
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn main_selector_auto_failover_disabled_returns_manual_notify() {
+        let mut settings = AppSettings::default();
+        settings.main_node_auto_failover = false;
+        let action = HealthAction::SwitchSelector {
+            selector: "PROXY".to_string(),
+            from: "node-a".to_string(),
+            to: "node-b".to_string(),
+        };
+
+        let gated =
+            gate_main_selector_health_action(action, &settings, (false, None), (false, None));
+
+        assert_eq!(
+            gated,
+            HealthAction::NotifyMainNodeNeedsManualSwitch {
+                selector: "PROXY".to_string(),
+                from: "node-a".to_string(),
+                to: "node-b".to_string(),
+                reason: "主节点故障自动切换未开启".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn main_selector_signature_mismatch_returns_manual_notify() {
+        let mut settings = AppSettings::default();
+        settings.main_node_auto_failover = true;
+        let action = HealthAction::SwitchSelector {
+            selector: "PROXY".to_string(),
+            from: "node-a".to_string(),
+            to: "node-b".to_string(),
+        };
+
+        let gated = gate_main_selector_health_action(
+            action,
+            &settings,
+            (false, None),
+            (true, Some("https://dns.example/dns-query".to_string())),
+        );
+
+        assert_eq!(
+            gated,
+            HealthAction::NotifyMainNodeNeedsManualSwitch {
+                selector: "PROXY".to_string(),
+                from: "node-a".to_string(),
+                to: "node-b".to_string(),
+                reason: "目标节点需要不同的 DNS bootstrap，未自动切换".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn fixed_node_failure_action_builds_fixed_node_event() {
+        let action = HealthAction::NotifyFixedNodeFailed {
+            node: "fixed-node".to_string(),
+            rule: Some("fixed.example.com".to_string()),
+        };
+
+        let event = health_event_for_action(&action).expect("fixed node event should be emitted");
+
+        assert_eq!(event.kind, HealthEventKind::FixedNodeFailed);
+        assert_eq!(event.node.as_deref(), Some("fixed-node"));
+        assert_eq!(event.rule.as_deref(), Some("fixed.example.com"));
+        assert_eq!(
+            event.message,
+            "分流节点不可用：fixed-node。该规则绑定了固定节点，KunBox 未自动更换，请手动调整规则或节点。"
+        );
     }
 
     #[tokio::test]
@@ -3208,10 +4539,15 @@ mod tests {
         let outbounds = config["outbounds"].as_array().unwrap();
         let selector = outbounds
             .iter()
-            .find(|outbound| outbound.get("tag").and_then(|tag| tag.as_str()) == Some("P:profile-a"))
+            .find(|outbound| {
+                outbound.get("tag").and_then(|tag| tag.as_str()) == Some("P:profile-a")
+            })
             .expect("expected profile selector");
 
-        assert_eq!(selector.get("default").and_then(|value| value.as_str()), Some("node-b"));
+        assert_eq!(
+            selector.get("default").and_then(|value| value.as_str()),
+            Some("node-b")
+        );
 
         let _ = fs::remove_dir_all(data_dir);
     }
@@ -3232,8 +4568,14 @@ mod tests {
         };
 
         write_json_file(&state.profiles_file(), &profiles_data);
-        write_json_file(&state.configs_dir().join("profile-a.json"), &vec![make_node("shared-node")]);
-        write_json_file(&state.configs_dir().join("profile-b.json"), &vec![make_node("shared-node")]);
+        write_json_file(
+            &state.configs_dir().join("profile-a.json"),
+            &vec![make_node("shared-node")],
+        );
+        write_json_file(
+            &state.configs_dir().join("profile-b.json"),
+            &vec![make_node("shared-node")],
+        );
 
         *state.rulesets.lock().await = vec![make_ruleset("rs-b", "profile", Some("profile-b"))];
 
@@ -3252,7 +4594,9 @@ mod tests {
 
         let selector = outbounds
             .iter()
-            .find(|outbound| outbound.get("tag").and_then(|tag| tag.as_str()) == Some("P:profile-b"))
+            .find(|outbound| {
+                outbound.get("tag").and_then(|tag| tag.as_str()) == Some("P:profile-b")
+            })
             .expect("expected profile-b selector");
         let selector_outbounds: Vec<&str> = selector
             .get("outbounds")
@@ -3287,8 +4631,14 @@ mod tests {
         };
 
         write_json_file(&state.profiles_file(), &profiles_data);
-        write_json_file(&state.configs_dir().join("profile-a.json"), &vec![make_node("shared-node")]);
-        write_json_file(&state.configs_dir().join("profile-b.json"), &vec![make_node("shared-node")]);
+        write_json_file(
+            &state.configs_dir().join("profile-a.json"),
+            &vec![make_node("shared-node")],
+        );
+        write_json_file(
+            &state.configs_dir().join("profile-b.json"),
+            &vec![make_node("shared-node")],
+        );
 
         *state.custom_rules.lock().await = CustomRules {
             domain_rules: vec![make_domain_rule("example.com", "profile-b::shared-node")],
@@ -3314,7 +4664,11 @@ mod tests {
             .find(|rule| {
                 rule.get("domain")
                     .and_then(|domain| domain.as_array())
-                    .map(|domains| domains.iter().any(|value| value.as_str() == Some("example.com")))
+                    .map(|domains| {
+                        domains
+                            .iter()
+                            .any(|value| value.as_str() == Some("example.com"))
+                    })
                     .unwrap_or(false)
             })
             .unwrap();
@@ -3343,8 +4697,14 @@ mod tests {
         };
 
         write_json_file(&state.profiles_file(), &profiles_data);
-        write_json_file(&state.configs_dir().join("profile-a.json"), &vec![make_node("shared-node")]);
-        write_json_file(&state.configs_dir().join("profile-b.json"), &vec![make_node("shared-node")]);
+        write_json_file(
+            &state.configs_dir().join("profile-a.json"),
+            &vec![make_node("shared-node")],
+        );
+        write_json_file(
+            &state.configs_dir().join("profile-b.json"),
+            &vec![make_node("shared-node")],
+        );
         fs::create_dir_all(state.rulesets_cache_dir()).unwrap();
         fs::write(state.rulesets_cache_dir().join("rs-profile.srs"), b"dummy").unwrap();
         fs::write(state.rulesets_cache_dir().join("rs-bare.srs"), b"dummy").unwrap();
@@ -3368,25 +4728,43 @@ mod tests {
         assert!(tags.contains("profile-b::shared-node"));
 
         let rules = config["route"]["rules"].as_array().unwrap();
-        let profile_ruleset_rule = rules.iter().find(|rule| {
-            rule.get("rule_set")
-                .and_then(|rule_set| rule_set.as_array())
-                .map(|rule_sets| rule_sets.iter().any(|value| value.as_str() == Some("rs-profile")))
-                .unwrap_or(false)
-        }).unwrap();
-        let bare_ruleset_rule = rules.iter().find(|rule| {
-            rule.get("rule_set")
-                .and_then(|rule_set| rule_set.as_array())
-                .map(|rule_sets| rule_sets.iter().any(|value| value.as_str() == Some("rs-bare")))
-                .unwrap_or(false)
-        }).unwrap();
+        let profile_ruleset_rule = rules
+            .iter()
+            .find(|rule| {
+                rule.get("rule_set")
+                    .and_then(|rule_set| rule_set.as_array())
+                    .map(|rule_sets| {
+                        rule_sets
+                            .iter()
+                            .any(|value| value.as_str() == Some("rs-profile"))
+                    })
+                    .unwrap_or(false)
+            })
+            .unwrap();
+        let bare_ruleset_rule = rules
+            .iter()
+            .find(|rule| {
+                rule.get("rule_set")
+                    .and_then(|rule_set| rule_set.as_array())
+                    .map(|rule_sets| {
+                        rule_sets
+                            .iter()
+                            .any(|value| value.as_str() == Some("rs-bare"))
+                    })
+                    .unwrap_or(false)
+            })
+            .unwrap();
 
         assert_eq!(
-            profile_ruleset_rule.get("outbound").and_then(|value| value.as_str()),
+            profile_ruleset_rule
+                .get("outbound")
+                .and_then(|value| value.as_str()),
             Some("profile-b::shared-node")
         );
         assert_eq!(
-            bare_ruleset_rule.get("outbound").and_then(|value| value.as_str()),
+            bare_ruleset_rule
+                .get("outbound")
+                .and_then(|value| value.as_str()),
             Some("shared-node")
         );
 
@@ -3441,20 +4819,42 @@ mod tests {
             .find(|server| server.get("tag").and_then(|value| value.as_str()) == Some("dns-remote"))
             .unwrap();
 
-        assert_eq!(dns_remote.get("server").and_then(|value| value.as_str()), Some("dns.alidns.com"));
-        assert_eq!(dns_remote.get("path").and_then(|value| value.as_str()), Some("/dns-query"));
-        assert_eq!(dns_remote.get("domain_resolver").and_then(|value| value.as_str()), Some("dns-bootstrap"));
-        assert!(dns_remote.get("detour").is_none(), "ECH bootstrap DNS must not detour through proxy");
+        assert_eq!(
+            dns_remote.get("server").and_then(|value| value.as_str()),
+            Some("dns.alidns.com")
+        );
+        assert_eq!(
+            dns_remote.get("path").and_then(|value| value.as_str()),
+            Some("/dns-query")
+        );
+        assert_eq!(
+            dns_remote
+                .get("domain_resolver")
+                .and_then(|value| value.as_str()),
+            Some("dns-bootstrap")
+        );
+        assert!(
+            dns_remote.get("detour").is_none(),
+            "ECH bootstrap DNS must not detour through proxy"
+        );
 
         let dns_bootstrap = config["dns"]["servers"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|server| server.get("tag").and_then(|value| value.as_str()) == Some("dns-bootstrap"))
+            .find(|server| {
+                server.get("tag").and_then(|value| value.as_str()) == Some("dns-bootstrap")
+            })
             .unwrap();
 
-        assert_eq!(dns_bootstrap.get("type").and_then(|value| value.as_str()), Some("https"));
-        assert_eq!(dns_bootstrap.get("server").and_then(|value| value.as_str()), Some("223.5.5.5"));
+        assert_eq!(
+            dns_bootstrap.get("type").and_then(|value| value.as_str()),
+            Some("https")
+        );
+        assert_eq!(
+            dns_bootstrap.get("server").and_then(|value| value.as_str()),
+            Some("223.5.5.5")
+        );
         assert_eq!(
             config["route"]["default_domain_resolver"]
                 .get("server")
@@ -3531,9 +4931,14 @@ mod tests {
             .find(|server| server.get("tag").and_then(|value| value.as_str()) == Some("dns-remote"))
             .unwrap();
 
-        assert_eq!(dns_remote.get("detour").and_then(|value| value.as_str()), Some("PROXY"));
         assert_eq!(
-            dns_remote.get("domain_resolver").and_then(|value| value.as_str()),
+            dns_remote.get("detour").and_then(|value| value.as_str()),
+            Some("PROXY")
+        );
+        assert_eq!(
+            dns_remote
+                .get("domain_resolver")
+                .and_then(|value| value.as_str()),
             Some("dns-bootstrap")
         );
 
@@ -3553,7 +4958,10 @@ mod tests {
         };
 
         write_json_file(&state.profiles_file(), &profiles_data);
-        write_json_file(&state.configs_dir().join("profile-xhttp.json"), &vec![make_xhttp_node("XHTTP Node")]);
+        write_json_file(
+            &state.configs_dir().join("profile-xhttp.json"),
+            &vec![make_xhttp_node("XHTTP Node")],
+        );
 
         let result = generate_config(&state).await.unwrap();
         assert!(result.success);
@@ -3566,13 +4974,23 @@ mod tests {
             .find(|node| node.get("tag").and_then(|value| value.as_str()) == Some("XHTTP Node"))
             .unwrap();
 
-        assert_eq!(outbound.get("type").and_then(|value| value.as_str()), Some("socks"));
-        assert_eq!(outbound.get("server").and_then(|value| value.as_str()), Some("127.0.0.1"));
-        assert!(outbound.get("server_port").and_then(|value| value.as_u64()).is_some());
+        assert_eq!(
+            outbound.get("type").and_then(|value| value.as_str()),
+            Some("socks")
+        );
+        assert_eq!(
+            outbound.get("server").and_then(|value| value.as_str()),
+            Some("127.0.0.1")
+        );
+        assert!(outbound
+            .get("server_port")
+            .and_then(|value| value.as_u64())
+            .is_some());
 
         let plugin_specs: serde_json::Value = serde_json::from_str(
-            &fs::read_to_string(state.config_dir.join("plugin-bridges.json")).unwrap()
-        ).unwrap();
+            &fs::read_to_string(state.config_dir.join("plugin-bridges.json")).unwrap(),
+        )
+        .unwrap();
         let spec = plugin_specs.as_array().unwrap().first().unwrap();
 
         assert_eq!(spec["tag"].as_str(), Some("XHTTP Node"));
@@ -3611,12 +5029,19 @@ mod tests {
             .find(|rule| {
                 rule.get("ip_cidr")
                     .and_then(|values| values.as_array())
-                    .map(|values| values.iter().any(|value| value.as_str() == Some("35.194.192.123/32")))
+                    .map(|values| {
+                        values
+                            .iter()
+                            .any(|value| value.as_str() == Some("35.194.192.123/32"))
+                    })
                     .unwrap_or(false)
             })
             .expect("xray plugin remote server must bypass TUN proxy loop");
 
-        assert_eq!(remote_rule.get("outbound").and_then(|value| value.as_str()), Some("direct"));
+        assert_eq!(
+            remote_rule.get("outbound").and_then(|value| value.as_str()),
+            Some("direct")
+        );
 
         let _ = fs::remove_dir_all(data_dir);
     }
@@ -3636,7 +5061,10 @@ mod tests {
         };
 
         write_json_file(&state.profiles_file(), &profiles_data);
-        write_json_file(&state.configs_dir().join("profile-a.json"), &vec![make_node("node-a")]);
+        write_json_file(
+            &state.configs_dir().join("profile-a.json"),
+            &vec![make_node("node-a")],
+        );
 
         let result = generate_config(&state).await.unwrap();
         assert!(result.success);
@@ -3649,7 +5077,12 @@ mod tests {
             .find(|inbound| inbound.get("tag").and_then(|tag| tag.as_str()) == Some("tun-in"))
             .expect("tun inbound should be generated");
 
-        assert_eq!(tun_inbound.get("strict_route").and_then(|value| value.as_bool()), Some(true));
+        assert_eq!(
+            tun_inbound
+                .get("strict_route")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
 
         let _ = fs::remove_dir_all(data_dir);
     }
@@ -3673,7 +5106,10 @@ mod tests {
         };
 
         write_json_file(&state.profiles_file(), &profiles_data);
-        write_json_file(&state.configs_dir().join("profile-a.json"), &vec![make_node("node-a")]);
+        write_json_file(
+            &state.configs_dir().join("profile-a.json"),
+            &vec![make_node("node-a")],
+        );
 
         let result = generate_config(&state).await.unwrap();
         assert!(result.success);
@@ -3682,10 +5118,15 @@ mod tests {
         let dns_rules = config["dns"]["rules"].as_array().unwrap();
         let fake_dns_rule = dns_rules
             .iter()
-            .find(|rule| rule.get("server").and_then(|server| server.as_str()) == Some("dns-fakeip"))
+            .find(|rule| {
+                rule.get("server").and_then(|server| server.as_str()) == Some("dns-fakeip")
+            })
             .expect("fake dns rule should be generated");
 
-        let inbound = fake_dns_rule.get("inbound").and_then(|v| v.as_array()).unwrap();
+        let inbound = fake_dns_rule
+            .get("inbound")
+            .and_then(|v| v.as_array())
+            .unwrap();
         assert_eq!(inbound.len(), 1);
         assert_eq!(inbound[0].as_str(), Some("tun-in"));
 
@@ -3705,7 +5146,10 @@ mod tests {
         };
 
         write_json_file(&state.profiles_file(), &profiles_data);
-        write_json_file(&state.configs_dir().join("profile-a.json"), &vec![make_node("node-a")]);
+        write_json_file(
+            &state.configs_dir().join("profile-a.json"),
+            &vec![make_node("node-a")],
+        );
         *state.custom_rules.lock().await = CustomRules {
             domain_rules: vec![DomainRule {
                 id: "rule-direct".to_string(),
@@ -3723,11 +5167,16 @@ mod tests {
 
         let config = read_generated_config(&state);
         let inbounds = config["inbounds"].as_array().unwrap();
-        assert!(inbounds.iter().all(|inbound| {
-            inbound.get("tag").and_then(|tag| tag.as_str()) != Some("tun-in")
-        }));
+        assert!(inbounds
+            .iter()
+            .all(|inbound| { inbound.get("tag").and_then(|tag| tag.as_str()) != Some("tun-in") }));
 
-        assert_eq!(config["dns"].get("reverse_mapping").and_then(|value| value.as_bool()), Some(true));
+        assert_eq!(
+            config["dns"]
+                .get("reverse_mapping")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
 
         let route_rules = config["route"]["rules"].as_array().unwrap();
         assert!(has_sniff_rule_for_inbound(route_rules, "mixed-in"));
@@ -3736,7 +5185,11 @@ mod tests {
         assert!(route_rules.iter().any(|rule| {
             rule.get("domain_suffix")
                 .and_then(|value| value.as_array())
-                .is_some_and(|domains| domains.iter().any(|domain| domain.as_str() == Some("example.com")))
+                .is_some_and(|domains| {
+                    domains
+                        .iter()
+                        .any(|domain| domain.as_str() == Some("example.com"))
+                })
                 && rule.get("outbound").and_then(|value| value.as_str()) == Some("direct")
         }));
 
@@ -3758,10 +5211,22 @@ mod tests {
             outbound["settings"]["vnext"][0]["users"][0]["encryption"].as_str(),
             Some("mlkem768x25519plus.native.0rtt.test")
         );
-        assert_eq!(outbound["settings"]["vnext"][0]["users"][0]["flow"].as_str(), Some("xtls-rprx-vision"));
-        assert_eq!(outbound["streamSettings"]["network"].as_str(), Some("xhttp"));
-        assert_eq!(outbound["streamSettings"]["xhttpSettings"]["path"].as_str(), Some("/proxy"));
-        assert_eq!(outbound["streamSettings"]["xhttpSettings"]["host"].as_str(), Some("cdn.example.com"));
+        assert_eq!(
+            outbound["settings"]["vnext"][0]["users"][0]["flow"].as_str(),
+            Some("xtls-rprx-vision")
+        );
+        assert_eq!(
+            outbound["streamSettings"]["network"].as_str(),
+            Some("xhttp")
+        );
+        assert_eq!(
+            outbound["streamSettings"]["xhttpSettings"]["path"].as_str(),
+            Some("/proxy")
+        );
+        assert_eq!(
+            outbound["streamSettings"]["xhttpSettings"]["host"].as_str(),
+            Some("cdn.example.com")
+        );
     }
 
     #[test]
@@ -3779,10 +5244,16 @@ mod tests {
 
         let outbound = node_for_singbox_with_plugin_bridge(&node, &mut bridge_specs);
 
-        assert_eq!(outbound.get("type").and_then(|value| value.as_str()), Some("naive"));
+        assert_eq!(
+            outbound.get("type").and_then(|value| value.as_str()),
+            Some("naive")
+        );
         assert!(outbound.get("network").is_none());
         assert!(outbound.get("transport").is_none());
-        assert_eq!(outbound.get("quic").and_then(|value| value.as_bool()), Some(false));
+        assert_eq!(
+            outbound.get("quic").and_then(|value| value.as_bool()),
+            Some(false)
+        );
         assert_eq!(
             outbound
                 .get("domain_strategy")
@@ -3817,7 +5288,10 @@ mod tests {
                 .and_then(|value| value.as_bool()),
             Some(true)
         );
-        assert!(outbound.get("tls").and_then(|value| value.get("insecure")).is_none());
+        assert!(outbound
+            .get("tls")
+            .and_then(|value| value.get("insecure"))
+            .is_none());
     }
 
     #[test]
@@ -3931,7 +5405,9 @@ mod tests {
             outbound["settings"]["vnext"][0]["users"][0]["encryption"].as_str(),
             Some("mlkem768x25519plus.native.0rtt.legacy")
         );
-        assert!(outbound["streamSettings"]["xhttpSettings"]["extra"].get("encryption").is_none());
+        assert!(outbound["streamSettings"]["xhttpSettings"]["extra"]
+            .get("encryption")
+            .is_none());
         assert_eq!(
             outbound["streamSettings"]["xhttpSettings"]["extra"]["noGRPCHeader"].as_bool(),
             Some(true)
@@ -3972,7 +5448,9 @@ mod tests {
         for sample in samples {
             let lower = sample.to_lowercase();
             assert!(
-                lower.contains("not found") || lower.contains("没有运行的任务") || lower.contains("没有找到")
+                lower.contains("not found")
+                    || lower.contains("没有运行的任务")
+                    || lower.contains("没有找到")
             );
         }
     }
@@ -4058,6 +5536,197 @@ async fn start_traffic_polling(
     }
 }
 
+async fn prepare_health_monitor_cancel(
+    state: &AppState,
+    enabled: bool,
+) -> Option<CancellationToken> {
+    if !enabled {
+        return None;
+    }
+
+    let cancel = CancellationToken::new();
+    let mut guard = state.health_cancel.lock().await;
+    if let Some(previous) = guard.take() {
+        previous.cancel();
+    }
+    *guard = Some(cancel.clone());
+    Some(cancel)
+}
+
+async fn cancel_health_monitor(health_cancel: Arc<tokio::sync::Mutex<Option<CancellationToken>>>) {
+    if let Some(cancel) = health_cancel.lock().await.take() {
+        cancel.cancel();
+    }
+}
+
+async fn start_health_monitor(app: AppHandle, state: &AppState, settings: AppSettings) {
+    let Some(cancel) = prepare_health_monitor_cancel(state, settings.health_monitor_enabled).await
+    else {
+        return;
+    };
+    let state_for_monitor = state.clone();
+    tokio::spawn(async move {
+        run_health_monitor(app, state_for_monitor, cancel, settings).await;
+    });
+}
+
+async fn run_health_monitor(
+    app: AppHandle,
+    state: AppState,
+    cancel: CancellationToken,
+    settings: AppSettings,
+) {
+    tokio::select! {
+        _ = cancel.cancelled() => return,
+        _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => {}
+    }
+
+    let client = reqwest::Client::new();
+    let mut node_health = std::collections::HashMap::new();
+    let mut selector_health = std::collections::HashMap::new();
+
+    loop {
+        if !matches!(*state.proxy_state.lock().await, ProxyState::Connected) {
+            break;
+        }
+
+        run_health_monitor_once(
+            &app,
+            &state,
+            &settings,
+            &client,
+            &mut node_health,
+            &mut selector_health,
+        )
+        .await;
+
+        let interval = settings.health_probe_interval_sec.max(5);
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            _ = tokio::time::sleep(std::time::Duration::from_secs(interval)) => {}
+        }
+    }
+}
+
+async fn run_health_monitor_once(
+    app: &AppHandle,
+    state: &AppState,
+    settings: &AppSettings,
+    client: &reqwest::Client,
+    node_health: &mut std::collections::HashMap<String, NodeHealth>,
+    selector_health: &mut std::collections::HashMap<String, SelectorHealth>,
+) {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let clash_api_port = get_clash_api_port(state).await;
+    let targets = collect_health_targets(state).await;
+
+    for target in targets {
+        match target.kind {
+            HealthTargetKind::Selector => {
+                let Some(selector_tag) = target.selector_tag.as_deref() else {
+                    continue;
+                };
+                let Some(mut selector) =
+                    fetch_selector_health(client, clash_api_port, selector_tag).await
+                else {
+                    continue;
+                };
+                if let Some(previous) = selector_health.get(selector_tag) {
+                    selector.last_switch_at = previous.last_switch_at;
+                    selector.switch_cooldown_until = previous.switch_cooldown_until;
+                }
+
+                if let Some(current_node) = selector.current_node.clone() {
+                    let probe_url = health_probe_url_for_target(&target, settings);
+                    let health = node_health
+                        .entry(current_node.clone())
+                        .or_insert_with(|| NodeHealth::new(current_node.clone()));
+                    if should_probe(health, now_ms) {
+                        match probe_real_proxy_path(
+                            settings.local_port,
+                            &probe_url,
+                            settings.latency_test_timeout as u64,
+                        )
+                        .await
+                        {
+                            Ok(latency) => record_probe_success(health, latency, now_ms),
+                            Err(err) => record_probe_failure(health, err, now_ms),
+                        }
+                    }
+                }
+
+                for backup_node in selector.backup_nodes.iter().take(HEALTH_BACKUP_PROBE_LIMIT) {
+                    let health = node_health
+                        .entry(backup_node.clone())
+                        .or_insert_with(|| NodeHealth::new(backup_node.clone()));
+                    if !should_probe(health, now_ms) {
+                        continue;
+                    }
+                    let (_, latency) = probe_selector_node_latency(
+                        client.clone(),
+                        clash_api_port,
+                        backup_node.clone(),
+                        settings.latency_test_url.clone(),
+                        settings.latency_test_timeout as u64,
+                    )
+                    .await;
+                    match latency {
+                        Some(value) => record_probe_success(health, value, now_ms),
+                        None => record_probe_failure(
+                            health,
+                            "Clash API delay 探针失败".to_string(),
+                            now_ms,
+                        ),
+                    }
+                }
+
+                let action = decide_health_action(&target, Some(&selector), node_health, now_ms);
+                let action = gate_health_action_for_state(action, state, settings).await;
+                let action_executed =
+                    execute_health_action(app, state, client, clash_api_port, &action).await;
+
+                if action_executed {
+                    if let HealthAction::SwitchSelector {
+                        selector: switched_selector,
+                        ..
+                    } = action
+                    {
+                        if switched_selector == selector_tag {
+                            selector.last_switch_at = Some(now_ms);
+                            selector.switch_cooldown_until =
+                                Some(now_ms + HEALTH_SELECTOR_SWITCH_COOLDOWN_MS);
+                        }
+                    }
+                }
+                selector_health.insert(selector_tag.to_string(), selector);
+            }
+            HealthTargetKind::FixedNode => {
+                let Some(node_tag) = target.node_tag.clone() else {
+                    continue;
+                };
+                let probe_url = health_probe_url_for_target(&target, settings);
+                let health = node_health
+                    .entry(node_tag.clone())
+                    .or_insert_with(|| NodeHealth::new(node_tag));
+                if should_probe(health, now_ms) {
+                    match probe_real_proxy_path(
+                        settings.local_port,
+                        &probe_url,
+                        settings.latency_test_timeout as u64,
+                    )
+                    .await
+                    {
+                        Ok(latency) => record_probe_success(health, latency, now_ms),
+                        Err(err) => record_probe_failure(health, err, now_ms),
+                    }
+                }
+                let action = decide_health_action(&target, None, node_health, now_ms);
+                execute_health_action(app, state, client, clash_api_port, &action).await;
+            }
+        }
+    }
+}
+
 async fn load_profiles_data_from_file(state: &AppState) -> crate::types::ProfilesData {
     let profiles_file = state.profiles_file();
     if !profiles_file.exists() {
@@ -4065,9 +5734,14 @@ async fn load_profiles_data_from_file(state: &AppState) -> crate::types::Profile
     }
 
     match fs::read_to_string(&profiles_file) {
-        Ok(content) => serde_json::from_str::<crate::types::ProfilesData>(&content).unwrap_or_default(),
+        Ok(content) => {
+            serde_json::from_str::<crate::types::ProfilesData>(&content).unwrap_or_default()
+        }
         Err(err) => {
-            log::warn!("Failed to read profiles file for selector collection: {}", err);
+            log::warn!(
+                "Failed to read profiles file for selector collection: {}",
+                err
+            );
             crate::types::ProfilesData::default()
         }
     }
@@ -4117,24 +5791,335 @@ async fn collect_referenced_profile_selector_tags(state: &AppState) -> Vec<Strin
     selector_tags
 }
 
+async fn resolve_health_main_selector_tag(state: &AppState) -> String {
+    let profiles_data = load_profiles_data_from_file(state).await;
+    let nodes = profiles_data
+        .active_profile_id
+        .as_deref()
+        .and_then(|profile_id| profile_nodes_path(state, profile_id).ok())
+        .and_then(|nodes_file| fs::read_to_string(nodes_file).ok())
+        .and_then(|content| serde_json::from_str::<Vec<serde_json::Value>>(&content).ok())
+        .map(|raw_nodes| {
+            raw_nodes
+                .iter()
+                .map(process_node)
+                .filter(|node| {
+                    node.get("type")
+                        .and_then(|value| value.as_str())
+                        .is_some_and(is_proxy_type)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let rulesets = state.rulesets.lock().await.clone();
+    let custom_rules = state.custom_rules.lock().await.clone();
+    let (referenced_profile_ids, referenced_profile_scoped_node_refs) =
+        collect_route_profile_and_node_references(&rulesets, &custom_rules);
+
+    if selector_tag_collides(
+        "PROXY",
+        &nodes,
+        &referenced_profile_scoped_node_refs,
+        &referenced_profile_ids,
+    ) {
+        "PROXY-kb".to_string()
+    } else {
+        "PROXY".to_string()
+    }
+}
+
+async fn collect_health_targets(state: &AppState) -> Vec<HealthTarget> {
+    let mut targets = Vec::new();
+    let mut seen_selectors = std::collections::HashSet::new();
+    let mut seen_fixed = std::collections::HashSet::new();
+
+    let main_selector_tag = resolve_health_main_selector_tag(state).await;
+    if seen_selectors.insert(main_selector_tag.clone()) {
+        targets.push(HealthTarget {
+            kind: HealthTargetKind::Selector,
+            selector_tag: Some(main_selector_tag),
+            node_tag: None,
+            rule_label: None,
+            auto_failover: true,
+        });
+    }
+
+    for selector_tag in collect_referenced_profile_selector_tags(state).await {
+        if seen_selectors.insert(selector_tag.clone()) {
+            targets.push(HealthTarget {
+                kind: HealthTargetKind::Selector,
+                selector_tag: Some(selector_tag),
+                node_tag: None,
+                rule_label: None,
+                auto_failover: true,
+            });
+        }
+    }
+
+    let rulesets = state.rulesets.lock().await.clone();
+    let custom_rules = state.custom_rules.lock().await.clone();
+
+    for rule in custom_rules.domain_rules.iter().filter(|rule| rule.enabled) {
+        if rule.outbound_mode != "node" {
+            continue;
+        }
+
+        let Some(node_ref) = rule.outbound_value.as_deref() else {
+            continue;
+        };
+        let node_tag = normalized_node_reference_tag(node_ref);
+        let dedup_key = format!("domain:{}:{}", rule.value, node_tag);
+        if seen_fixed.insert(dedup_key) {
+            targets.push(HealthTarget {
+                kind: HealthTargetKind::FixedNode,
+                selector_tag: None,
+                node_tag: Some(node_tag),
+                rule_label: Some(rule.value.clone()),
+                auto_failover: false,
+            });
+        }
+    }
+
+    for ruleset in rulesets.iter().filter(|ruleset| ruleset.enabled) {
+        if !matches!(ruleset.outbound_mode.as_str(), "node" | "节点") {
+            continue;
+        }
+
+        let Some(node_ref) = ruleset.outbound_value.as_deref() else {
+            continue;
+        };
+        let node_tag = normalized_node_reference_tag(node_ref);
+        let dedup_key = format!("ruleset:{}:{}", ruleset.tag, node_tag);
+        if seen_fixed.insert(dedup_key) {
+            targets.push(HealthTarget {
+                kind: HealthTargetKind::FixedNode,
+                selector_tag: None,
+                node_tag: Some(node_tag),
+                rule_label: Some(ruleset.tag.clone()),
+                auto_failover: false,
+            });
+        }
+    }
+
+    targets
+}
+
+fn health_probe_url_for_target(target: &HealthTarget, settings: &AppSettings) -> String {
+    if let Some(label) = target.rule_label.as_deref() {
+        let label = label.trim();
+        if !label.is_empty()
+            && label.contains('.')
+            && !label.contains('/')
+            && !label.starts_with("rs-")
+        {
+            return format!("https://{}/", label.trim_start_matches('.'));
+        }
+    }
+
+    settings.latency_test_url.clone()
+}
+
+async fn fetch_selector_health(
+    client: &reqwest::Client,
+    clash_api_port: u16,
+    selector_tag: &str,
+) -> Option<SelectorHealth> {
+    let resp = client
+        .get(format!(
+            "http://127.0.0.1:{}/proxies/{}",
+            clash_api_port,
+            urlencoding::encode(selector_tag)
+        ))
+        .timeout(std::time::Duration::from_secs(3))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+
+    let data = resp.json::<serde_json::Value>().await.ok()?;
+    let current_node = data
+        .get("now")
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string());
+    let backup_nodes = data
+        .get("all")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .filter(|node| Some(*node) != current_node.as_deref())
+                .map(|node| node.to_string())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    Some(SelectorHealth {
+        selector_tag: selector_tag.to_string(),
+        current_node,
+        backup_nodes,
+        last_switch_at: None,
+        switch_cooldown_until: None,
+    })
+}
+
+async fn main_selector_node_signatures(
+    state: &AppState,
+    from: &str,
+    to: &str,
+) -> ((bool, Option<String>), (bool, Option<String>)) {
+    let profiles_data = load_profiles_data_from_file(state).await;
+    let Some(active_profile_id) = profiles_data.active_profile_id.as_deref() else {
+        return ((false, None), (false, None));
+    };
+    let nodes_file = match profile_nodes_path(state, active_profile_id) {
+        Ok(path) => path,
+        Err(_) => return ((false, None), (false, None)),
+    };
+    let raw_nodes = fs::read_to_string(nodes_file)
+        .ok()
+        .and_then(|content| serde_json::from_str::<Vec<serde_json::Value>>(&content).ok())
+        .unwrap_or_default();
+
+    (
+        node_bootstrap_signature(active_or_first_node(&raw_nodes, Some(from))),
+        node_bootstrap_signature(active_or_first_node(&raw_nodes, Some(to))),
+    )
+}
+
+async fn gate_health_action_for_state(
+    action: HealthAction,
+    state: &AppState,
+    settings: &AppSettings,
+) -> HealthAction {
+    let HealthAction::SwitchSelector { selector, from, to } = action else {
+        return action;
+    };
+
+    if !is_main_selector_tag(&selector) {
+        return HealthAction::SwitchSelector { selector, from, to };
+    }
+
+    let (previous_signature, target_signature) =
+        main_selector_node_signatures(state, &from, &to).await;
+    gate_main_selector_health_action(
+        HealthAction::SwitchSelector { selector, from, to },
+        settings,
+        previous_signature,
+        target_signature,
+    )
+}
+
+async fn persist_main_active_node(state: &AppState, node_tag: &str) -> Result<(), String> {
+    let mut profiles_data = load_profiles_data_from_file(state).await;
+    profiles_data.active_node_tag = Some(node_tag.to_string());
+    let profiles_content =
+        serde_json::to_string_pretty(&profiles_data).map_err(|e| e.to_string())?;
+    fs::write(state.profiles_file(), profiles_content).map_err(|e| e.to_string())?;
+    *state.profiles_data.lock().await = profiles_data;
+    Ok(())
+}
+
+async fn execute_health_action(
+    app: &AppHandle,
+    state: &AppState,
+    client: &reqwest::Client,
+    clash_api_port: u16,
+    action: &HealthAction,
+) -> bool {
+    match action {
+        HealthAction::None => return false,
+        HealthAction::SwitchSelector { selector, to, .. } => {
+            if let Err(err) = switch_selector_to_node(client, clash_api_port, selector, to).await {
+                log::warn!(
+                    "Health failover failed to switch selector '{}' to '{}': {}",
+                    selector,
+                    to,
+                    err
+                );
+                return false;
+            }
+
+            if is_main_selector_tag(selector) {
+                if let Err(err) = persist_main_active_node(state, to).await {
+                    log::warn!(
+                        "Failed to persist health failover main node '{}': {}",
+                        to,
+                        err
+                    );
+                }
+            }
+        }
+        HealthAction::NotifyFixedNodeFailed { .. }
+        | HealthAction::NotifyMainNodeNeedsManualSwitch { .. }
+        | HealthAction::NotifyNoBackup { .. } => {}
+    }
+
+    if let Some(event) = health_event_for_action(action) {
+        let _ = app.emit("singbox:health", event);
+    }
+    true
+}
+
 async fn switch_selector_to_node(
     client: &reqwest::Client,
     clash_api_port: u16,
     selector_tag: &str,
     node_tag: &str,
-) {
-    if let Err(err) = client
-        .put(format!("http://127.0.0.1:{}/proxies/{}", clash_api_port, urlencoding::encode(selector_tag)))
+) -> Result<(), String> {
+    let resp = client
+        .put(format!(
+            "http://127.0.0.1:{}/proxies/{}",
+            clash_api_port,
+            urlencoding::encode(selector_tag)
+        ))
         .json(&serde_json::json!({ "name": node_tag }))
         .send()
         .await
-    {
-        log::warn!(
-            "Failed to switch selector '{}' to node '{}': {}",
+        .map_err(|err| {
+            format!(
+                "请求 Clash API 切换 selector '{}' 到节点 '{}' 失败: {}",
+                selector_tag, node_tag, err
+            )
+        })?;
+
+    if !resp.status().is_success() {
+        return Err(format!(
+            "Clash API 切换 selector '{}' 到节点 '{}' 返回 {}",
             selector_tag,
             node_tag,
-            err
-        );
+            resp.status()
+        ));
+    }
+
+    Ok(())
+}
+
+async fn probe_real_proxy_path(local_port: u16, url: &str, timeout_ms: u64) -> Result<u32, String> {
+    let timeout_ms = if timeout_ms == 0 { 5_000 } else { timeout_ms };
+    let proxy = reqwest::Proxy::all(format!("http://127.0.0.1:{local_port}"))
+        .map_err(|err| format!("真实路径探针代理配置失败: {}", err))?;
+    let client = reqwest::Client::builder()
+        .proxy(proxy)
+        .timeout(std::time::Duration::from_millis(timeout_ms))
+        .build()
+        .map_err(|err| format!("真实路径探针客户端创建失败: {}", err))?;
+    let started_at = std::time::Instant::now();
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|err| format!("真实路径探针请求失败: {}", err))?;
+    let status = resp.status();
+
+    if status.is_success() || status.is_redirection() {
+        let elapsed_ms = started_at.elapsed().as_millis().min(u32::MAX as u128) as u32;
+        Ok(elapsed_ms)
+    } else {
+        Err(format!("真实路径探针 HTTP 状态异常: {}", status.as_u16()))
     }
 }
 
@@ -4143,11 +6128,22 @@ async fn probe_selector_node_latency(
     clash_api_port: u16,
     tag: String,
     test_url: String,
+    timeout_ms: u64,
 ) -> (String, Option<u32>) {
+    let timeout_query = timeout_ms.to_string();
     let result = client
-        .get(format!("http://127.0.0.1:{}/proxies/{}/delay", clash_api_port, urlencoding::encode(&tag)))
-        .query(&[("url", test_url.as_str()), ("timeout", "5000")])
-        .timeout(std::time::Duration::from_secs(6))
+        .get(format!(
+            "http://127.0.0.1:{}/proxies/{}/delay",
+            clash_api_port,
+            urlencoding::encode(&tag)
+        ))
+        .query(&[
+            ("url", test_url.as_str()),
+            ("timeout", timeout_query.as_str()),
+        ])
+        .timeout(std::time::Duration::from_millis(
+            timeout_ms.saturating_add(1000),
+        ))
         .send()
         .await;
 
@@ -4208,10 +6204,16 @@ async fn test_selector_latency_internal(
     let state = app.state::<AppState>();
     let clash_api_port = get_clash_api_port(&state).await;
     let client = reqwest::Client::new();
-    let test_url = test_url.unwrap_or_else(|| "https://www.gstatic.com/generate_204".to_string());
+    let settings = state.settings.lock().await.clone();
+    let timeout_ms = settings.latency_test_timeout as u64;
+    let test_url = test_url.unwrap_or_else(|| settings.latency_test_url.clone());
 
     let resp = client
-        .get(format!("http://127.0.0.1:{}/proxies/{}", clash_api_port, urlencoding::encode(&selector_tag)))
+        .get(format!(
+            "http://127.0.0.1:{}/proxies/{}",
+            clash_api_port,
+            urlencoding::encode(&selector_tag)
+        ))
         .timeout(std::time::Duration::from_secs(5))
         .send()
         .await
@@ -4225,14 +6227,22 @@ async fn test_selector_latency_internal(
     let node_tags: Vec<String> = selector_info
         .get("all")
         .and_then(|a| a.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
         .unwrap_or_default();
 
     if node_tags.is_empty() {
         return Ok(serde_json::json!({ "success": true, "message": "No nodes to test" }));
     }
 
-    log::info!("Testing {} nodes for selector '{}'", node_tags.len(), selector_tag);
+    log::info!(
+        "Testing {} nodes for selector '{}'",
+        node_tags.len(),
+        selector_tag
+    );
 
     let results = run_bounded_selector_probes(
         node_tags.clone(),
@@ -4240,7 +6250,9 @@ async fn test_selector_latency_internal(
         |tag| {
             let client = client.clone();
             let test_url = test_url.clone();
-            async move { probe_selector_node_latency(client, clash_api_port, tag, test_url).await }
+            async move {
+                probe_selector_node_latency(client, clash_api_port, tag, test_url, timeout_ms).await
+            }
         },
     )
     .await;
@@ -4262,34 +6274,58 @@ async fn test_selector_latency_internal(
 
         if !first_switch_done && valid_count >= first_switch_threshold {
             if let Some((best_tag, best_delay)) = &best_node {
-                log::info!("First phase done, switching '{}' to '{}' ({}ms)", selector_tag, best_tag, best_delay);
-                switch_selector_to_node(&client, clash_api_port, &selector_tag, best_tag).await;
-                let _ = app.emit(
-                    "singbox:selector-switch",
-                    serde_json::json!({
-                        "selector": selector_tag,
-                        "node": best_tag,
-                        "delay": best_delay,
-                        "stage": "first"
-                    }),
+                log::info!(
+                    "First phase done, switching '{}' to '{}' ({}ms)",
+                    selector_tag,
+                    best_tag,
+                    best_delay
                 );
+                match switch_selector_to_node(&client, clash_api_port, &selector_tag, best_tag)
+                    .await
+                {
+                    Ok(()) => {
+                        let _ = app.emit(
+                            "singbox:selector-switch",
+                            serde_json::json!({
+                                "selector": selector_tag,
+                                "node": best_tag,
+                                "delay": best_delay,
+                                "stage": "first"
+                            }),
+                        );
+                    }
+                    Err(err) => {
+                        log::warn!("First phase selector switch failed: {}", err);
+                    }
+                }
             }
             first_switch_done = true;
         }
     }
 
     if let Some((best_tag, best_delay)) = &best_node {
-        log::info!("Final switch '{}' to '{}' ({}ms)", selector_tag, best_tag, best_delay);
-        switch_selector_to_node(&client, clash_api_port, &selector_tag, best_tag).await;
-        let _ = app.emit(
-            "singbox:selector-switch",
-            serde_json::json!({
-                "selector": selector_tag,
-                "node": best_tag,
-                "delay": best_delay,
-                "stage": "final"
-            }),
+        log::info!(
+            "Final switch '{}' to '{}' ({}ms)",
+            selector_tag,
+            best_tag,
+            best_delay
         );
+        match switch_selector_to_node(&client, clash_api_port, &selector_tag, best_tag).await {
+            Ok(()) => {
+                let _ = app.emit(
+                    "singbox:selector-switch",
+                    serde_json::json!({
+                        "selector": selector_tag,
+                        "node": best_tag,
+                        "delay": best_delay,
+                        "stage": "final"
+                    }),
+                );
+            }
+            Err(err) => {
+                log::warn!("Final selector switch failed: {}", err);
+            }
+        }
     }
 
     let tested_count = results.iter().filter(|(_, d)| d.is_some()).count();
@@ -4312,7 +6348,7 @@ async fn test_selector_latency_internal(
 pub async fn singbox_test_selector_latency(
     app: AppHandle,
     selector_tag: String,
-    test_url: Option<String>
+    test_url: Option<String>,
 ) -> Result<serde_json::Value, String> {
     test_selector_latency_internal(&app, selector_tag, test_url).await
 }

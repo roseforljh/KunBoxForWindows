@@ -1,7 +1,7 @@
-use tauri::State;
-use std::fs;
 use crate::state::AppState;
 use crate::types::AppSettings;
+use std::fs;
+use tauri::State;
 
 #[cfg(windows)]
 use std::{os::windows::process::CommandExt, process::Command};
@@ -41,7 +41,10 @@ fn validate_port_pair(settings: &AppSettings) -> Result<(), String> {
 }
 
 fn port_in_ranges(port: u16, ranges: &[(u16, u16)]) -> Option<(u16, u16)> {
-    ranges.iter().copied().find(|(start, end)| port >= *start && port <= *end)
+    ranges
+        .iter()
+        .copied()
+        .find(|(start, end)| port >= *start && port <= *end)
 }
 
 #[cfg(windows)]
@@ -64,7 +67,13 @@ fn parse_excluded_tcp_port_ranges(output: &str) -> Vec<(u16, u16)> {
 #[cfg(windows)]
 fn windows_excluded_tcp_port_ranges() -> Vec<(u16, u16)> {
     let output = Command::new("netsh")
-        .args(["interface", "ipv4", "show", "excludedportrange", "protocol=tcp"])
+        .args([
+            "interface",
+            "ipv4",
+            "show",
+            "excludedportrange",
+            "protocol=tcp",
+        ])
         .creation_flags(CREATE_NO_WINDOW)
         .output();
 
@@ -104,16 +113,19 @@ fn validate_windows_excluded_ports(_settings: &AppSettings) -> Result<(), String
 fn set_windows_startup(enable: bool) -> Result<(), String> {
     let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
     let exe_path_str = exe_path.to_string_lossy();
-    
+
     if enable {
         let output = Command::new("reg")
             .args([
                 "add",
                 "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-                "/v", "KunBox",
-                "/t", "REG_SZ",
-                "/d", &exe_path_str,
-                "/f"
+                "/v",
+                "KunBox",
+                "/t",
+                "REG_SZ",
+                "/d",
+                &exe_path_str,
+                "/f",
             ])
             .output()
             .map_err(|e| e.to_string())?;
@@ -125,8 +137,9 @@ fn set_windows_startup(enable: bool) -> Result<(), String> {
             .args([
                 "delete",
                 "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-                "/v", "KunBox",
-                "/f"
+                "/v",
+                "KunBox",
+                "/f",
             ])
             .output()
             .map_err(|e| e.to_string())?;
@@ -149,7 +162,11 @@ fn write_settings_file(state: &AppState, settings: &AppSettings) -> Result<(), S
     Ok(())
 }
 
-async fn set_settings_impl<F>(state: &AppState, settings: serde_json::Value, set_startup: F) -> Result<(), String>
+async fn set_settings_impl<F>(
+    state: &AppState,
+    settings: serde_json::Value,
+    set_startup: F,
+) -> Result<(), String>
 where
     F: Fn(bool) -> Result<(), String>,
 {
@@ -169,29 +186,80 @@ where
             current.socks_port = ensure_u16_in_range(v, "socksPort")?;
             ports_changed = true;
         }
-        if let Some(v) = obj.get("allowLan").and_then(|v| v.as_bool()) { current.allow_lan = v; }
-        if let Some(v) = obj.get("systemProxy").and_then(|v| v.as_bool()) { current.system_proxy = v; }
-        if let Some(v) = obj.get("tunEnabled").and_then(|v| v.as_bool()) { current.tun_enabled = v; }
-        if let Some(v) = obj.get("tunStack").and_then(|v| v.as_str()) { current.tun_stack = v.to_string(); }
-        if let Some(v) = obj.get("localDns").and_then(|v| v.as_str()) { current.local_dns = v.to_string(); }
-        if let Some(v) = obj.get("remoteDns").and_then(|v| v.as_str()) { current.remote_dns = v.to_string(); }
-        if let Some(v) = obj.get("fakeDns").and_then(|v| v.as_bool()) { current.fake_dns = v; }
-        if let Some(v) = obj.get("bypassLan").and_then(|v| v.as_bool()) { current.bypass_lan = v; }
-        if let Some(v) = obj.get("routingMode").and_then(|v| v.as_str()) { current.routing_mode = v.to_string(); }
-        if let Some(v) = obj.get("defaultRule").and_then(|v| v.as_str()) { current.default_rule = v.to_string(); }
-        if let Some(v) = obj.get("latencyTestUrl").and_then(|v| v.as_str()) { current.latency_test_url = v.to_string(); }
-        if let Some(v) = obj.get("latencyTestTimeout").and_then(|v| v.as_u64()) {
-            current.latency_test_timeout = ensure_u32_in_range(v, 1000, 30000, "latencyTestTimeout")?;
+        if let Some(v) = obj.get("allowLan").and_then(|v| v.as_bool()) {
+            current.allow_lan = v;
         }
-        if let Some(v) = obj.get("autoConnect").and_then(|v| v.as_bool()) { current.auto_connect = v; }
-        if let Some(v) = obj.get("minimizeToTray").and_then(|v| v.as_bool()) { current.minimize_to_tray = v; }
-        if let Some(v) = obj.get("startWithWindows").and_then(|v| v.as_bool()) { current.start_with_windows = v; }
-        if let Some(v) = obj.get("startMinimized").and_then(|v| v.as_bool()) { current.start_minimized = v; }
-        if let Some(v) = obj.get("silentStart").and_then(|v| v.as_bool()) { current.silent_start = v; }
-        if let Some(v) = obj.get("exitOnClose").and_then(|v| v.as_bool()) { current.exit_on_close = v; }
-        if let Some(v) = obj.get("theme").and_then(|v| v.as_str()) { current.theme = v.to_string(); }
-        if let Some(v) = obj.get("requireAdmin").and_then(|v| v.as_bool()) { current.require_admin = v; }
-        if let Some(v) = obj.get("enableRuntimeLogs").and_then(|v| v.as_bool()) { current.enable_runtime_logs = v; }
+        if let Some(v) = obj.get("systemProxy").and_then(|v| v.as_bool()) {
+            current.system_proxy = v;
+        }
+        if let Some(v) = obj.get("tunEnabled").and_then(|v| v.as_bool()) {
+            current.tun_enabled = v;
+        }
+        if let Some(v) = obj.get("tunStack").and_then(|v| v.as_str()) {
+            current.tun_stack = v.to_string();
+        }
+        if let Some(v) = obj.get("localDns").and_then(|v| v.as_str()) {
+            current.local_dns = v.to_string();
+        }
+        if let Some(v) = obj.get("remoteDns").and_then(|v| v.as_str()) {
+            current.remote_dns = v.to_string();
+        }
+        if let Some(v) = obj.get("fakeDns").and_then(|v| v.as_bool()) {
+            current.fake_dns = v;
+        }
+        if let Some(v) = obj.get("bypassLan").and_then(|v| v.as_bool()) {
+            current.bypass_lan = v;
+        }
+        if let Some(v) = obj.get("routingMode").and_then(|v| v.as_str()) {
+            current.routing_mode = v.to_string();
+        }
+        if let Some(v) = obj.get("defaultRule").and_then(|v| v.as_str()) {
+            current.default_rule = v.to_string();
+        }
+        if let Some(v) = obj.get("latencyTestUrl").and_then(|v| v.as_str()) {
+            current.latency_test_url = v.to_string();
+        }
+        if let Some(v) = obj.get("latencyTestTimeout").and_then(|v| v.as_u64()) {
+            current.latency_test_timeout =
+                ensure_u32_in_range(v, 1000, 30000, "latencyTestTimeout")?;
+        }
+        if let Some(v) = obj.get("healthMonitorEnabled").and_then(|v| v.as_bool()) {
+            current.health_monitor_enabled = v;
+        }
+        if let Some(v) = obj.get("mainNodeAutoFailover").and_then(|v| v.as_bool()) {
+            current.main_node_auto_failover = v;
+        }
+        if let Some(v) = obj.get("healthProbeIntervalSec").and_then(|v| v.as_u64()) {
+            current.health_probe_interval_sec =
+                ensure_u32_in_range(v, 5, 3600, "healthProbeIntervalSec")? as u64;
+        }
+        if let Some(v) = obj.get("autoConnect").and_then(|v| v.as_bool()) {
+            current.auto_connect = v;
+        }
+        if let Some(v) = obj.get("minimizeToTray").and_then(|v| v.as_bool()) {
+            current.minimize_to_tray = v;
+        }
+        if let Some(v) = obj.get("startWithWindows").and_then(|v| v.as_bool()) {
+            current.start_with_windows = v;
+        }
+        if let Some(v) = obj.get("startMinimized").and_then(|v| v.as_bool()) {
+            current.start_minimized = v;
+        }
+        if let Some(v) = obj.get("silentStart").and_then(|v| v.as_bool()) {
+            current.silent_start = v;
+        }
+        if let Some(v) = obj.get("exitOnClose").and_then(|v| v.as_bool()) {
+            current.exit_on_close = v;
+        }
+        if let Some(v) = obj.get("theme").and_then(|v| v.as_str()) {
+            current.theme = v.to_string();
+        }
+        if let Some(v) = obj.get("requireAdmin").and_then(|v| v.as_bool()) {
+            current.require_admin = v;
+        }
+        if let Some(v) = obj.get("enableRuntimeLogs").and_then(|v| v.as_bool()) {
+            current.enable_runtime_logs = v;
+        }
     }
 
     validate_port_pair(&current)?;
@@ -207,11 +275,7 @@ where
     if let Err(err) = write_settings_file(state, &current) {
         if startup_changed {
             if let Err(rollback_err) = set_startup(old_start_with_windows) {
-                return Err(format!(
-                    "{}；且开机启动状态回滚失败: {}",
-                    err,
-                    rollback_err
-                ));
+                return Err(format!("{}；且开机启动状态回滚失败: {}", err, rollback_err));
             }
         }
         return Err(err);
@@ -226,8 +290,8 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, Str
     let file = state.settings_file();
     if file.exists() {
         let content = fs::read_to_string(&file).map_err(|e| e.to_string())?;
-        let settings: AppSettings = serde_json::from_str(&content)
-            .map_err(|e| format!("settings.json 格式错误: {}", e))?;
+        let settings: AppSettings =
+            serde_json::from_str(&content).map_err(|e| format!("settings.json 格式错误: {}", e))?;
         validate_port_pair(&settings)?;
         *state.settings.lock().await = settings.clone();
         Ok(settings)
@@ -238,7 +302,10 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, Str
 }
 
 #[tauri::command]
-pub async fn set_settings(state: State<'_, AppState>, settings: serde_json::Value) -> Result<(), String> {
+pub async fn set_settings(
+    state: State<'_, AppState>,
+    settings: serde_json::Value,
+) -> Result<(), String> {
     set_settings_impl(&state, settings, set_windows_startup).await
 }
 
@@ -266,7 +333,10 @@ mod tests {
 
     #[test]
     fn validates_u32_range() {
-        assert_eq!(ensure_u32_in_range(5000, 1000, 30000, "timeout").unwrap(), 5000);
+        assert_eq!(
+            ensure_u32_in_range(5000, 1000, 30000, "timeout").unwrap(),
+            5000
+        );
         assert!(ensure_u32_in_range(999, 1000, 30000, "timeout").is_err());
         assert!(ensure_u32_in_range(30001, 1000, 30000, "timeout").is_err());
     }
@@ -313,12 +383,17 @@ Start Port    End Port
         let calls = Arc::new(Mutex::new(Vec::new()));
         let calls_for_closure = calls.clone();
 
-        let result = set_settings_impl(&state, serde_json::json!({
-            "startWithWindows": true
-        }), move |enabled| {
-            calls_for_closure.lock().unwrap().push(enabled);
-            Ok(())
-        }).await;
+        let result = set_settings_impl(
+            &state,
+            serde_json::json!({
+                "startWithWindows": true
+            }),
+            move |enabled| {
+                calls_for_closure.lock().unwrap().push(enabled);
+                Ok(())
+            },
+        )
+        .await;
 
         assert!(result.is_err());
         assert_eq!(*calls.lock().unwrap(), vec![true, false]);
@@ -334,17 +409,24 @@ Start Port    End Port
         let calls = Arc::new(Mutex::new(Vec::new()));
         let calls_for_closure = calls.clone();
 
-        set_settings_impl(&state, serde_json::json!({
-            "startWithWindows": true
-        }), move |enabled| {
-            calls_for_closure.lock().unwrap().push(enabled);
-            Ok(())
-        }).await.unwrap();
+        set_settings_impl(
+            &state,
+            serde_json::json!({
+                "startWithWindows": true
+            }),
+            move |enabled| {
+                calls_for_closure.lock().unwrap().push(enabled);
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
 
         assert_eq!(*calls.lock().unwrap(), vec![true]);
         assert!(state.settings.lock().await.start_with_windows);
 
-        let saved: AppSettings = serde_json::from_str(&fs::read_to_string(state.settings_file()).unwrap()).unwrap();
+        let saved: AppSettings =
+            serde_json::from_str(&fs::read_to_string(state.settings_file()).unwrap()).unwrap();
         assert!(saved.start_with_windows);
 
         let _ = fs::remove_dir_all(data_dir);
@@ -355,13 +437,20 @@ Start Port    End Port
         let data_dir = unique_test_path("strict-tun-route");
         let state = AppState::new(data_dir.clone());
 
-        set_settings_impl(&state, serde_json::json!({
-            "tunStrictRoute": false
-        }), |_| Ok(())).await.unwrap();
+        set_settings_impl(
+            &state,
+            serde_json::json!({
+                "tunStrictRoute": false
+            }),
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
 
         assert!(state.settings.lock().await.tun_strict_route);
 
-        let saved: AppSettings = serde_json::from_str(&fs::read_to_string(state.settings_file()).unwrap()).unwrap();
+        let saved: AppSettings =
+            serde_json::from_str(&fs::read_to_string(state.settings_file()).unwrap()).unwrap();
         assert!(saved.tun_strict_route);
 
         let _ = fs::remove_dir_all(data_dir);
@@ -377,14 +466,52 @@ Start Port    End Port
             settings.tun_strict_route = false;
         }
 
-        set_settings_impl(&state, serde_json::json!({
-            "localDns": "1.1.1.1"
-        }), |_| Ok(())).await.unwrap();
+        set_settings_impl(
+            &state,
+            serde_json::json!({
+                "localDns": "1.1.1.1"
+            }),
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
 
         assert!(state.settings.lock().await.tun_strict_route);
 
-        let saved: AppSettings = serde_json::from_str(&fs::read_to_string(state.settings_file()).unwrap()).unwrap();
+        let saved: AppSettings =
+            serde_json::from_str(&fs::read_to_string(state.settings_file()).unwrap()).unwrap();
         assert!(saved.tun_strict_route);
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn set_settings_persists_health_monitor_options() {
+        let data_dir = unique_test_path("health-monitor-settings");
+        let state = AppState::new(data_dir.clone());
+
+        set_settings_impl(
+            &state,
+            serde_json::json!({
+                "healthMonitorEnabled": false,
+                "mainNodeAutoFailover": true,
+                "healthProbeIntervalSec": 30
+            }),
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+
+        let settings = state.settings.lock().await.clone();
+        assert!(!settings.health_monitor_enabled);
+        assert!(settings.main_node_auto_failover);
+        assert_eq!(settings.health_probe_interval_sec, 30);
+
+        let saved: AppSettings =
+            serde_json::from_str(&fs::read_to_string(state.settings_file()).unwrap()).unwrap();
+        assert!(!saved.health_monitor_enabled);
+        assert!(saved.main_node_auto_failover);
+        assert_eq!(saved.health_probe_interval_sec, 30);
 
         let _ = fs::remove_dir_all(data_dir);
     }

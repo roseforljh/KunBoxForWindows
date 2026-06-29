@@ -17,6 +17,24 @@ export interface TrafficStats {
   duration: number
 }
 
+export type HealthStatus = 'unknown' | 'healthy' | 'suspect' | 'failed' | 'recovering'
+
+export type HealthEventKind =
+  | 'selector_failed_over'
+  | 'selector_no_backup'
+  | 'fixed_node_failed'
+  | 'main_node_needs_manual_switch'
+
+export interface HealthEvent {
+  kind: HealthEventKind
+  selector?: string | null
+  from?: string | null
+  to?: string | null
+  node?: string | null
+  rule?: string | null
+  message: string
+}
+
 export interface Profile {
   id: string
   name: string
@@ -89,6 +107,9 @@ export interface AppSettings {
   defaultRule: 'direct' | 'proxy' | 'block'
   latencyTestUrl: string
   latencyTestTimeout: number
+  healthMonitorEnabled: boolean
+  mainNodeAutoFailover: boolean
+  healthProbeIntervalSec: number
   autoConnect: boolean
   minimizeToTray: boolean
   startWithWindows: boolean

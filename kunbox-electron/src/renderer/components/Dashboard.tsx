@@ -8,7 +8,28 @@ import { formatBytes, formatDuration, cn } from '../lib/utils'
 import { useToast } from './ui/Toast'
 import { useManagedTimeouts } from '../lib/useManagedTimeouts'
 import { useProfiles } from '../lib/useProfiles'
-import type { AppSettings } from '../../shared/types'
+import type { AppSettings, HealthEvent, HealthEventKind, HealthStatus } from '../../shared/types'
+
+type HealthToastType = 'success' | 'warning' | 'error'
+
+export const HEALTH_EVENT_TOAST_TYPES = {
+  selector_failed_over: 'success',
+  selector_no_backup: 'warning',
+  fixed_node_failed: 'error',
+  main_node_needs_manual_switch: 'warning',
+} satisfies Record<HealthEventKind, HealthToastType>
+
+const HEALTH_STATUS_LABELS = {
+  unknown: '未知',
+  healthy: '健康',
+  suspect: '疑似异常',
+  failed: '不可用',
+  recovering: '恢复中',
+} satisfies Record<HealthStatus, string>
+
+function formatHealthStatus(status: HealthStatus) {
+  return HEALTH_STATUS_LABELS[status]
+}
 
 export default function Dashboard() {
   const { state, traffic, connect, disconnect, needsRestart, lastError } = useConnectionStore(
@@ -21,11 +42,12 @@ export default function Dashboard() {
       lastError: s.lastError,
     }))
   )
-  const { activeNodeTag, loadNodes, testNodeLatency, activeNode, totalNodes } = useNodesStore(
+  const { activeNodeTag, loadNodes, testNodeLatency, setNodeHealth, activeNode, totalNodes } = useNodesStore(
     useShallow((s) => ({
       activeNodeTag: s.activeNodeTag,
       loadNodes: s.loadNodes,
       testNodeLatency: s.testNodeLatency,
+      setNodeHealth: s.setNodeHealth,
       activeNode: s.nodes.find(n => n.tag === s.activeNodeTag),
       totalNodes: s.nodes.length
     }))
@@ -66,6 +88,39 @@ export default function Dashboard() {
     return unlisten
   }, [toast])
 
+  useEffect(() => {
+    const markFailed = (tag?: string | null) => {
+      if (tag) setNodeHealth(tag, 'failed')
+    }
+
+    const unlisten = window.api.singbox.onHealthEvent((event: HealthEvent) => {
+      switch (event.kind) {
+        case 'selector_failed_over':
+          markFailed(event.from)
+          if (event.to) setNodeHealth(event.to, 'healthy')
+          toast.success(event.message)
+          break
+        case 'selector_no_backup':
+          markFailed(event.from)
+          toast.warning(event.message)
+          break
+        case 'fixed_node_failed':
+          markFailed(event.node)
+          toast.error(event.message)
+          break
+        case 'main_node_needs_manual_switch':
+          markFailed(event.from)
+          toast.warning(event.message)
+          break
+        default: {
+          const exhaustive: never = event.kind
+          return exhaustive
+        }
+      }
+    })
+    return unlisten
+  }, [setNodeHealth, toast])
+
   // Update traffic history for chart
   useEffect(() => {
     if (isConnected && traffic) {
@@ -97,6 +152,7 @@ export default function Dashboard() {
   // Get active node info
   const activeProfile = profiles.find(p => p.enabled)
   const currentLatency = activeNode?.latencyMs ?? null
+  const currentHealthStatus = activeNode?.healthStatus ?? null
 
   const handleToggle = async () => {
     if (isAnimating || isConnecting || isDisconnecting) return
@@ -330,7 +386,7 @@ export default function Dashboard() {
           icon={<Server className="w-5 h-5 text-[var(--accent-primary)]" />}
           title="当前节点"
           value={activeNode?.tag || '未选择'}
-          subtitle={currentLatency !== null ? `延迟 ${currentLatency}ms` : (activeNode?.server || '请选择节点')}
+          subtitle={currentHealthStatus ? `健康状态 ${formatHealthStatus(currentHealthStatus)}` : (currentLatency !== null ? `延迟 ${currentLatency}ms` : (activeNode?.server || '请选择节点'))}
           iconBg="bg-[rgba(20,184,166,0.15)]"
         />
         <MetricCard

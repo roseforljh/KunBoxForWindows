@@ -16,6 +16,13 @@ const TAB_ITEMS = [
   { id: 'system' as const, label: '系统', icon: Monitor },
 ]
 
+export const HEALTH_SETTING_KEYS = {
+  healthMonitorEnabled: 'healthMonitorEnabled',
+  mainNodeAutoFailover: 'mainNodeAutoFailover',
+} satisfies Record<'healthMonitorEnabled' | 'mainNodeAutoFailover', keyof AppSettings>
+
+export const FIXED_NODE_HEALTH_NOTE = '固定节点分流失败时只提示，不会自动更换。'
+
 export default function Settings() {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [saving, setSaving] = useState(false)
@@ -169,6 +176,21 @@ export default function Settings() {
                     <Toggle checked={settings.bypassLan} onChange={(v) => updateSetting('bypassLan', v)} />
                   </SettingRow>
                 </SettingCard>
+
+                <SettingCard>
+                  <SettingRow label="健康监控">
+                    <Toggle checked={settings.healthMonitorEnabled} onChange={(v) => updateSetting(HEALTH_SETTING_KEYS.healthMonitorEnabled, v)} />
+                  </SettingRow>
+                  <SettingRow label="主节点故障自动切换" isLast>
+                    <Toggle checked={settings.mainNodeAutoFailover} onChange={(v) => updateSetting(HEALTH_SETTING_KEYS.mainNodeAutoFailover, v)} />
+                  </SettingRow>
+                </SettingCard>
+
+                <div className="glass-card rounded-2xl p-5">
+                  <p className="text-sm text-[var(--text-muted)]">
+                    {FIXED_NODE_HEALTH_NOTE}
+                  </p>
+                </div>
 
               </div>
             )}
