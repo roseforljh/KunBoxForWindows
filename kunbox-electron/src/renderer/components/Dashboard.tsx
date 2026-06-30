@@ -31,6 +31,14 @@ function formatHealthStatus(status: HealthStatus) {
   return HEALTH_STATUS_LABELS[status]
 }
 
+export function formatSelectorNodeName(nodeTag: string) {
+  const separatorIndex = nodeTag.indexOf('::')
+  if (separatorIndex === -1) return nodeTag
+
+  const displayName = nodeTag.slice(separatorIndex + 2)
+  return displayName || nodeTag
+}
+
 export default function Dashboard() {
   const { state, traffic, connect, disconnect, needsRestart, lastError } = useConnectionStore(
     useShallow((s) => ({
@@ -82,7 +90,7 @@ export default function Dashboard() {
       if (data.stage === 'first') {
         toast.info(`配置分流: 已选择延迟最低的节点 (${data.delay}ms)`)
       } else if (data.stage === 'final') {
-        toast.success(`配置分流: 最终选择 ${data.node} (${data.delay}ms)`)
+        toast.success(`配置分流: 最终选择 ${formatSelectorNodeName(data.node)} (${data.delay}ms)`)
       }
     })
     return unlisten
