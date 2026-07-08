@@ -1,7 +1,7 @@
 // Tauri API adapter - provides the same interface as Electron's window.api
 import { invoke } from '@tauri-apps/api/core';
 import { listen, emit } from '@tauri-apps/api/event';
-import type { AppSettings, Profile, SingBoxOutbound, ProxyState, TrafficStats, LogEntry, DomainRule, CustomRules, NodeWithProfile, NodeLatencyResult, HealthEvent } from './types';
+import type { AppSettings, Profile, SingBoxOutbound, ProxyState, TrafficStats, LogEntry, DomainRule, CustomRules, NodeWithProfile, NodeLatencyResult, HealthEvent, CustomProfileNodeSelection } from './types';
 
 function bindUnlisten(unlistenPromise: Promise<() => void>) {
   let cancelled = false;
@@ -134,6 +134,8 @@ export const api = {
         dnsPreResolve: settings?.dnsPreResolve,
         dnsServer: settings?.dnsServer
       }),
+    createCustom: (name: string, selections: CustomProfileNodeSelection[]): Promise<Profile> =>
+      invoke('profile_create_custom', { name, selections }),
     update: (id: string): Promise<Profile> => invoke('profile_update', { id }),
     delete: (id: string): Promise<void> => invoke('profile_delete', { id }),
     getActive: (): Promise<string | null> => invoke('profile_get_active'),
@@ -168,7 +170,7 @@ export const api = {
     cancelLatencyTests: (runId?: number): Promise<void> => invoke('node_cancel_latency_tests', { runId }),
     delete: (tag: string): Promise<void> => invoke('node_delete', { tag }),
     export: (tag: string): Promise<string> => invoke('node_export', { tag }),
-    listAll: (): Promise<NodeWithProfile[]> => invoke('node_list_all')
+    listAll: (includeDisabled?: boolean): Promise<NodeWithProfile[]> => invoke('node_list_all', { includeDisabled })
   },
 
   settings: {

@@ -229,6 +229,7 @@ pub fn run() {
             commands::profile_set_active,
             commands::profile_edit,
             commands::profile_set_enabled,
+            commands::profile_create_custom,
             // Nodes
             commands::node_list,
             commands::node_get_active,

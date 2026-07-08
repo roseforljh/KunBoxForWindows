@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Plus, RefreshCw, Trash2, Check, Loader2, FolderOpen, MoreVertical, Edit3, ToggleLeft, ToggleRight } from 'lucide-react'
-import type { Profile } from '@shared/types'
+import type { CustomProfileNodeSelection, NodeWithProfile, Profile } from '@shared/types'
 import { ConfirmModal } from './ui/ConfirmModal'
 import { EditProfileModal } from './ui/EditProfileModal'
 import { AddProfileModal } from './ui/AddProfileModal'
@@ -13,6 +13,8 @@ export default function Profiles() {
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
   const [addModalOpen, setAddModalOpen] = useState(false)
+  const [allNodes, setAllNodes] = useState<NodeWithProfile[]>([])
+  const [isLoadingAllNodes, setIsLoadingAllNodes] = useState(false)
   const [openMenuId, setOpenMenuId] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const toast = useToast()
@@ -30,6 +32,19 @@ export default function Profiles() {
   useEffect(() => {
     loadProfiles()
   }, [])
+
+  const openAddModal = async () => {
+    setAddModalOpen(true)
+    setIsLoadingAllNodes(true)
+    try {
+      setAllNodes(await window.api.node.listAll(true))
+    } catch (err) {
+      setAllNodes([])
+      toast.error(`加载节点失败: ${err}`)
+    } finally {
+      setIsLoadingAllNodes(false)
+    }
+  }
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -77,6 +92,16 @@ export default function Profiles() {
       toast.showRestartToast('订阅导入成功')
     } catch (err) {
       toast.error(`导入失败: ${err}`)
+    }
+  }
+
+  const handleCreateCustom = async (name: string, selections: CustomProfileNodeSelection[]) => {
+    try {
+      const profile = await window.api.profile.createCustom(name, selections)
+      await loadProfiles()
+      toast.showRestartToast(`自定义订阅已创建，共 ${profile.nodeCount} 个节点`)
+    } catch (err) {
+      toast.error(`创建失败: ${err}`)
     }
   }
 
@@ -210,7 +235,7 @@ export default function Profiles() {
           <p className="text-[var(--text-muted)] text-sm font-medium">管理代理订阅与配置文件</p>
         </div>
         <button
-          onClick={() => setAddModalOpen(true)}
+          onClick={openAddModal}
           className="glass-btn glass-btn-primary h-11 px-6 rounded-xl font-bold text-sm flex items-center gap-2"
         >
           <Plus className="w-4 h-4" />
@@ -382,6 +407,9 @@ export default function Profiles() {
         onClose={() => setAddModalOpen(false)}
         onImportUrl={handleImportUrl}
         onImportContent={handleImportContent}
+        onCreateCustom={handleCreateCustom}
+        allNodes={allNodes}
+        isLoadingNodes={isLoadingAllNodes}
       />
     </div>
   )

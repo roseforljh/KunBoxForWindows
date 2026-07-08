@@ -91,6 +91,11 @@ export interface NodeWithProfile extends SingBoxOutbound {
   sourceProfileName: string
 }
 
+export interface CustomProfileNodeSelection {
+  sourceProfileId: string
+  tag: string
+}
+
 export interface AppSettings {
   localPort: number
   socksPort: number

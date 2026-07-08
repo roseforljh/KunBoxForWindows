@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, Link, FileText, Clipboard, Loader2, ChevronDown } from 'lucide-react'
+import { X, Link, FileText, Clipboard, Loader2, ChevronDown, Search, ListChecks } from 'lucide-react'
+import type { CustomProfileNodeSelection, NodeWithProfile } from '@shared/types'
 
-type ImportType = 'url' | 'clipboard' | 'file'
+type ImportType = 'url' | 'clipboard' | 'file' | 'custom'
 
 interface ProfileSettings {
   autoUpdateInterval: number
@@ -16,12 +17,16 @@ interface AddProfileModalProps {
   onClose: () => void
   onImportUrl: (name: string, url: string, settings: ProfileSettings) => Promise<void>
   onImportContent: (name: string, content: string, settings: ProfileSettings) => Promise<void>
+  onCreateCustom: (name: string, selections: CustomProfileNodeSelection[]) => Promise<void>
+  allNodes: NodeWithProfile[]
+  isLoadingNodes: boolean
 }
 
 const IMPORT_TYPES: { id: ImportType; label: string; icon: typeof Link; description: string }[] = [
   { id: 'url', label: '订阅链接', icon: Link, description: '从 URL 导入订阅' },
   { id: 'clipboard', label: '剪贴板', icon: Clipboard, description: '从剪贴板内容导入' },
-  { id: 'file', label: '本地文件', icon: FileText, description: '从 JSON/YAML 文件导入' }
+  { id: 'file', label: '本地文件', icon: FileText, description: '从 JSON/YAML 文件导入' },
+  { id: 'custom', label: '自定义', icon: ListChecks, description: '从已有节点创建订阅' }
 ]
 
 const DNS_SERVERS = [
@@ -30,11 +35,13 @@ const DNS_SERVERS = [
   { value: 'https://dns.alidns.com/dns-query', label: '阿里云 DNS' }
 ]
 
-export function AddProfileModal({ isOpen, onClose, onImportUrl, onImportContent }: AddProfileModalProps) {
+export function AddProfileModal({ isOpen, onClose, onImportUrl, onImportContent, onCreateCustom, allNodes, isLoadingNodes }: AddProfileModalProps) {
   const [importType, setImportType] = useState<ImportType>('url')
   const [name, setName] = useState('')
   const [url, setUrl] = useState('')
   const [content, setContent] = useState('')
+  const [customSearch, setCustomSearch] = useState('')
+  const [selectedNodeKeys, setSelectedNodeKeys] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -44,11 +51,34 @@ export function AddProfileModal({ isOpen, onClose, onImportUrl, onImportContent 
   const [dnsServer, setDnsServer] = useState(DNS_SERVERS[0].value)
   const [dnsDropdownOpen, setDnsDropdownOpen] = useState(false)
 
+  const nodeKey = (node: NodeWithProfile) => `${node.sourceProfileId}::${node.tag || ''}`
+  const selectableNodes = allNodes.filter((node) => node.tag)
+  const customSearchText = customSearch.trim().toLowerCase()
+  const filteredCustomNodes = customSearchText
+    ? selectableNodes.filter((node) =>
+        [node.tag, node.sourceProfileName, node.type]
+          .filter(Boolean)
+          .some((value) => String(value).toLowerCase().includes(customSearchText))
+      )
+    : selectableNodes
+  const selectedCustomNodes = selectableNodes.filter((node) => selectedNodeKeys.has(nodeKey(node)))
+
+  const toggleCustomNode = (key: string) => {
+    setSelectedNodeKeys((prev) => {
+      const next = new Set(prev)
+      const action = next.has(key) ? 'delete' : 'add'
+      next[action](key)
+      return next
+    })
+  }
+
   const handleClose = () => {
     if (loading) return
     setName('')
     setUrl('')
     setContent('')
+    setCustomSearch('')
+    setSelectedNodeKeys(new Set())
     setError('')
     setImportType('url')
     setAutoUpdateEnabled(false)
@@ -92,32 +122,51 @@ export function AddProfileModal({ isOpen, onClose, onImportUrl, onImportContent 
     setError('')
     setLoading(true)
 
-    const settings: ProfileSettings = {
-      autoUpdateInterval: autoUpdateEnabled ? Math.max(15, parseInt(autoUpdateMinutes) || 60) : 0,
-      dnsPreResolve,
-      dnsServer: dnsPreResolve ? dnsServer : null
-    }
-
     try {
-      if (importType === 'url') {
-        if (!url.trim()) {
-          setError('请输入订阅链接')
+      if (importType === 'custom') {
+        if (!name.trim()) {
+          setError('请输入订阅名称')
           setLoading(false)
           return
         }
-        if (autoUpdateEnabled && (parseInt(autoUpdateMinutes) || 0) < 15) {
-          setError('自动更新间隔最少 15 分钟')
+        if (selectedCustomNodes.length === 0) {
+          setError('请选择至少一个节点')
           setLoading(false)
           return
         }
-        await onImportUrl(name.trim(), url.trim(), settings)
+        await onCreateCustom(
+          name.trim(),
+          selectedCustomNodes.map((node) => ({
+            sourceProfileId: node.sourceProfileId,
+            tag: node.tag || ''
+          }))
+        )
       } else {
-        if (!content.trim()) {
-          setError('内容不能为空')
-          setLoading(false)
-          return
+        const settings: ProfileSettings = {
+          autoUpdateInterval: autoUpdateEnabled ? Math.max(15, parseInt(autoUpdateMinutes) || 60) : 0,
+          dnsPreResolve,
+          dnsServer: dnsPreResolve ? dnsServer : null
         }
-        await onImportContent(name.trim() || 'Imported', content.trim(), settings)
+        if (importType === 'url') {
+          if (!url.trim()) {
+            setError('请输入订阅链接')
+            setLoading(false)
+            return
+          }
+          if (autoUpdateEnabled && (parseInt(autoUpdateMinutes) || 0) < 15) {
+            setError('自动更新间隔最少 15 分钟')
+            setLoading(false)
+            return
+          }
+          await onImportUrl(name.trim(), url.trim(), settings)
+        } else {
+          if (!content.trim()) {
+            setError('内容不能为空')
+            setLoading(false)
+            return
+          }
+          await onImportContent(name.trim() || 'Imported', content.trim(), settings)
+        }
       }
       handleClose()
     } catch (err) {
@@ -127,7 +176,9 @@ export function AddProfileModal({ isOpen, onClose, onImportUrl, onImportContent 
     }
   }
 
-  const canImport = importType === 'url' ? url.trim() : content.trim()
+  const canImport = importType === 'custom'
+    ? Boolean(name.trim() && selectedNodeKeys.size > 0)
+    : Boolean(importType === 'url' ? url.trim() : content.trim())
 
   return createPortal(
     <AnimatePresence>
@@ -145,7 +196,7 @@ export function AddProfileModal({ isOpen, onClose, onImportUrl, onImportContent 
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.95 }}
             transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-            className="relative w-[480px] glass-card rounded-2xl border border-[var(--glass-border)] shadow-2xl"
+            className="relative w-[560px] max-w-[calc(100vw-2rem)] glass-card rounded-2xl border border-[var(--glass-border)] shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between p-5 border-b border-[var(--border-secondary)]">
@@ -162,7 +213,7 @@ export function AddProfileModal({ isOpen, onClose, onImportUrl, onImportContent 
             <div className="p-5 space-y-5">
               <div className="space-y-2">
                 <label className="text-sm font-medium text-[var(--text-muted)]">导入方式</label>
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                   {IMPORT_TYPES.map((type) => {
                     const Icon = type.icon
                     return (
@@ -195,20 +246,79 @@ export function AddProfileModal({ isOpen, onClose, onImportUrl, onImportContent 
 
               <div className="space-y-2">
                 <label className="text-sm font-medium text-[var(--text-muted)]">
-                  名称 <span className="text-[var(--text-faint)]">(可选)</span>
+                  名称 <span className="text-[var(--text-faint)]">{importType === 'custom' ? '(必填)' : '(可选)'}</span>
                 </label>
                 <input
                   type="text"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="自动从链接提取"
+                  placeholder={importType === 'custom' ? '输入自定义订阅名称' : '自动从链接提取'}
                   disabled={loading}
                   className="w-full px-3 py-2.5 bg-[var(--bg-elevated)] border border-[var(--border-secondary)] rounded-lg text-sm text-[var(--text-primary)] placeholder:text-[var(--text-faint)] outline-none focus:border-[var(--accent-primary)] disabled:opacity-50"
                 />
               </div>
 
               <AnimatePresence mode="wait">
-                {importType === 'url' ? (
+                {importType === 'custom' ? (
+                  <motion.div
+                    key="custom-input"
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.2, ease: 'easeInOut' }}
+                    className="overflow-hidden"
+                  >
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <label className="text-sm font-medium text-[var(--text-muted)]">选择节点</label>
+                        <span className="text-xs text-[var(--text-faint)]">{selectedCustomNodes.length} / {selectableNodes.length}</span>
+                      </div>
+                      <div className="relative">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-faint)]" />
+                        <input
+                          type="text"
+                          value={customSearch}
+                          onChange={(e) => setCustomSearch(e.target.value)}
+                          placeholder="搜索节点或订阅"
+                          disabled={loading}
+                          className="w-full pl-9 pr-3 py-2.5 bg-[var(--bg-elevated)] border border-[var(--border-secondary)] rounded-lg text-sm text-[var(--text-primary)] placeholder:text-[var(--text-faint)] outline-none focus:border-[var(--accent-primary)] disabled:opacity-50"
+                        />
+                      </div>
+                      <div className="max-h-64 overflow-auto rounded-lg border border-[var(--border-secondary)] bg-[var(--bg-elevated)]/40">
+                        {filteredCustomNodes.length > 0 ? (
+                          filteredCustomNodes.map((node) => {
+                            const key = nodeKey(node)
+                            const checked = selectedNodeKeys.has(key)
+                            return (
+                              <label
+                                key={key}
+                                className={`w-full min-h-[56px] px-3 py-2.5 flex items-center gap-3 text-left border-b border-[var(--border-secondary)] last:border-b-0 hover:bg-[var(--bg-elevated)] transition-colors ${
+                                  checked ? 'bg-[var(--accent-muted)]' : ''
+                                } ${loading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => toggleCustomNode(key)}
+                                  disabled={loading}
+                                  className="w-5 h-5 shrink-0 accent-[var(--accent-primary)]"
+                                />
+                                <span className="min-w-0 flex-1">
+                                  <span className="block text-sm font-medium text-[var(--text-primary)] truncate">{node.tag}</span>
+                                  <span className="block text-xs text-[var(--text-faint)] truncate">{node.sourceProfileName} · {node.type || 'unknown'}</span>
+                                </span>
+                              </label>
+                            )
+                          })
+                        ) : (
+                          <div className="h-24 flex items-center justify-center text-sm text-[var(--text-faint)]">
+                            {isLoadingNodes ? '节点加载中...' : (selectableNodes.length === 0 ? '暂无可选节点' : '未找到节点')}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </motion.div>
+                ) : importType === 'url' ? (
                   <motion.div
                     key="url-input"
                     initial={{ height: 0, opacity: 0 }}
@@ -278,109 +388,111 @@ export function AddProfileModal({ isOpen, onClose, onImportUrl, onImportContent 
                 )}
               </AnimatePresence>
 
-              <div className="pt-2 border-t border-[var(--border-secondary)]">
-                <div className="flex items-center justify-between py-2">
-                  <div>
-                    <p className="text-sm font-medium text-[var(--text-primary)]">自动更新</p>
-                    <p className="text-xs text-[var(--text-faint)]">定时更新订阅内容</p>
-                  </div>
-                  <button
-                    onClick={() => setAutoUpdateEnabled(!autoUpdateEnabled)}
-                    disabled={loading}
-                    className={`w-11 h-6 rounded-full transition-colors ${
-                      autoUpdateEnabled ? 'bg-[var(--accent-primary)]' : 'bg-[var(--bg-elevated)]'
-                    } disabled:opacity-50`}
-                  >
-                    <div className={`w-5 h-5 rounded-full bg-white shadow-sm transition-transform ${
-                      autoUpdateEnabled ? 'translate-x-5' : 'translate-x-0.5'
-                    }`} />
-                  </button>
-                </div>
-
-                <AnimatePresence>
-                  {autoUpdateEnabled && (
-                    <motion.div
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: 'auto', opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.2 }}
-                      className="overflow-hidden"
+              {importType !== 'custom' && (
+                <div className="pt-2 border-t border-[var(--border-secondary)]">
+                  <div className="flex items-center justify-between py-2">
+                    <div>
+                      <p className="text-sm font-medium text-[var(--text-primary)]">自动更新</p>
+                      <p className="text-xs text-[var(--text-faint)]">定时更新订阅内容</p>
+                    </div>
+                    <button
+                      onClick={() => setAutoUpdateEnabled(!autoUpdateEnabled)}
+                      disabled={loading}
+                      className={`w-11 h-6 rounded-full transition-colors ${
+                        autoUpdateEnabled ? 'bg-[var(--accent-primary)]' : 'bg-[var(--bg-elevated)]'
+                      } disabled:opacity-50`}
                     >
-                      <div className="pt-2 pb-1">
-                        <label className="text-xs text-[var(--text-muted)]">更新间隔（分钟，最少 15）</label>
-                        <input
-                          type="number"
-                          value={autoUpdateMinutes}
-                          onChange={(e) => setAutoUpdateMinutes(e.target.value.replace(/\D/g, ''))}
-                          min={15}
-                          disabled={loading}
-                          className="mt-1 w-full px-3 py-2 bg-[var(--bg-elevated)] border border-[var(--border-secondary)] rounded-lg text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent-primary)] disabled:opacity-50"
-                        />
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-
-                <div className="flex items-center justify-between py-2 mt-2">
-                  <div>
-                    <p className="text-sm font-medium text-[var(--text-primary)]">DNS 预解析</p>
-                    <p className="text-xs text-[var(--text-faint)]">启动前预解析节点域名，加快连接</p>
+                      <div className={`w-5 h-5 rounded-full bg-white shadow-sm transition-transform ${
+                        autoUpdateEnabled ? 'translate-x-5' : 'translate-x-0.5'
+                      }`} />
+                    </button>
                   </div>
-                  <button
-                    onClick={() => setDnsPreResolve(!dnsPreResolve)}
-                    disabled={loading}
-                    className={`w-11 h-6 rounded-full transition-colors ${
-                      dnsPreResolve ? 'bg-[var(--accent-primary)]' : 'bg-[var(--bg-elevated)]'
-                    } disabled:opacity-50`}
-                  >
-                    <div className={`w-5 h-5 rounded-full bg-white shadow-sm transition-transform ${
-                      dnsPreResolve ? 'translate-x-5' : 'translate-x-0.5'
-                    }`} />
-                  </button>
-                </div>
 
-                <AnimatePresence>
-                  {dnsPreResolve && (
-                    <motion.div
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: 'auto', opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.2 }}
-                      className="overflow-hidden"
+                  <AnimatePresence>
+                    {autoUpdateEnabled && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                        className="overflow-hidden"
+                      >
+                        <div className="pt-2 pb-1">
+                          <label className="text-xs text-[var(--text-muted)]">更新间隔（分钟，最少 15）</label>
+                          <input
+                            type="number"
+                            value={autoUpdateMinutes}
+                            onChange={(e) => setAutoUpdateMinutes(e.target.value.replace(/\D/g, ''))}
+                            min={15}
+                            disabled={loading}
+                            className="mt-1 w-full px-3 py-2 bg-[var(--bg-elevated)] border border-[var(--border-secondary)] rounded-lg text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent-primary)] disabled:opacity-50"
+                          />
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+
+                  <div className="flex items-center justify-between py-2 mt-2">
+                    <div>
+                      <p className="text-sm font-medium text-[var(--text-primary)]">DNS 预解析</p>
+                      <p className="text-xs text-[var(--text-faint)]">启动前预解析节点域名，加快连接</p>
+                    </div>
+                    <button
+                      onClick={() => setDnsPreResolve(!dnsPreResolve)}
+                      disabled={loading}
+                      className={`w-11 h-6 rounded-full transition-colors ${
+                        dnsPreResolve ? 'bg-[var(--accent-primary)]' : 'bg-[var(--bg-elevated)]'
+                      } disabled:opacity-50`}
                     >
-                      <div className="pt-2 pb-1 relative">
-                        <label className="text-xs text-[var(--text-muted)]">DNS 服务器</label>
-                        <button
-                          onClick={() => setDnsDropdownOpen(!dnsDropdownOpen)}
-                          disabled={loading}
-                          className="mt-1 w-full px-3 py-2 bg-[var(--bg-elevated)] border border-[var(--border-secondary)] rounded-lg text-sm text-[var(--text-primary)] flex items-center justify-between disabled:opacity-50"
-                        >
-                          <span>{DNS_SERVERS.find(s => s.value === dnsServer)?.label || dnsServer}</span>
-                          <ChevronDown className={`w-4 h-4 text-[var(--text-muted)] transition-transform ${dnsDropdownOpen ? 'rotate-180' : ''}`} />
-                        </button>
-                        {dnsDropdownOpen && (
-                          <div className="absolute left-0 right-0 top-full mt-1 bg-[var(--glass-bg)] border border-[var(--glass-border)] rounded-lg shadow-xl z-10 overflow-hidden">
-                            {DNS_SERVERS.map((server) => (
-                              <button
-                                key={server.value}
-                                onClick={() => {
-                                  setDnsServer(server.value)
-                                  setDnsDropdownOpen(false)
-                                }}
-                                className={`w-full px-3 py-2.5 text-left text-sm hover:bg-[var(--bg-elevated)] transition-colors ${
-                                  dnsServer === server.value ? 'text-[var(--accent-primary)] bg-[var(--accent-muted)]' : 'text-[var(--text-primary)]'
-                                }`}
-                              >
-                                {server.label}
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
+                      <div className={`w-5 h-5 rounded-full bg-white shadow-sm transition-transform ${
+                        dnsPreResolve ? 'translate-x-5' : 'translate-x-0.5'
+                      }`} />
+                    </button>
+                  </div>
+
+                  <AnimatePresence>
+                    {dnsPreResolve && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                        className="overflow-hidden"
+                      >
+                        <div className="pt-2 pb-1 relative">
+                          <label className="text-xs text-[var(--text-muted)]">DNS 服务器</label>
+                          <button
+                            onClick={() => setDnsDropdownOpen(!dnsDropdownOpen)}
+                            disabled={loading}
+                            className="mt-1 w-full px-3 py-2 bg-[var(--bg-elevated)] border border-[var(--border-secondary)] rounded-lg text-sm text-[var(--text-primary)] flex items-center justify-between disabled:opacity-50"
+                          >
+                            <span>{DNS_SERVERS.find(s => s.value === dnsServer)?.label || dnsServer}</span>
+                            <ChevronDown className={`w-4 h-4 text-[var(--text-muted)] transition-transform ${dnsDropdownOpen ? 'rotate-180' : ''}`} />
+                          </button>
+                          {dnsDropdownOpen && (
+                            <div className="absolute left-0 right-0 top-full mt-1 bg-[var(--glass-bg)] border border-[var(--glass-border)] rounded-lg shadow-xl z-10 overflow-hidden">
+                              {DNS_SERVERS.map((server) => (
+                                <button
+                                  key={server.value}
+                                  onClick={() => {
+                                    setDnsServer(server.value)
+                                    setDnsDropdownOpen(false)
+                                  }}
+                                  className={`w-full px-3 py-2.5 text-left text-sm hover:bg-[var(--bg-elevated)] transition-colors ${
+                                    dnsServer === server.value ? 'text-[var(--accent-primary)] bg-[var(--accent-muted)]' : 'text-[var(--text-primary)]'
+                                  }`}
+                                >
+                                  {server.label}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              )}
 
               {error && (
                 <div className="px-3 py-2 bg-[var(--status-error)]/10 border border-[var(--status-error)]/30 rounded-lg">
@@ -403,7 +515,7 @@ export function AddProfileModal({ isOpen, onClose, onImportUrl, onImportContent 
                 className="flex items-center gap-2 px-4 py-2 bg-[var(--accent-primary)] text-white rounded-lg text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {loading && <Loader2 className="w-4 h-4 animate-spin" />}
-                <span>{loading ? '导入中...' : '导入'}</span>
+                <span>{loading ? (importType === 'custom' ? '创建中...' : '导入中...') : (importType === 'custom' ? '创建' : '导入')}</span>
               </button>
             </div>
           </motion.div>

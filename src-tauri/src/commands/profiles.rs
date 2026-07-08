@@ -932,13 +932,21 @@ pub struct NodeWithProfile {
     pub source_profile_name: String,
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomProfileNodeSelection {
+    pub source_profile_id: String,
+    pub tag: String,
+}
+
 #[tauri::command]
-pub async fn node_list_all(state: State<'_, AppState>) -> Result<Vec<NodeWithProfile>, String> {
+pub async fn node_list_all(state: State<'_, AppState>, include_disabled: Option<bool>) -> Result<Vec<NodeWithProfile>, String> {
     let data = load_profiles_data(&state);
     let mut all_nodes = Vec::new();
+    let include_disabled = include_disabled.unwrap_or(false);
 
     for profile in &data.profiles {
-        if !profile.enabled {
+        if !include_disabled && !profile.enabled {
             continue;
         }
         let nodes = load_profile_nodes(&state, &profile.id);
@@ -952,6 +960,76 @@ pub async fn node_list_all(state: State<'_, AppState>) -> Result<Vec<NodeWithPro
     }
 
     Ok(all_nodes)
+}
+
+fn collect_custom_profile_nodes(state: &AppState, selections: &[CustomProfileNodeSelection]) -> Result<Vec<SingBoxOutbound>, String> {
+    let mut selected_nodes = Vec::new();
+    let mut seen = HashSet::new();
+
+    for selection in selections {
+        let source_profile_id = selection.source_profile_id.trim();
+        let tag = selection.tag.trim();
+        if source_profile_id.is_empty() || tag.is_empty() {
+            return Err("Invalid node selection".to_string());
+        }
+        if !seen.insert((source_profile_id.to_string(), tag.to_string())) {
+            continue;
+        }
+
+        let nodes = load_profile_nodes(state, source_profile_id);
+        let node = nodes
+            .into_iter()
+            .find(|node| node.tag.as_deref() == Some(tag))
+            .ok_or_else(|| format!("Node not found: {}", tag))?;
+        selected_nodes.push(node);
+    }
+
+    if selected_nodes.is_empty() {
+        return Err("No nodes selected".to_string());
+    }
+
+    Ok(normalize_duplicate_node_tags(selected_nodes))
+}
+
+#[tauri::command]
+pub async fn profile_create_custom(
+    state: State<'_, AppState>,
+    name: String,
+    selections: Vec<CustomProfileNodeSelection>,
+) -> Result<Profile, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("Profile name cannot be empty".to_string());
+    }
+    if selections.is_empty() {
+        return Err("No nodes selected".to_string());
+    }
+
+    let nodes = collect_custom_profile_nodes(&state, &selections)?;
+    let mut data = load_profiles_data(&state);
+    let profile = Profile {
+        id: uuid::Uuid::new_v4().to_string(),
+        name,
+        url: String::new(),
+        last_update: Some(chrono::Utc::now().timestamp_millis() as u64),
+        node_count: nodes.len() as u32,
+        enabled: true,
+        auto_update_interval: 0,
+        dns_pre_resolve: false,
+        dns_server: None,
+    };
+
+    save_profile_nodes(&state, &profile.id, &nodes)?;
+
+    if data.active_profile_id.is_none() {
+        data.active_profile_id = Some(profile.id.clone());
+        data.active_node_tag = nodes.first().and_then(|node| node.tag.clone());
+    }
+    data.profiles.push(profile.clone());
+    save_profiles_data(&state, &data)?;
+    *state.profiles_data.lock().await = data;
+
+    Ok(profile)
 }
 
 fn normalize_duplicate_node_tags(nodes: Vec<SingBoxOutbound>) -> Vec<SingBoxOutbound> {
@@ -4009,6 +4087,70 @@ mod tests {
             data.node_selections.get("profile-a").map(String::as_str),
             Some("new-node")
         );
+    }
+
+    #[test]
+    fn custom_profile_nodes_follow_selection_order_and_normalize_duplicate_tags() {
+        let state = AppState::new(unique_test_dir("custom-profile-nodes"));
+        save_profile_nodes(
+            &state,
+            "profile-a",
+            &[
+                SingBoxOutbound {
+                    tag: Some("same".to_string()),
+                    outbound_type: Some("trojan".to_string()),
+                    server: Some("a.example.com".to_string()),
+                    server_port: Some(443),
+                    extra: std::collections::HashMap::new(),
+                },
+                SingBoxOutbound {
+                    tag: Some("only-a".to_string()),
+                    outbound_type: Some("vless".to_string()),
+                    server: Some("only.example.com".to_string()),
+                    server_port: Some(8443),
+                    extra: std::collections::HashMap::new(),
+                },
+            ],
+        )
+        .unwrap();
+        save_profile_nodes(
+            &state,
+            "profile-b",
+            &[SingBoxOutbound {
+                tag: Some("same".to_string()),
+                outbound_type: Some("shadowsocks".to_string()),
+                server: Some("b.example.com".to_string()),
+                server_port: Some(8388),
+                extra: std::collections::HashMap::new(),
+            }],
+        )
+        .unwrap();
+
+        let nodes = collect_custom_profile_nodes(
+            &state,
+            &[
+                CustomProfileNodeSelection {
+                    source_profile_id: "profile-b".to_string(),
+                    tag: "same".to_string(),
+                },
+                CustomProfileNodeSelection {
+                    source_profile_id: "profile-a".to_string(),
+                    tag: "same".to_string(),
+                },
+                CustomProfileNodeSelection {
+                    source_profile_id: "profile-a".to_string(),
+                    tag: "only-a".to_string(),
+                },
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(nodes[0].tag.as_deref(), Some("same"));
+        assert_eq!(nodes[0].server.as_deref(), Some("b.example.com"));
+        assert_eq!(nodes[1].tag.as_deref(), Some("same #2"));
+        assert_eq!(nodes[1].server.as_deref(), Some("a.example.com"));
+        assert_eq!(nodes[2].tag.as_deref(), Some("only-a"));
     }
 
     fn make_test_state() -> AppState {

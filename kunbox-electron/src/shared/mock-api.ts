@@ -1,5 +1,5 @@
 // Mock API for browser-only environments (dev/QA testing without Tauri/Electron)
-import type { AppSettings, Profile, SingBoxOutbound, TrafficStats, LogEntry, DomainRule, CustomRules, NodeWithProfile, NodeLatencyResult, HealthEvent } from './types'
+import type { AppSettings, Profile, SingBoxOutbound, TrafficStats, LogEntry, DomainRule, CustomRules, NodeWithProfile, NodeLatencyResult, HealthEvent, CustomProfileNodeSelection } from './types'
 
 const noop = () => {}
 const noopUnlisten = () => noop
@@ -121,6 +121,18 @@ export const mockApi = {
         dnsPreResolve: false,
         dnsServer: null,
       }),
+    createCustom: (_name: string, _selections: CustomProfileNodeSelection[]): Promise<Profile> =>
+      Promise.resolve({
+        id: `mock-profile-${Date.now()}`,
+        name: _name,
+        url: '',
+        lastUpdate: Date.now(),
+        nodeCount: _selections.length,
+        enabled: true,
+        autoUpdateInterval: 0,
+        dnsPreResolve: false,
+        dnsServer: null,
+      }),
     update: (_id: string): Promise<Profile> =>
       Promise.resolve(mockProfiles[0]),
     delete: (_id: string): Promise<void> => Promise.resolve(),
@@ -156,7 +168,7 @@ export const mockApi = {
     },
     delete: (_tag: string): Promise<void> => Promise.resolve(),
     export: (_tag: string): Promise<string> => Promise.resolve('ss://mock-exported-link'),
-    listAll: (): Promise<NodeWithProfile[]> => Promise.resolve([...mockNodesWithProfile]),
+    listAll: (_includeDisabled?: boolean): Promise<NodeWithProfile[]> => Promise.resolve([...mockNodesWithProfile]),
   },
 
   settings: {
