@@ -11,6 +11,18 @@ pub struct UpdateInfo {
     pub body: Option<String>,
 }
 
+fn build_updater_progress_payload(
+    downloaded: &mut u64,
+    chunk_length: usize,
+    content_length: Option<u64>,
+) -> serde_json::Value {
+    *downloaded = downloaded.saturating_add(u64::try_from(chunk_length).unwrap_or(u64::MAX));
+    serde_json::json!({
+        "downloaded": *downloaded,
+        "contentLength": content_length.unwrap_or(0)
+    })
+}
+
 #[tauri::command]
 pub async fn updater_check(app: AppHandle) -> Result<UpdateInfo, String> {
     let current_version = app.package_info().version.to_string();
@@ -60,17 +72,14 @@ pub async fn updater_download_and_install(app: AppHandle) -> Result<UpdateInfo, 
     let target_version = update.version.clone();
     let target_date = update.date.map(|d| d.to_string());
     let target_body = update.body.clone();
+    let mut downloaded = 0u64;
 
     update
         .download_and_install(
             |chunk_length, content_length| {
-                let total = content_length.unwrap_or(0);
                 let _ = app.emit(
                     "updater:download-progress",
-                    serde_json::json!({
-                        "downloaded": chunk_length,
-                        "contentLength": total
-                    }),
+                    build_updater_progress_payload(&mut downloaded, chunk_length, content_length),
                 );
             },
             || {
@@ -87,4 +96,21 @@ pub async fn updater_download_and_install(app: AppHandle) -> Result<UpdateInfo, 
         date: target_date,
         body: target_body,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn updater_progress_payload_accumulates_chunks() {
+        let mut downloaded = 0u64;
+
+        let first = build_updater_progress_payload(&mut downloaded, 512, Some(2048));
+        let second = build_updater_progress_payload(&mut downloaded, 256, Some(2048));
+
+        assert_eq!(first["downloaded"], serde_json::json!(512u64));
+        assert_eq!(second["downloaded"], serde_json::json!(768u64));
+        assert_eq!(second["contentLength"], serde_json::json!(2048u64));
+    }
 }

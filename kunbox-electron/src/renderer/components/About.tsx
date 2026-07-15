@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Download, Info, RefreshCw } from 'lucide-react'
 import { useToast } from './ui/Toast'
+import { formatBytes } from '../lib/utils'
 
 type UpdateInfo = {
   currentVersion: string
@@ -10,14 +11,23 @@ type UpdateInfo = {
   body?: string
 }
 
+type DownloadProgress = {
+  downloaded: number
+  contentLength: number
+}
+
 export default function About() {
   const toast = useToast()
   const [checking, setChecking] = useState(false)
   const [updating, setUpdating] = useState(false)
   const [progress, setProgress] = useState(0)
+  const [downloadedBytes, setDownloadedBytes] = useState(0)
+  const [downloadTotal, setDownloadTotal] = useState(0)
+  const [downloadSpeed, setDownloadSpeed] = useState<number | null>(null)
   const [currentVersion, setCurrentVersion] = useState(__APP_VERSION__)
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
   const checkingRef = useRef(false)
+  const lastProgressRef = useRef<{ downloaded: number; time: number } | null>(null)
 
   const hasUpdate = updateInfo?.hasUpdate ?? false
 
@@ -67,6 +77,10 @@ export default function About() {
     if (updating) return
     setUpdating(true)
     setProgress(0)
+    setDownloadedBytes(0)
+    setDownloadTotal(0)
+    setDownloadSpeed(null)
+    lastProgressRef.current = null
     try {
       await window.api.updater.downloadAndInstall()
       toast.success('更新包下载完成，应用将开始安装')
@@ -77,14 +91,32 @@ export default function About() {
   }, [toast, updating])
 
   useEffect(() => {
-    const offProgress = window.api.updater.onDownloadProgress(({ downloaded, contentLength }: { downloaded: number; contentLength: number }) => {
-      if (!contentLength || contentLength <= 0) return
-      const next = Math.min(100, (downloaded / contentLength) * 100)
-      setProgress(Number.isFinite(next) ? next : 0)
+    const offProgress = window.api.updater.onDownloadProgress(({ downloaded, contentLength }: DownloadProgress) => {
+      const now = Date.now()
+      const previous = lastProgressRef.current
+
+      setDownloadedBytes(downloaded)
+      setDownloadTotal(contentLength)
+
+      if (previous) {
+        const seconds = (now - previous.time) / 1000
+        const bytes = downloaded - previous.downloaded
+        if (seconds > 0 && bytes >= 0) {
+          setDownloadSpeed(bytes / seconds)
+        }
+      }
+      lastProgressRef.current = { downloaded, time: now }
+
+      if (contentLength > 0) {
+        const next = Math.min(100, (downloaded / contentLength) * 100)
+        setProgress(Number.isFinite(next) ? next : 0)
+      }
     })
 
     const offFinished = window.api.updater.onDownloadFinished(() => {
       setProgress(100)
+      setDownloadSpeed(null)
+      lastProgressRef.current = null
       setUpdating(false)
     })
 
@@ -158,7 +190,19 @@ export default function About() {
               <div className="w-full h-2 rounded-full bg-[var(--bg-tertiary)] overflow-hidden">
                 <div className="h-full bg-[var(--accent-primary)] transition-all" style={{ width: `${Math.max(1, Math.round(progress))}%` }} />
               </div>
-              <p className="text-xs text-[var(--text-muted)]">下载中 {Math.round(progress)}%</p>
+              <div className="flex items-center justify-between text-xs text-[var(--text-muted)]">
+                <span>下载中 {Math.round(progress)}%</span>
+                <span>
+                  {downloadSpeed == null ? '计算网速中' : `${formatBytes(downloadSpeed)}/s`}
+                  {downloadedBytes > 0 && (
+                    <>
+                      {' · '}
+                      {formatBytes(downloadedBytes)}
+                      {downloadTotal > 0 ? ` / ${formatBytes(downloadTotal)}` : ''}
+                    </>
+                  )}
+                </span>
+              </div>
             </div>
           )}
 
