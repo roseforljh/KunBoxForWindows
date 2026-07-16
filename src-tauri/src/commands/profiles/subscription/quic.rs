@@ -2,6 +2,25 @@ use crate::types::SingBoxOutbound;
 
 use super::{parse_bool_param, parse_host_port};
 
+fn parse_hysteria2_server_ports(value: &str) -> Option<Vec<serde_json::Value>> {
+    let ports = value
+        .split(',')
+        .map(str::trim)
+        .map(|item| {
+            if let Some((start, end)) = item.split_once('-') {
+                let start = start.parse::<u16>().ok().filter(|port| *port > 0)?;
+                let end = end.parse::<u16>().ok().filter(|port| *port > 0)?;
+                (start <= end).then(|| serde_json::Value::String(format!("{start}:{end}")))
+            } else {
+                let port = item.parse::<u16>().ok().filter(|port| *port > 0)?;
+                Some(serde_json::Value::Number(port.into()))
+            }
+        })
+        .collect::<Option<Vec<_>>>()?;
+
+    (!ports.is_empty()).then_some(ports)
+}
+
 pub(super) fn parse_hysteria2_link(link: &str) -> Option<SingBoxOutbound> {
     let rest = link
         .strip_prefix("hysteria2://")
@@ -29,6 +48,16 @@ pub(super) fn parse_hysteria2_link(link: &str) -> Option<SingBoxOutbound> {
     let mut extra = std::collections::HashMap::new();
     extra.insert("password".to_string(), serde_json::Value::String(password));
 
+    let server_ports = params
+        .get("mport")
+        .and_then(|value| parse_hysteria2_server_ports(value));
+    if let Some(server_ports) = &server_ports {
+        extra.insert(
+            "server_ports".to_string(),
+            serde_json::Value::Array(server_ports.clone()),
+        );
+    }
+
     // TLS (Hysteria2 always uses TLS)
     let mut tls = serde_json::Map::new();
     tls.insert("enabled".to_string(), serde_json::Value::Bool(true));
@@ -43,11 +72,16 @@ pub(super) fn parse_hysteria2_link(link: &str) -> Option<SingBoxOutbound> {
             serde_json::Value::String(server.clone()),
         );
     }
-    if params
+    let allow_insecure = params
         .get("insecure")
         .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-    {
+        .unwrap_or(false);
+    let has_certificate_pin = params.get("pinSHA256").is_some_and(|value| {
+        value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    });
+    // Hysteria 使用整张证书的 SHA-256，sing-box 只支持公钥 SPKI SHA-256，二者无法直接转换。
+    // 携带有效 pinSHA256 的链接通常使用自签名证书，仅对这类链接启用兼容模式。
+    if allow_insecure || has_certificate_pin {
         tls.insert("insecure".to_string(), serde_json::Value::Bool(true));
     }
     if let Some(alpn) = params.get("alpn") {
@@ -79,7 +113,7 @@ pub(super) fn parse_hysteria2_link(link: &str) -> Option<SingBoxOutbound> {
         tag: Some(tag),
         outbound_type: Some("hysteria2".to_string()),
         server: Some(server),
-        server_port: Some(port),
+        server_port: server_ports.is_none().then_some(port),
         extra,
     })
 }

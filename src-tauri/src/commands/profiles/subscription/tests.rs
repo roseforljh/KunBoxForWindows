@@ -26,6 +26,36 @@ fn parses_insecure_flags_from_links() {
 }
 
 #[test]
+fn parse_hysteria2_link_preserves_port_hopping_and_pin_compatibility() {
+    let node = parse_hysteria2_link(
+        "hysteria2://pwd@example.com:443?insecure=false&mport=20000-30000&pinSHA256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef&sni=hy2.example.com#demo",
+    )
+    .unwrap();
+
+    assert_eq!(node.server_port, None);
+    assert_eq!(
+        node.extra.get("server_ports"),
+        Some(&serde_json::json!(["20000:30000"]))
+    );
+
+    let tls = node.extra.get("tls").and_then(|v| v.as_object()).unwrap();
+    assert_eq!(
+        tls.get("server_name").and_then(|v| v.as_str()),
+        Some("hy2.example.com")
+    );
+    assert_eq!(tls.get("insecure").and_then(|v| v.as_bool()), Some(true));
+
+    let regular =
+        parse_hysteria2_link("hysteria2://pwd@example.com:443?insecure=false#regular").unwrap();
+    let regular_tls = regular
+        .extra
+        .get("tls")
+        .and_then(|v| v.as_object())
+        .unwrap();
+    assert_eq!(regular_tls.get("insecure"), None);
+}
+
+#[test]
 fn parse_clash_naive_ignores_network_field() {
     let proxies = vec![serde_json::json!({
         "name": "Naive H2",
