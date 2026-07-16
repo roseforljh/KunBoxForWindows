@@ -406,6 +406,29 @@ pub(crate) async fn singbox_start_impl(
         }
     }
 
+    // TUN 已接管系统流量时再挂系统代理容易双路径冲突，启动时强制只保留 TUN。
+    if effective_settings.tun_enabled && effective_settings.system_proxy {
+        effective_settings.system_proxy = false;
+        append_startup_diagnostic(
+            state,
+            "TUN mode active: auto-disabling system proxy for this session",
+        );
+        let message =
+            "已启用 TUN 模式，本次连接自动关闭系统代理，避免双代理叠加导致证书或连接异常。";
+        if startup_warning.is_none() {
+            startup_warning = Some(message.to_string());
+        }
+        let _ = app.emit(
+            "singbox:log",
+            serde_json::json!({
+                "timestamp": chrono::Utc::now().timestamp_millis(),
+                "level": "warn",
+                "tag": "sing-box",
+                "message": message,
+            }),
+        );
+    }
+
     if let Some(mut child) = state.singbox_process.lock().await.take() {
         let _ = child.kill().await;
         let _ = child.wait().await;
@@ -2597,14 +2620,22 @@ async fn generate_config_with_settings(
 
     // FakeDNS 规则（放在域名 DNS 规则之后，确保域名规则优先匹配）
     if settings.fake_dns {
-        dns_servers.push(serde_json::json!({
+        // TUN 网卡仅 IPv4：FakeIP 不分配 IPv6 段，AAAA 走系统原生解析/链路。
+        let mut fakeip_server = serde_json::json!({
             "tag": "dns-fakeip",
             "type": "fakeip",
-            "inet4_range": "198.18.0.0/15",
-            "inet6_range": "fc00::/18"
-        }));
+            "inet4_range": "198.18.0.0/15"
+        });
+        if !settings.tun_enabled {
+            fakeip_server["inet6_range"] = serde_json::json!("fc00::/18");
+        }
+        dns_servers.push(fakeip_server);
         let mut fake_dns_rule = serde_json::json!({
-            "query_type": ["A", "AAAA"],
+            "query_type": if settings.tun_enabled {
+                serde_json::json!(["A"])
+            } else {
+                serde_json::json!(["A", "AAAA"])
+            },
             "server": "dns-fakeip"
         });
         if settings.tun_enabled {
@@ -2631,14 +2662,16 @@ async fn generate_config_with_settings(
 
     // 如果启用 TUN 模式，添加 TUN inbound
     if settings.tun_enabled {
+        // Windows 上 TUN IPv6 路径半残：不要把 v6 塞进隧道。
+        // 策略：IPv4 走 TUN（优先）；IPv6 留给系统原生网卡作回退。MTU 1500 避免巨帧黑洞。
         inbounds.push(serde_json::json!({
             "type": "tun",
             "tag": "tun-in",
             "interface_name": "kunbox-tun",
-            "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
-            "mtu": 9000,
+            "address": ["172.19.0.1/30"],
+            "mtu": 1500,
             "auto_route": true,
-            "strict_route": true,
+            "strict_route": settings.tun_strict_route,
             "stack": settings.tun_stack
         }));
     }
@@ -2647,13 +2680,17 @@ async fn generate_config_with_settings(
         "global-direct" => "dns-local",
         _ => "dns-remote",
     };
-    let dns_config = serde_json::json!({
+    // TUN 开启时 prefer_ipv4：优先 A/IPv4 走隧道；纯 v6 或 v4 不可用时仍可解析 AAAA，走系统原生 IPv6。
+    let mut dns_config = serde_json::json!({
         "servers": dns_servers,
         "rules": dns_rules,
         "final": dns_final,
         "independent_cache": true,
         "reverse_mapping": true
     });
+    if settings.tun_enabled {
+        dns_config["strategy"] = serde_json::json!("prefer_ipv4");
+    }
 
     // 避免 1.13+ 硬错误，始终不生成已弃用 outbound DNS rule item
 
@@ -3861,7 +3898,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn generate_config_forces_strict_tun_route() {
+    async fn generate_config_respects_tun_strict_route_setting() {
         let data_dir = unique_test_dir("tun-strict-route");
         let state = AppState::new(data_dir.clone());
 
@@ -3899,7 +3936,7 @@ mod tests {
             tun_inbound
                 .get("strict_route")
                 .and_then(|value| value.as_bool()),
-            Some(true)
+            Some(false)
         );
 
         let _ = fs::remove_dir_all(data_dir);
@@ -5047,7 +5084,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn generate_config_uses_strict_tun_route_by_default() {
+    async fn generate_config_uses_non_strict_tun_route_by_default() {
         let data_dir = unique_test_dir("tun-non-strict-route");
         let state = AppState::new(data_dir.clone());
 
@@ -5081,7 +5118,81 @@ mod tests {
             tun_inbound
                 .get("strict_route")
                 .and_then(|value| value.as_bool()),
-            Some(true)
+            Some(false)
+        );
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn generate_config_uses_prefer_ipv4_tun_and_dns_strategy() {
+        let data_dir = unique_test_dir("tun-prefer-ipv4");
+        let state = AppState::new(data_dir.clone());
+
+        {
+            let mut settings = state.settings.lock().await;
+            settings.tun_enabled = true;
+            settings.fake_dns = true;
+        }
+
+        let profiles_data = ProfilesData {
+            profiles: vec![make_profile("profile-a", "Profile A")],
+            active_profile_id: Some("profile-a".to_string()),
+            active_node_tag: Some("node-a".to_string()),
+            node_selections: HashMap::new(),
+        };
+
+        write_json_file(&state.profiles_file(), &profiles_data);
+        write_json_file(
+            &state.configs_dir().join("profile-a.json"),
+            &vec![make_node("node-a")],
+        );
+
+        let result = generate_config(&state).await.unwrap();
+        assert!(result.success);
+
+        let config = read_generated_config(&state);
+        let tun_inbound = config["inbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|inbound| inbound.get("tag").and_then(|tag| tag.as_str()) == Some("tun-in"))
+            .expect("tun inbound should be generated");
+
+        assert_eq!(
+            tun_inbound.get("address").and_then(|value| value.as_array()),
+            Some(&vec![serde_json::json!("172.19.0.1/30")])
+        );
+        assert_eq!(
+            tun_inbound.get("mtu").and_then(|value| value.as_u64()),
+            Some(1500)
+        );
+        assert_eq!(
+            config["dns"]
+                .get("strategy")
+                .and_then(|value| value.as_str()),
+            Some("prefer_ipv4")
+        );
+
+        let fakeip = config["dns"]["servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|server| server.get("tag").and_then(|tag| tag.as_str()) == Some("dns-fakeip"))
+            .expect("fakeip server should exist when fake_dns is enabled");
+        assert!(fakeip.get("inet6_range").is_none());
+
+        let fake_dns_rule = config["dns"]["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|rule| rule.get("server").and_then(|server| server.as_str()) == Some("dns-fakeip"))
+            .expect("fake dns rule should exist");
+        assert_eq!(
+            fake_dns_rule
+                .get("query_type")
+                .and_then(|value| value.as_array()),
+            Some(&vec![serde_json::json!("A")])
         );
 
         let _ = fs::remove_dir_all(data_dir);

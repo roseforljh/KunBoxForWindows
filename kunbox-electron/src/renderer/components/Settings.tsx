@@ -212,6 +212,9 @@ export default function Settings() {
                       onChange={(v) => updateSetting('tunStack', v as AppSettings['tunStack'])}
                     />
                   </SettingRow>
+                  <SettingRow label="严格路由" isLast>
+                    <Toggle checked={settings.tunStrictRoute} onChange={(v) => updateSetting('tunStrictRoute', v)} />
+                  </SettingRow>
                 </SettingCard>
 
                 {settings.tunEnabled && !isAdmin && (
@@ -239,9 +242,15 @@ export default function Settings() {
                   </div>
                 )}
 
-                <div className="glass-card rounded-2xl p-5">
+                <div className="glass-card rounded-2xl p-5 space-y-2">
                   <p className="text-sm text-[var(--text-muted)]">
                     TUN 模式可接管系统全部流量。建议使用 gVisor 或 Mixed 网络栈以获得更好的兼容性。
+                  </p>
+                  <p className="text-sm text-[var(--text-muted)]">
+                    开启 TUN 后会在本次连接中自动关闭系统代理，避免双路径叠加。严格路由默认关闭，兼容性优先。
+                  </p>
+                  <p className="text-sm text-[var(--text-muted)]">
+                    TUN 网卡仅 IPv4，DNS 优先 IPv4（prefer_ipv4，MTU 1500）。IPv6 不进隧道，由系统原生链路回退。
                   </p>
                 </div>
               </div>

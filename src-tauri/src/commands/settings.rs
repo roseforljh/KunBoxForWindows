@@ -172,7 +172,6 @@ where
 {
     // Get current settings
     let mut current = state.settings.lock().await.clone();
-    current.tun_strict_route = true;
     let old_start_with_windows = current.start_with_windows;
 
     // Merge with incoming partial settings
@@ -197,6 +196,9 @@ where
         }
         if let Some(v) = obj.get("tunStack").and_then(|v| v.as_str()) {
             current.tun_stack = v.to_string();
+        }
+        if let Some(v) = obj.get("tunStrictRoute").and_then(|v| v.as_bool()) {
+            current.tun_strict_route = v;
         }
         if let Some(v) = obj.get("localDns").and_then(|v| v.as_str()) {
             current.local_dns = v.to_string();
@@ -433,14 +435,14 @@ Start Port    End Port
     }
 
     #[tokio::test]
-    async fn set_settings_keeps_strict_tun_route_enabled() {
+    async fn set_settings_persists_tun_strict_route() {
         let data_dir = unique_test_path("strict-tun-route");
         let state = AppState::new(data_dir.clone());
 
         set_settings_impl(
             &state,
             serde_json::json!({
-                "tunStrictRoute": false
+                "tunStrictRoute": true
             }),
             |_| Ok(()),
         )
@@ -457,13 +459,13 @@ Start Port    End Port
     }
 
     #[tokio::test]
-    async fn set_settings_repairs_existing_non_strict_tun_route() {
-        let data_dir = unique_test_path("strict-tun-route-repair");
+    async fn set_settings_keeps_existing_tun_strict_route_when_unspecified() {
+        let data_dir = unique_test_path("strict-tun-route-preserve");
         let state = AppState::new(data_dir.clone());
 
         {
             let mut settings = state.settings.lock().await;
-            settings.tun_strict_route = false;
+            settings.tun_strict_route = true;
         }
 
         set_settings_impl(
