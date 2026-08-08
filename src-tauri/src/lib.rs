@@ -1,12 +1,12 @@
-use tauri::Manager;
-use tauri::Emitter;
-use std::path::PathBuf;
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::path::PathBuf;
+use tauri::Emitter;
+use tauri::Manager;
 
-mod types;
-mod state;
 mod commands;
+mod state;
+mod types;
 
 use state::AppState;
 use types::AppSettings;
@@ -40,17 +40,27 @@ fn spawn_safe_exit(app_handle: tauri::AppHandle) {
 
         if let Some(state) = app_handle.try_state::<AppState>() {
             #[cfg(windows)]
-            append_startup_diagnostic(&state.data_dir, "safe exit: stopping sing-box before app exit");
+            append_startup_diagnostic(
+                &state.data_dir,
+                "safe exit: stopping sing-box before app exit",
+            );
 
-            let stop_result = commands::singbox::singbox_stop_impl(app_handle.clone(), &state).await;
+            let stop_result =
+                commands::singbox::singbox_stop_impl(app_handle.clone(), &state).await;
             match stop_result {
                 Ok(_) => {
                     #[cfg(windows)]
-                    append_startup_diagnostic(&state.data_dir, "safe exit: sing-box stopped successfully");
+                    append_startup_diagnostic(
+                        &state.data_dir,
+                        "safe exit: sing-box stopped successfully",
+                    );
                 }
                 Err(err) => {
                     #[cfg(windows)]
-                    append_startup_diagnostic(&state.data_dir, &format!("safe exit: sing-box stop failed: {}", err));
+                    append_startup_diagnostic(
+                        &state.data_dir,
+                        &format!("safe exit: sing-box stop failed: {}", err),
+                    );
                     return;
                 }
             }
@@ -95,7 +105,8 @@ pub fn run() {
             append_startup_diagnostic(&data_dir, "require_admin enabled and process is not elevated, attempting ShellExecuteW(runas)");
 
             if let Ok(exe_path) = env::current_exe() {
-                let exe_path_wide: Vec<u16> = exe_path.to_string_lossy()
+                let exe_path_wide: Vec<u16> = exe_path
+                    .to_string_lossy()
                     .encode_utf16()
                     .chain(std::iter::once(0))
                     .collect();
@@ -118,14 +129,26 @@ pub fn run() {
 
                     // If ShellExecuteW returns > 32, it succeeded - exit current instance
                     if result.0 as isize > 32 {
-                        append_startup_diagnostic(&data_dir, "ShellExecuteW(runas) succeeded, exiting current non-elevated instance");
+                        append_startup_diagnostic(
+                            &data_dir,
+                            "ShellExecuteW(runas) succeeded, exiting current non-elevated instance",
+                        );
                         std::process::exit(0);
                     }
-                    append_startup_diagnostic(&data_dir, &format!("ShellExecuteW(runas) failed or was cancelled, code={}", result.0 as isize));
+                    append_startup_diagnostic(
+                        &data_dir,
+                        &format!(
+                            "ShellExecuteW(runas) failed or was cancelled, code={}",
+                            result.0 as isize
+                        ),
+                    );
                     // If failed (user cancelled UAC), continue running without admin
                 }
             } else {
-                append_startup_diagnostic(&data_dir, "failed to resolve current_exe while attempting admin restart");
+                append_startup_diagnostic(
+                    &data_dir,
+                    "failed to resolve current_exe while attempting admin restart",
+                );
             }
         }
     }
@@ -236,6 +259,7 @@ pub fn run() {
             commands::node_set_active,
             commands::node_delete,
             commands::node_add,
+            commands::node_update,
             commands::node_export,
             commands::node_begin_latency_tests,
             commands::node_test_latency,
@@ -306,8 +330,8 @@ fn get_data_dir() -> PathBuf {
 }
 
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
     use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
     // Main items
     let show_item = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
@@ -316,12 +340,19 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let vpn_start = MenuItem::with_id(app, "vpn_start", "启动 VPN", true, None::<&str>)?;
     let vpn_stop = MenuItem::with_id(app, "vpn_stop", "停止 VPN", true, None::<&str>)?;
     let vpn_restart = MenuItem::with_id(app, "vpn_restart", "重启 VPN", true, None::<&str>)?;
-    let vpn_submenu = Submenu::with_items(app, "VPN 控制", true, &[&vpn_start, &vpn_stop, &vpn_restart])?;
+    let vpn_submenu = Submenu::with_items(
+        app,
+        "VPN 控制",
+        true,
+        &[&vpn_start, &vpn_stop, &vpn_restart],
+    )?;
 
     // System proxy submenu
     let proxy_enable = MenuItem::with_id(app, "proxy_enable", "启用系统代理", true, None::<&str>)?;
-    let proxy_disable = MenuItem::with_id(app, "proxy_disable", "关闭系统代理", true, None::<&str>)?;
-    let proxy_submenu = Submenu::with_items(app, "系统代理", true, &[&proxy_enable, &proxy_disable])?;
+    let proxy_disable =
+        MenuItem::with_id(app, "proxy_disable", "关闭系统代理", true, None::<&str>)?;
+    let proxy_submenu =
+        Submenu::with_items(app, "系统代理", true, &[&proxy_enable, &proxy_disable])?;
 
     // TUN mode submenu
     let tun_enable = MenuItem::with_id(app, "tun_enable", "启用 TUN 模式", true, None::<&str>)?;
@@ -335,17 +366,21 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     // Quit item
     let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
 
-    let menu = Menu::with_items(app, &[
-        &show_item,
-        &sep1,
-        &vpn_submenu,
-        &proxy_submenu,
-        &tun_submenu,
-        &sep2,
-        &quit_item,
-    ])?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &show_item,
+            &sep1,
+            &vpn_submenu,
+            &proxy_submenu,
+            &tun_submenu,
+            &sep2,
+            &quit_item,
+        ],
+    )?;
 
-    let tray_icon = app.default_window_icon()
+    let tray_icon = app
+        .default_window_icon()
         .ok_or_else(|| tauri::Error::AssetNotFound("default window icon".to_string()))?
         .clone();
 
@@ -355,61 +390,64 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .show_menu_on_left_click(false)
         .tooltip("KunBox")
         .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
                 if let Some(window) = tray.app_handle().get_webview_window("main") {
                     let _ = window.show();
                     let _ = window.set_focus();
                 }
             }
         })
-        .on_menu_event(|app, event| {
-            match event.id.as_ref() {
-                "show" => {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
                 }
-                "vpn_start" => {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.emit("tray-vpn-start", ());
-                    }
-                }
-                "vpn_stop" => {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.emit("tray-vpn-stop", ());
-                    }
-                }
-                "vpn_restart" => {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.emit("tray-vpn-restart", ());
-                    }
-                }
-                "proxy_enable" => {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.emit("tray-proxy-enable", ());
-                    }
-                }
-                "proxy_disable" => {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.emit("tray-proxy-disable", ());
-                    }
-                }
-                "tun_enable" => {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.emit("tray-tun-enable", ());
-                    }
-                }
-                "tun_disable" => {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.emit("tray-tun-disable", ());
-                    }
-                }
-                "quit" => {
-                    spawn_safe_exit(app.clone());
-                }
-                _ => {}
             }
+            "vpn_start" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.emit("tray-vpn-start", ());
+                }
+            }
+            "vpn_stop" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.emit("tray-vpn-stop", ());
+                }
+            }
+            "vpn_restart" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.emit("tray-vpn-restart", ());
+                }
+            }
+            "proxy_enable" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.emit("tray-proxy-enable", ());
+                }
+            }
+            "proxy_disable" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.emit("tray-proxy-disable", ());
+                }
+            }
+            "tun_enable" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.emit("tray-tun-enable", ());
+                }
+            }
+            "tun_disable" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.emit("tray-tun-disable", ());
+                }
+            }
+            "quit" => {
+                spawn_safe_exit(app.clone());
+            }
+            _ => {}
         })
         .build(app)?;
 

@@ -1,7 +1,8 @@
 use crate::state::AppState;
 use crate::types::{
-    AppSettings, CommandResult, HealthEvent, HealthEventKind, HealthStatus, ProxyState,
-    TrafficStats,
+    node_is_auto_selection_eligible, node_is_metered_protected, AppSettings, CommandResult,
+    HealthEvent, HealthEventKind, HealthStatus, ProxyState, TrafficStats,
+    NODE_AUTO_SELECTION_ELIGIBLE_META_KEY, NODE_METERED_PROTECTED_META_KEY,
 };
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use std::fs;
@@ -68,6 +69,7 @@ const DEFAULT_CLASH_API_PORT: u16 = 9090;
 const KUNBOX_TUN_ALIAS: &str = "kunbox-tun";
 const PLUGIN_BRIDGES_FILE: &str = "plugin-bridges.json";
 const XRAY_PLUGIN_FILENAME: &str = "xray.exe";
+const PLUGIN_DETOUR_CHAIN_PORT_BASE: u16 = 19_390;
 const HEALTH_FAILED_BACKOFF_BASE_MS: i64 = 30_000;
 const HEALTH_FAILED_BACKOFF_MAX_MS: i64 = 300_000;
 const HEALTH_SELECTOR_SWITCH_COOLDOWN_MS: i64 = 60_000;
@@ -1182,6 +1184,8 @@ fn process_node(node: &serde_json::Value) -> serde_json::Value {
             .unwrap_or(false);
 
         obj.remove(crate::commands::profiles::ECH_DNS_SERVER_META_KEY);
+        obj.remove(NODE_AUTO_SELECTION_ELIGIBLE_META_KEY);
+        obj.remove(NODE_METERED_PROTECTED_META_KEY);
 
         if node_type != "shadowsocks" && node_type != "shadowsocksr" {
             obj.remove("method");
@@ -1267,7 +1271,7 @@ pub(crate) fn node_for_singbox_with_plugin_bridge(
     node: &serde_json::Value,
     bridge_specs: &mut Vec<serde_json::Value>,
 ) -> serde_json::Value {
-    let processed = process_node(node);
+    let mut processed = process_node(node);
     if !is_xray_bridge_node(&processed) {
         return processed;
     }
@@ -1275,16 +1279,35 @@ pub(crate) fn node_for_singbox_with_plugin_bridge(
     let tag = processed
         .get("tag")
         .and_then(|value| value.as_str())
-        .unwrap_or("xray-plugin");
-    let port = plugin_bridge_port(bridge_specs.len());
+        .unwrap_or("xray-plugin")
+        .to_string();
+    let bridge_index = bridge_specs.len();
+    let port = plugin_bridge_port(bridge_index);
+    let detour = processed
+        .get("detour")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let detour_chain_port = detour
+        .as_ref()
+        .map(|_| PLUGIN_DETOUR_CHAIN_PORT_BASE.saturating_add(bridge_index as u16));
 
-    bridge_specs.push(serde_json::json!({
+    if let Some(obj) = processed.as_object_mut() {
+        obj.remove("detour");
+    }
+    let mut spec = serde_json::json!({
         "core": "xray",
-        "tag": tag,
+        "tag": tag.clone(),
         "listen": "127.0.0.1",
         "port": port,
         "node": processed
-    }));
+    });
+    if let Some(chain_port) = detour_chain_port {
+        spec["frontProxyChainPort"] = serde_json::json!(chain_port);
+    }
+    if let Some(detour) = detour {
+        spec["frontProxyTag"] = serde_json::Value::String(detour);
+    }
+    bridge_specs.push(spec);
 
     serde_json::json!({
         "type": "socks",
@@ -1445,6 +1468,7 @@ fn xray_stream_settings(node: &serde_json::Value) -> serde_json::Value {
 pub(crate) fn build_xray_plugin_config(
     node: &serde_json::Value,
     port: u16,
+    front_proxy_chain_port: Option<u16>,
 ) -> Result<serde_json::Value, String> {
     let server = node
         .get("server")
@@ -1472,6 +1496,40 @@ pub(crate) fn build_xray_plugin_config(
         user["flow"] = serde_json::Value::String(flow.to_string());
     }
 
+    let mut remote_outbound = serde_json::json!({
+        "protocol": "vless",
+        "settings": {
+            "vnext": [
+                {
+                    "address": server,
+                    "port": server_port,
+                    "users": [user]
+                }
+            ]
+        },
+        "streamSettings": xray_stream_settings(node)
+    });
+    let mut outbounds = vec![remote_outbound.clone()];
+    if let Some(chain_port) = front_proxy_chain_port {
+        remote_outbound["proxySettings"] = serde_json::json!({
+            "tag": "kunbox-front-proxy-bridge",
+            "transportLayer": true
+        });
+        outbounds[0] = remote_outbound;
+        outbounds.push(serde_json::json!({
+            "tag": "kunbox-front-proxy-bridge",
+            "protocol": "socks",
+            "settings": {
+                "servers": [
+                    {
+                        "address": "127.0.0.1",
+                        "port": chain_port
+                    }
+                ]
+            }
+        }));
+    }
+
     Ok(serde_json::json!({
         "log": {
             "loglevel": "warning"
@@ -1487,21 +1545,7 @@ pub(crate) fn build_xray_plugin_config(
                 }
             }
         ],
-        "outbounds": [
-            {
-                "protocol": "vless",
-                "settings": {
-                    "vnext": [
-                        {
-                            "address": server,
-                            "port": server_port,
-                            "users": [user]
-                        }
-                    ]
-                },
-                "streamSettings": xray_stream_settings(node)
-            }
-        ]
+        "outbounds": outbounds
     }))
 }
 
@@ -1511,6 +1555,23 @@ async fn stop_plugin_bridges(state: &AppState) {
         let _ = child.kill().await;
         let _ = child.wait().await;
     }
+}
+
+pub(crate) fn parse_plugin_bridge_port(
+    spec: &serde_json::Value,
+    field: &str,
+) -> Result<Option<u16>, String> {
+    let Some(value) = spec.get(field) else {
+        return Ok(None);
+    };
+    let raw = value
+        .as_u64()
+        .ok_or_else(|| format!("插件桥接端口字段 {} 必须是整数", field))?;
+    let port = u16::try_from(raw)
+        .ok()
+        .filter(|port| *port > 0)
+        .ok_or_else(|| format!("插件桥接端口字段 {} 超出有效范围", field))?;
+    Ok(Some(port))
 }
 
 async fn start_plugin_bridges(app: &AppHandle, state: &AppState) -> Result<(), String> {
@@ -1543,12 +1604,11 @@ async fn start_plugin_bridges(app: &AppHandle, state: &AppState) -> Result<(), S
             continue;
         }
 
-        let port = spec
-            .get("port")
-            .and_then(|value| value.as_u64())
-            .ok_or("Plugin bridge missing port")? as u16;
+        let port = parse_plugin_bridge_port(spec, "port")?
+            .ok_or_else(|| "插件桥接缺少端口".to_string())?;
         let node = spec.get("node").ok_or("Plugin bridge missing node")?;
-        let config = build_xray_plugin_config(node, port)?;
+        let front_proxy_chain_port = parse_plugin_bridge_port(spec, "frontProxyChainPort")?;
+        let config = build_xray_plugin_config(node, port, front_proxy_chain_port)?;
         let config_path = state.config_dir.join(format!("plugin-xray-{}.json", index));
         let config_str = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
         fs::write(&config_path, config_str).map_err(|e| e.to_string())?;
@@ -1794,6 +1854,9 @@ fn apply_route_target(mut rule: serde_json::Value, target: &str) -> serde_json::
 }
 
 fn plugin_bridge_remote_direct_rule(spec: &serde_json::Value) -> Option<serde_json::Value> {
+    if spec.get("frontProxyChainPort").is_some() {
+        return None;
+    }
     let server = spec
         .get("node")
         .and_then(|node| node.get("server"))
@@ -1819,6 +1882,9 @@ fn plugin_bridge_remote_direct_rule(spec: &serde_json::Value) -> Option<serde_js
 }
 
 fn plugin_bridge_remote_dns_rule(spec: &serde_json::Value) -> Option<serde_json::Value> {
+    if spec.get("frontProxyChainPort").is_some() {
+        return None;
+    }
     let server = spec
         .get("node")
         .and_then(|node| node.get("server"))
@@ -1840,7 +1906,7 @@ fn profile_selector_tag(profile_id: &str) -> String {
     format!("P:{}", profile_id)
 }
 
-fn parse_profile_scoped_node_ref(value: &str) -> Option<(&str, &str)> {
+pub(crate) fn parse_profile_scoped_node_ref(value: &str) -> Option<(&str, &str)> {
     let (profile_id, node_tag) = value.split_once("::")?;
     if profile_id.is_empty() || node_tag.is_empty() {
         return None;
@@ -1853,6 +1919,87 @@ fn normalized_node_reference_tag(node_ref: &str) -> String {
         Some((profile_id, node_tag)) => format!("{}::{}", profile_id, node_tag),
         None => node_ref.to_string(),
     }
+}
+
+fn runtime_detour_tag(value: &str, owner_profile_id: &str, active_profile_id: &str) -> String {
+    match parse_profile_scoped_node_ref(value) {
+        Some((profile_id, node_tag)) if profile_id == active_profile_id => node_tag.to_string(),
+        Some((profile_id, node_tag)) => format!("{}::{}", profile_id, node_tag),
+        None if owner_profile_id == active_profile_id => value.to_string(),
+        None => format!("{}::{}", owner_profile_id, value),
+    }
+}
+
+fn prepare_profile_node_for_runtime(
+    mut node: serde_json::Value,
+    owner_profile_id: &str,
+    active_profile_id: &str,
+) -> serde_json::Value {
+    if let Some(obj) = node.as_object_mut() {
+        if let Some(detour) = obj
+            .get("detour")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            obj.insert(
+                "detour".to_string(),
+                serde_json::Value::String(runtime_detour_tag(
+                    detour,
+                    owner_profile_id,
+                    active_profile_id,
+                )),
+            );
+        }
+    }
+    node
+}
+
+fn collect_node_detour_references(
+    active_nodes: &[serde_json::Value],
+    active_profile_id: &str,
+    all_profiles: &[ProfileInfo],
+) -> std::collections::HashSet<String> {
+    let mut references = std::collections::HashSet::new();
+    for node in active_nodes {
+        let prepared =
+            prepare_profile_node_for_runtime(node.clone(), active_profile_id, active_profile_id);
+        if let Some(detour) = prepared.get("detour").and_then(serde_json::Value::as_str) {
+            if parse_profile_scoped_node_ref(detour).is_some() {
+                references.insert(detour.to_string());
+            }
+        }
+    }
+
+    loop {
+        let mut changed = false;
+        for node_ref in references.clone() {
+            let Some((profile_id, node_tag)) = parse_profile_scoped_node_ref(&node_ref) else {
+                continue;
+            };
+            let Some(profile) = all_profiles.iter().find(|profile| profile.id == profile_id) else {
+                continue;
+            };
+            let Some(node) = profile
+                .nodes
+                .iter()
+                .find(|node| node.get("tag").and_then(serde_json::Value::as_str) == Some(node_tag))
+            else {
+                continue;
+            };
+            let prepared =
+                prepare_profile_node_for_runtime(node.clone(), profile_id, active_profile_id);
+            if let Some(detour) = prepared.get("detour").and_then(serde_json::Value::as_str) {
+                if parse_profile_scoped_node_ref(detour).is_some() {
+                    changed |= references.insert(detour.to_string());
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    references
 }
 
 fn collect_route_profile_and_node_references(
@@ -2256,6 +2403,24 @@ struct ProfileInfo {
     nodes: Vec<serde_json::Value>,
 }
 
+fn allocate_unique_outbound_tag(
+    base: &str,
+    used_tags: &std::collections::HashSet<String>,
+) -> String {
+    if !used_tags.contains(base) {
+        return base.to_string();
+    }
+
+    let mut suffix = 1u32;
+    loop {
+        let candidate = format!("{}-{}", base, suffix);
+        if !used_tags.contains(&candidate) {
+            return candidate;
+        }
+        suffix += 1;
+    }
+}
+
 /// 加载所有配置文件的节点信息
 fn load_all_profiles(
     state: &AppState,
@@ -2270,7 +2435,14 @@ fn load_all_profiles(
         };
         if nodes_file.exists() {
             if let Ok(content) = fs::read_to_string(&nodes_file) {
-                if let Ok(nodes) = serde_json::from_str::<Vec<serde_json::Value>>(&content) {
+                if let Ok(mut nodes) = serde_json::from_str::<Vec<serde_json::Value>>(&content) {
+                    nodes.retain(|node| {
+                        !node_is_metered_protected(node)
+                            || (profiles_data.active_profile_id.as_deref()
+                                == Some(profile.id.as_str())
+                                && node.get("tag").and_then(serde_json::Value::as_str)
+                                    == profiles_data.active_node_tag.as_deref())
+                    });
                     result.push(ProfileInfo {
                         id: profile.id.clone(),
                         name: profile.name.clone(),
@@ -2362,10 +2534,26 @@ async fn generate_config_with_settings(
         }
     }
 
+    let requested_active_node_tag = profiles_data.active_node_tag.as_deref();
+    let node_is_runtime_allowed = |node: &serde_json::Value| {
+        !node_is_metered_protected(node)
+            || node.get("tag").and_then(serde_json::Value::as_str) == requested_active_node_tag
+    };
+    let auto_eligible_active_tags: std::collections::HashSet<String> = raw_nodes
+        .iter()
+        .filter(|node| node_is_runtime_allowed(node) && node_is_auto_selection_eligible(node))
+        .filter_map(|node| node.get("tag").and_then(serde_json::Value::as_str))
+        .map(str::to_string)
+        .collect();
+
     // 处理当前配置的节点，并过滤 sing-box 不支持的类型，避免单个无效节点拖垮整份配置。
     let nodes: Vec<serde_json::Value> = raw_nodes
         .iter()
-        .map(process_node)
+        .filter(|node| node_is_runtime_allowed(node))
+        .map(|node| {
+            prepare_profile_node_for_runtime(node.clone(), &active_profile_id, &active_profile_id)
+        })
+        .map(|node| process_node(&node))
         .filter(|node| {
             node.get("type")
                 .and_then(|value| value.as_str())
@@ -2418,8 +2606,18 @@ async fn generate_config_with_settings(
 
     // 收集规则集引用的 profile ID 和 node tag
     let enabled_rulesets: Vec<_> = rulesets.iter().filter(|r| r.enabled).collect();
-    let (referenced_profile_ids, referenced_profile_scoped_node_refs) =
+    let (referenced_profile_ids, mut referenced_profile_scoped_node_refs) =
         collect_route_profile_and_node_references(&rulesets, &custom_rules);
+    let runtime_detour_nodes: Vec<serde_json::Value> = raw_nodes
+        .iter()
+        .filter(|node| node_is_runtime_allowed(node))
+        .cloned()
+        .collect();
+    referenced_profile_scoped_node_refs.extend(collect_node_detour_references(
+        &runtime_detour_nodes,
+        &active_profile_id,
+        &all_profiles,
+    ));
 
     // Pre-scan for tag collisions to avoid conflict with node tags named "PROXY" or "auto"
     let will_proxy_collide = selector_tag_collides(
@@ -2574,6 +2772,7 @@ async fn generate_config_with_settings(
     }
 
     // ========== 根据规则集(ruleset)生成对应的 DNS 规则 ==========
+    // 必须位于域名分流规则之后，保证域名分流优先匹配。
     // 与域名规则同理：规则集中设为 direct 的域名类规则集也需要用 dns-local 解析
     if routing_mode == "rule" {
         let mut direct_rulesets: Vec<String> = Vec::new();
@@ -2772,7 +2971,12 @@ async fn generate_config_with_settings(
             {
                 let node_type = node.get("type").and_then(|t| t.as_str()).unwrap_or("");
                 if is_proxy_type(node_type) {
-                    let scoped_node = with_outbound_tag(process_node(node), &outbound_tag);
+                    let prepared_node = prepare_profile_node_for_runtime(
+                        node.clone(),
+                        profile_id,
+                        &active_profile_id,
+                    );
+                    let scoped_node = with_outbound_tag(prepared_node, &outbound_tag);
                     outbounds.push(node_for_singbox_with_plugin_bridge(
                         &scoped_node,
                         &mut plugin_bridge_specs,
@@ -2812,19 +3016,20 @@ async fn generate_config_with_settings(
 
                         // 如果节点不存在，添加到 outbounds
                         if !existing_tags.contains(&outbound_tag) {
-                            if outbound_tag == tag {
-                                outbounds.push(node_for_singbox_with_plugin_bridge(
-                                    node,
-                                    &mut plugin_bridge_specs,
-                                ));
+                            let prepared_node = prepare_profile_node_for_runtime(
+                                node.clone(),
+                                &profile.id,
+                                &active_profile_id,
+                            );
+                            let outbound_node = if outbound_tag == tag {
+                                prepared_node
                             } else {
-                                let scoped_node =
-                                    with_outbound_tag(process_node(node), &outbound_tag);
-                                outbounds.push(node_for_singbox_with_plugin_bridge(
-                                    &scoped_node,
-                                    &mut plugin_bridge_specs,
-                                ));
-                            }
+                                with_outbound_tag(process_node(&prepared_node), &outbound_tag)
+                            };
+                            outbounds.push(node_for_singbox_with_plugin_bridge(
+                                &outbound_node,
+                                &mut plugin_bridge_specs,
+                            ));
                             existing_tags.insert(outbound_tag.clone());
                         }
                         profile_proxy_entries.push((tag.to_string(), outbound_tag));
@@ -2899,12 +3104,17 @@ async fn generate_config_with_settings(
         existing_tags.insert(proxy_tag.to_string());
     }
 
-    // 5. 添加 auto urltest（如果有多个节点）
-    if proxy_tags.len() > 1 {
+    // 5. 添加 auto urltest（只包含允许自动探测与切换的节点）
+    let auto_proxy_tags: Vec<String> = proxy_tags
+        .iter()
+        .filter(|tag| auto_eligible_active_tags.contains(tag.as_str()))
+        .cloned()
+        .collect();
+    if auto_proxy_tags.len() > 1 {
         outbounds.push(serde_json::json!({
             "type": "urltest",
             "tag": auto_tag,
-            "outbounds": proxy_tags,
+            "outbounds": auto_proxy_tags,
             "url": settings.latency_test_url,
             "interval": "10m",
             "idle_timeout": "30m",
@@ -2916,6 +3126,41 @@ async fn generate_config_with_settings(
     // 6. 添加基础出站
     outbounds.push(serde_json::json!({ "type": "direct", "tag": "direct" }));
     config["outbounds"] = serde_json::Value::Array(outbounds.clone());
+
+    let mut used_inbound_tags: std::collections::HashSet<String> = config["inbounds"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|inbound| inbound.get("tag").and_then(|tag| tag.as_str()))
+        .map(str::to_string)
+        .collect();
+    let mut plugin_chain_routes = Vec::new();
+    for spec in &plugin_bridge_specs {
+        let Some(port) = spec
+            .get("frontProxyChainPort")
+            .and_then(serde_json::Value::as_u64)
+        else {
+            continue;
+        };
+        let Some(outbound_tag) = spec
+            .get("frontProxyTag")
+            .and_then(serde_json::Value::as_str)
+        else {
+            continue;
+        };
+        let inbound_tag =
+            allocate_unique_outbound_tag("kunbox-front-proxy-chain-in", &used_inbound_tags);
+        used_inbound_tags.insert(inbound_tag.clone());
+        if let Some(inbounds) = config["inbounds"].as_array_mut() {
+            inbounds.push(serde_json::json!({
+                "type": "mixed",
+                "tag": inbound_tag.clone(),
+                "listen": "127.0.0.1",
+                "listen_port": port
+            }));
+        }
+        plugin_chain_routes.push((inbound_tag, outbound_tag.to_string()));
+    }
 
     if let Some(dns_rules) = config["dns"]["rules"].as_array_mut() {
         for spec in &plugin_bridge_specs {
@@ -2945,6 +3190,15 @@ async fn generate_config_with_settings(
             "action": "hijack-dns"
         }),
     ];
+    for (inbound_tag, outbound_tag) in plugin_chain_routes.into_iter().rev() {
+        rules.insert(
+            0,
+            serde_json::json!({
+                "inbound": inbound_tag,
+                "outbound": outbound_tag
+            }),
+        );
+    }
 
     // 预先声明规则集引用和缓存目录（广告屏蔽和用户规则集都需要）
     let mut rule_set_refs = Vec::new();
@@ -3053,7 +3307,7 @@ async fn generate_config_with_settings(
         }
     }
 
-    // 添加规则集路由规则
+    // 添加规则集路由规则，必须位于域名分流规则之后，保证域名分流优先匹配。
 
     if routing_mode == "rule" {
         for rs in &enabled_rulesets {
@@ -3938,6 +4192,153 @@ mod tests {
                 .and_then(|value| value.as_bool()),
             Some(false)
         );
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn node_detour_loads_cross_profile_dependency() {
+        let data_dir = unique_test_dir("node-detour-cross-profile");
+        let state = AppState::new(data_dir.clone());
+        let profiles_data = ProfilesData {
+            profiles: vec![
+                make_profile("profile-a", "Profile A"),
+                make_profile("profile-b", "Profile B"),
+            ],
+            active_profile_id: Some("profile-a".to_string()),
+            active_node_tag: Some("target".to_string()),
+            node_selections: HashMap::new(),
+        };
+        let mut target = make_node("target");
+        target["detour"] = serde_json::json!("profile-b::front");
+        write_json_file(&state.profiles_file(), &profiles_data);
+        write_json_file(&state.configs_dir().join("profile-a.json"), &vec![target]);
+        write_json_file(
+            &state.configs_dir().join("profile-b.json"),
+            &vec![make_node("front")],
+        );
+
+        let result = generate_config(&state).await.unwrap();
+        assert!(result.success);
+
+        let config = read_generated_config(&state);
+        let outbounds = config["outbounds"].as_array().unwrap();
+        let target = outbounds
+            .iter()
+            .find(|outbound| outbound["tag"].as_str() == Some("target"))
+            .unwrap();
+        assert_eq!(target["detour"].as_str(), Some("profile-b::front"));
+        assert!(outbounds
+            .iter()
+            .any(|outbound| outbound["tag"].as_str() == Some("profile-b::front")));
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn node_policies_filter_metered_and_auto_selection_nodes() {
+        let data_dir = unique_test_dir("node-policy-filtering");
+        let state = AppState::new(data_dir.clone());
+        let profiles_data = ProfilesData {
+            profiles: vec![make_profile("profile-a", "Profile A")],
+            active_profile_id: Some("profile-a".to_string()),
+            active_node_tag: Some("eligible-a".to_string()),
+            node_selections: HashMap::new(),
+        };
+        let eligible_a = make_node("eligible-a");
+        let mut disabled = make_node("disabled");
+        disabled[NODE_AUTO_SELECTION_ELIGIBLE_META_KEY] = serde_json::json!(false);
+        let eligible_b = make_node("eligible-b");
+        let mut metered = make_node("metered");
+        metered[NODE_METERED_PROTECTED_META_KEY] = serde_json::json!(true);
+        write_json_file(&state.profiles_file(), &profiles_data);
+        write_json_file(
+            &state.configs_dir().join("profile-a.json"),
+            &vec![eligible_a, disabled, eligible_b, metered],
+        );
+
+        let result = generate_config(&state).await.unwrap();
+        assert!(result.success);
+
+        let config = read_generated_config(&state);
+        let outbounds = config["outbounds"].as_array().unwrap();
+        assert!(!outbounds
+            .iter()
+            .any(|outbound| outbound["tag"].as_str() == Some("metered")));
+        let automatic = outbounds
+            .iter()
+            .find(|outbound| outbound["type"].as_str() == Some("urltest"))
+            .unwrap();
+        assert_eq!(
+            automatic["outbounds"],
+            serde_json::json!(["eligible-a", "eligible-b"])
+        );
+        assert!(outbounds.iter().all(|outbound| {
+            outbound
+                .get(NODE_AUTO_SELECTION_ELIGIBLE_META_KEY)
+                .is_none()
+                && outbound.get(NODE_METERED_PROTECTED_META_KEY).is_none()
+        }));
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn xhttp_node_detour_builds_chain_route() {
+        let data_dir = unique_test_dir("xhttp-node-detour-chain");
+        let state = AppState::new(data_dir.clone());
+        let profiles_data = ProfilesData {
+            profiles: vec![make_profile("profile-a", "Profile A")],
+            active_profile_id: Some("profile-a".to_string()),
+            active_node_tag: Some("xhttp-node".to_string()),
+            node_selections: HashMap::new(),
+        };
+        let mut xhttp_node = make_xhttp_node("xhttp-node");
+        xhttp_node["detour"] = serde_json::json!("front-node");
+        write_json_file(&state.profiles_file(), &profiles_data);
+        write_json_file(
+            &state.configs_dir().join("profile-a.json"),
+            &vec![make_node("front-node"), xhttp_node],
+        );
+
+        let result = generate_config(&state).await.unwrap();
+        assert!(result.success);
+
+        let config = read_generated_config(&state);
+        let chain_inbound = config["inbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|inbound| {
+                inbound["tag"]
+                    .as_str()
+                    .is_some_and(|tag| tag.starts_with("kunbox-front-proxy-chain-in"))
+            })
+            .expect("expected node detour chain inbound");
+        assert_eq!(chain_inbound["listen"].as_str(), Some("127.0.0.1"));
+        let chain_tag = chain_inbound["tag"].as_str().unwrap();
+        let chain_port = chain_inbound["listen_port"].as_u64().unwrap();
+        assert!(config["route"]["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|rule| {
+                rule["inbound"].as_str() == Some(chain_tag)
+                    && rule["outbound"].as_str() == Some("front-node")
+            }));
+
+        let plugin_specs: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(state.config_dir.join("plugin-bridges.json")).unwrap(),
+        )
+        .unwrap();
+        let xhttp_spec = plugin_specs
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|spec| spec["tag"].as_str() == Some("xhttp-node"))
+            .unwrap();
+        assert_eq!(xhttp_spec["frontProxyTag"].as_str(), Some("front-node"));
+        assert_eq!(xhttp_spec["frontProxyChainPort"].as_u64(), Some(chain_port));
 
         let _ = fs::remove_dir_all(data_dir);
     }
@@ -5160,7 +5561,9 @@ mod tests {
             .expect("tun inbound should be generated");
 
         assert_eq!(
-            tun_inbound.get("address").and_then(|value| value.as_array()),
+            tun_inbound
+                .get("address")
+                .and_then(|value| value.as_array()),
             Some(&vec![serde_json::json!("172.19.0.1/30")])
         );
         assert_eq!(
@@ -5186,7 +5589,9 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|rule| rule.get("server").and_then(|server| server.as_str()) == Some("dns-fakeip"))
+            .find(|rule| {
+                rule.get("server").and_then(|server| server.as_str()) == Some("dns-fakeip")
+            })
             .expect("fake dns rule should exist");
         assert_eq!(
             fake_dns_rule
@@ -5307,10 +5712,71 @@ mod tests {
         let _ = fs::remove_dir_all(data_dir);
     }
 
+    #[tokio::test]
+    async fn generate_config_places_domain_rules_before_rulesets() {
+        let data_dir = unique_test_dir("domain-before-ruleset");
+        let state = AppState::new(data_dir.clone());
+
+        let profiles_data = ProfilesData {
+            profiles: vec![make_profile("profile-a", "Profile A")],
+            active_profile_id: Some("profile-a".to_string()),
+            active_node_tag: Some("node-a".to_string()),
+            node_selections: HashMap::new(),
+        };
+        write_json_file(&state.profiles_file(), &profiles_data);
+        write_json_file(
+            &state.configs_dir().join("profile-a.json"),
+            &vec![make_node("node-a")],
+        );
+        fs::create_dir_all(state.rulesets_cache_dir()).unwrap();
+        fs::write(state.rulesets_cache_dir().join("rs-conflict.srs"), b"dummy").unwrap();
+
+        *state.rulesets.lock().await = vec![make_ruleset("rs-conflict", "proxy", None)];
+        *state.custom_rules.lock().await = CustomRules {
+            domain_rules: vec![DomainRule {
+                id: "domain-priority".to_string(),
+                name: "priority.example".to_string(),
+                rule_type: "domain_suffix".to_string(),
+                value: "priority.example".to_string(),
+                outbound_mode: "direct".to_string(),
+                outbound_value: None,
+                enabled: true,
+            }],
+        };
+
+        let result = generate_config(&state).await.unwrap();
+        assert!(result.success);
+
+        let config = read_generated_config(&state);
+        let route_rules = config["route"]["rules"].as_array().unwrap();
+        let domain_route_index = route_rules
+            .iter()
+            .position(|rule| rule.get("domain_suffix").is_some())
+            .unwrap();
+        let ruleset_route_index = route_rules
+            .iter()
+            .position(|rule| rule.get("rule_set").is_some())
+            .unwrap();
+        assert!(domain_route_index < ruleset_route_index);
+
+        let dns_rules = config["dns"]["rules"].as_array().unwrap();
+        let domain_dns_index = dns_rules
+            .iter()
+            .position(|rule| rule.get("domain_suffix").is_some())
+            .unwrap();
+        let ruleset_dns_index = dns_rules
+            .iter()
+            .position(|rule| rule.get("rule_set").is_some())
+            .unwrap();
+        assert!(domain_dns_index < ruleset_dns_index);
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
     #[test]
     fn build_xray_plugin_config_preserves_vless_xhttp_transport() {
         let node = make_xhttp_node("XHTTP Node");
-        let config = build_xray_plugin_config(&node, 18080).unwrap();
+        let config = build_xray_plugin_config(&node, 18080, None).unwrap();
 
         let inbound = config["inbounds"].as_array().unwrap().first().unwrap();
         assert_eq!(inbound["protocol"].as_str(), Some("socks"));
@@ -5337,6 +5803,54 @@ mod tests {
         assert_eq!(
             outbound["streamSettings"]["xhttpSettings"]["host"].as_str(),
             Some("cdn.example.com")
+        );
+    }
+
+    #[test]
+    fn build_xray_plugin_config_routes_remote_outbound_through_front_proxy() {
+        let node = make_xhttp_node("XHTTP Node");
+        let config = build_xray_plugin_config(&node, 18080, Some(19090)).unwrap();
+        let outbounds = config["outbounds"].as_array().unwrap();
+        let remote = outbounds
+            .iter()
+            .find(|outbound| outbound["protocol"].as_str() == Some("vless"))
+            .unwrap();
+        let bridge = outbounds
+            .iter()
+            .find(|outbound| outbound["tag"].as_str() == Some("kunbox-front-proxy-bridge"))
+            .unwrap();
+
+        assert_eq!(
+            remote["proxySettings"]["tag"].as_str(),
+            Some("kunbox-front-proxy-bridge")
+        );
+        assert_eq!(
+            remote["proxySettings"]["transportLayer"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(bridge["protocol"].as_str(), Some("socks"));
+        assert_eq!(
+            bridge["settings"]["servers"][0]["address"].as_str(),
+            Some("127.0.0.1")
+        );
+        assert_eq!(
+            bridge["settings"]["servers"][0]["port"].as_u64(),
+            Some(19090)
+        );
+    }
+
+    #[test]
+    fn plugin_bridge_port_rejects_invalid_values() {
+        assert_eq!(
+            parse_plugin_bridge_port(&serde_json::json!({ "port": 65535 }), "port").unwrap(),
+            Some(65535)
+        );
+        assert!(parse_plugin_bridge_port(&serde_json::json!({ "port": 0 }), "port").is_err());
+        assert!(parse_plugin_bridge_port(&serde_json::json!({ "port": 65536 }), "port").is_err());
+        assert!(parse_plugin_bridge_port(&serde_json::json!({ "port": "18080" }), "port").is_err());
+        assert_eq!(
+            parse_plugin_bridge_port(&serde_json::json!({}), "frontProxyChainPort").unwrap(),
+            None
         );
     }
 
@@ -5509,7 +6023,7 @@ mod tests {
             "noGRPCHeader": true
         });
 
-        let config = build_xray_plugin_config(&node, 18080).unwrap();
+        let config = build_xray_plugin_config(&node, 18080, None).unwrap();
         let outbound = config["outbounds"].as_array().unwrap().first().unwrap();
 
         assert_eq!(
@@ -5730,6 +6244,7 @@ async fn run_health_monitor_once(
     let now_ms = chrono::Utc::now().timestamp_millis();
     let clash_api_port = get_clash_api_port(state).await;
     let targets = collect_health_targets(state).await;
+    let health_eligible_nodes = collect_health_eligible_node_tags(state).await;
 
     for target in targets {
         match target.kind {
@@ -5742,6 +6257,16 @@ async fn run_health_monitor_once(
                 else {
                     continue;
                 };
+                if selector
+                    .current_node
+                    .as_ref()
+                    .is_some_and(|tag| !health_eligible_nodes.contains(tag))
+                {
+                    continue;
+                }
+                selector
+                    .backup_nodes
+                    .retain(|tag| health_eligible_nodes.contains(tag));
                 if let Some(previous) = selector_health.get(selector_tag) {
                     selector.last_switch_at = previous.last_switch_at;
                     selector.switch_cooldown_until = previous.switch_cooldown_until;
@@ -5815,6 +6340,9 @@ async fn run_health_monitor_once(
                 let Some(node_tag) = target.node_tag.clone() else {
                     continue;
                 };
+                if !health_eligible_nodes.contains(&node_tag) {
+                    continue;
+                }
                 let probe_url = health_probe_url_for_target(&target, settings);
                 let health = node_health
                     .entry(node_tag.clone())
@@ -5856,6 +6384,39 @@ async fn load_profiles_data_from_file(state: &AppState) -> crate::types::Profile
             crate::types::ProfilesData::default()
         }
     }
+}
+
+async fn collect_health_eligible_node_tags(state: &AppState) -> std::collections::HashSet<String> {
+    let profiles_data = load_profiles_data_from_file(state).await;
+    let active_profile_id = profiles_data.active_profile_id.as_deref();
+    let mut tags = std::collections::HashSet::new();
+    for profile in profiles_data
+        .profiles
+        .iter()
+        .filter(|profile| profile.enabled)
+    {
+        let Some(nodes_file) = profile_nodes_path(state, &profile.id).ok() else {
+            continue;
+        };
+        let nodes = fs::read_to_string(nodes_file)
+            .ok()
+            .and_then(|content| serde_json::from_str::<Vec<serde_json::Value>>(&content).ok())
+            .unwrap_or_default();
+        for node in nodes
+            .iter()
+            .filter(|node| node_is_auto_selection_eligible(node))
+        {
+            let Some(tag) = node.get("tag").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            tags.insert(if active_profile_id == Some(profile.id.as_str()) {
+                tag.to_string()
+            } else {
+                normalized_node_reference_tag(&format!("{}::{}", profile.id, tag))
+            });
+        }
+    }
+    tags
 }
 
 async fn collect_referenced_profile_selector_tags(state: &AppState) -> Vec<String> {

@@ -10,7 +10,12 @@ const XRAY_FILENAME: &str = "xray.exe";
 const XRAY_ARCHIVE_NAME: &str = "Xray-windows-64.zip";
 const MAX_PLUGIN_DOWNLOAD_SIZE_BYTES: u64 = 100 * 1024 * 1024;
 const GITHUB_API_BASE: &str = "https://api.github.com";
-const GITHUB_MIRRORS: &[&str] = &["", "https://mirror.ghproxy.com/", "https://ghproxy.net/", "https://gh-proxy.com/"];
+const GITHUB_MIRRORS: &[&str] = &[
+    "",
+    "https://mirror.ghproxy.com/",
+    "https://ghproxy.net/",
+    "https://gh-proxy.com/",
+];
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -76,7 +81,10 @@ fn build_xray_release_from_version(version: &str, is_prerelease: bool) -> Plugin
         tag_name: tag.clone(),
         published_at: chrono::Utc::now().to_rfc3339(),
         is_prerelease,
-        download_url: format!("https://github.com/XTLS/Xray-core/releases/download/{}/{}", tag, XRAY_ARCHIVE_NAME),
+        download_url: format!(
+            "https://github.com/XTLS/Xray-core/releases/download/{}/{}",
+            tag, XRAY_ARCHIVE_NAME
+        ),
         asset_name: XRAY_ARCHIVE_NAME.to_string(),
     }
 }
@@ -88,7 +96,10 @@ fn find_xray_windows_asset(assets: &[GithubAsset]) -> Option<&GithubAsset> {
 fn is_valid_release_tag(tag_name: &str) -> bool {
     tag_name.starts_with('v')
         && tag_name.len() >= 3
-        && tag_name.chars().skip(1).all(|ch| ch.is_ascii_alphanumeric() || ch == '.' || ch == '-')
+        && tag_name
+            .chars()
+            .skip(1)
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '.' || ch == '-')
 }
 
 async fn fetch_xray_releases(include_prerelease: bool) -> Result<Vec<PluginRelease>, String> {
@@ -98,7 +109,10 @@ async fn fetch_xray_releases(include_prerelease: bool) -> Result<Vec<PluginRelea
         .build()
         .map_err(|e| e.to_string())?;
 
-    let api_url = format!("{}/repos/XTLS/Xray-core/releases?per_page=10", GITHUB_API_BASE);
+    let api_url = format!(
+        "{}/repos/XTLS/Xray-core/releases?per_page=10",
+        GITHUB_API_BASE
+    );
     let releases = client
         .get(api_url)
         .header("Accept", "application/vnd.github.v3+json")
@@ -155,7 +169,10 @@ async fn fetch_xray_release_by_tag(tag_name: &str) -> Result<PluginRelease, Stri
         .build()
         .map_err(|e| e.to_string())?;
 
-    let api_url = format!("{}/repos/XTLS/Xray-core/releases/tags/{}", GITHUB_API_BASE, tag_name);
+    let api_url = format!(
+        "{}/repos/XTLS/Xray-core/releases/tags/{}",
+        GITHUB_API_BASE, tag_name
+    );
     let response = client
         .get(api_url)
         .header("Accept", "application/vnd.github.v3+json")
@@ -167,7 +184,10 @@ async fn fetch_xray_release_by_tag(tag_name: &str) -> Result<PluginRelease, Stri
         return Err(format!("未找到可信的 Xray 版本: {}", tag_name));
     }
 
-    let release = response.json::<GithubRelease>().await.map_err(|e| e.to_string())?;
+    let release = response
+        .json::<GithubRelease>()
+        .await
+        .map_err(|e| e.to_string())?;
     github_release_to_plugin_release(release)
         .ok_or_else(|| format!("Xray 版本缺少 Windows x64 下载资源: {}", tag_name))
 }
@@ -201,11 +221,14 @@ async fn download_archive_to_path(
         }
 
         if total_size > 0 {
-            let _ = app.emit("plugin:download-progress", serde_json::json!({
-                "downloaded": downloaded,
-                "total": total_size,
-                "percent": (downloaded as f64 / total_size as f64 * 100.0) as u32
-            }));
+            let _ = app.emit(
+                "plugin:download-progress",
+                serde_json::json!({
+                    "downloaded": downloaded,
+                    "total": total_size,
+                    "percent": (downloaded as f64 / total_size as f64 * 100.0) as u32
+                }),
+            );
         }
     }
 
@@ -237,7 +260,9 @@ fn replace_plugin_file(target_path: &Path, source_path: &Path) -> Result<(), Str
 }
 
 #[tauri::command]
-pub async fn plugin_get_xray_local_version(app: AppHandle) -> Result<Option<PluginVersion>, String> {
+pub async fn plugin_get_xray_local_version(
+    app: AppHandle,
+) -> Result<Option<PluginVersion>, String> {
     let xray_path = get_xray_path(&app)?;
     if !xray_path.exists() {
         return Ok(None);
@@ -266,21 +291,32 @@ pub async fn plugin_get_xray_local_version(app: AppHandle) -> Result<Option<Plug
     let version = version_detail
         .lines()
         .next()
-        .and_then(|line| line.split_whitespace().find(|part| part.chars().any(|ch| ch.is_ascii_digit())))
+        .and_then(|line| {
+            line.split_whitespace()
+                .find(|part| part.chars().any(|ch| ch.is_ascii_digit()))
+        })
         .unwrap_or("unknown")
         .trim_start_matches('v')
         .to_string();
 
-    Ok(Some(PluginVersion { version, version_detail }))
+    Ok(Some(PluginVersion {
+        version,
+        version_detail,
+    }))
 }
 
 #[tauri::command]
-pub async fn plugin_get_xray_remote_releases(include_prerelease: Option<bool>) -> Result<Vec<PluginRelease>, String> {
+pub async fn plugin_get_xray_remote_releases(
+    include_prerelease: Option<bool>,
+) -> Result<Vec<PluginRelease>, String> {
     fetch_xray_releases(include_prerelease.unwrap_or(false)).await
 }
 
 #[tauri::command]
-pub async fn plugin_download_xray(app: AppHandle, tag_name: String) -> Result<serde_json::Value, String> {
+pub async fn plugin_download_xray(
+    app: AppHandle,
+    tag_name: String,
+) -> Result<serde_json::Value, String> {
     let _ = app.emit("plugin:download-start", ());
     let normalized_tag = tag_name.trim().to_string();
     if !is_valid_release_tag(&normalized_tag) {
@@ -289,10 +325,12 @@ pub async fn plugin_download_xray(app: AppHandle, tag_name: String) -> Result<se
         return Err(err.to_string());
     }
 
-    let trusted_release = fetch_xray_release_by_tag(&normalized_tag).await.map_err(|err| {
-        let _ = app.emit("plugin:download-error", &err);
-        err
-    })?;
+    let trusted_release = fetch_xray_release_by_tag(&normalized_tag)
+        .await
+        .map_err(|err| {
+            let _ = app.emit("plugin:download-error", &err);
+            err
+        })?;
 
     let client = reqwest::Client::builder()
         .user_agent("KunBox/1.0")
@@ -364,7 +402,9 @@ mod tests {
         let release = build_xray_release_from_version("25.5.16", false);
         assert_eq!(release.tag_name, "v25.5.16");
         assert_eq!(release.asset_name, "Xray-windows-64.zip");
-        assert!(release.download_url.contains("/v25.5.16/Xray-windows-64.zip"));
+        assert!(release
+            .download_url
+            .contains("/v25.5.16/Xray-windows-64.zip"));
     }
 
     #[test]
@@ -407,6 +447,8 @@ mod tests {
         assert_eq!(plugin_release.tag_name, "v26.3.27");
         assert_eq!(plugin_release.version, "26.3.27");
         assert_eq!(plugin_release.asset_name, "Xray-windows-64.zip");
-        assert!(plugin_release.download_url.ends_with("/Xray-windows-64.zip"));
+        assert!(plugin_release
+            .download_url
+            .ends_with("/Xray-windows-64.zip"));
     }
 }

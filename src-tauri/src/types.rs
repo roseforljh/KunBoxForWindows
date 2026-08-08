@@ -218,6 +218,23 @@ pub struct SingBoxOutbound {
     pub extra: HashMap<String, serde_json::Value>,
 }
 
+pub const NODE_AUTO_SELECTION_ELIGIBLE_META_KEY: &str = "x_kunbox_auto_selection_eligible";
+pub const NODE_METERED_PROTECTED_META_KEY: &str = "x_kunbox_metered_protected";
+
+pub fn node_is_metered_protected(node: &serde_json::Value) -> bool {
+    node.get(NODE_METERED_PROTECTED_META_KEY)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+pub fn node_is_auto_selection_eligible(node: &serde_json::Value) -> bool {
+    !node_is_metered_protected(node)
+        && node
+            .get(NODE_AUTO_SELECTION_ELIGIBLE_META_KEY)
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleSet {
     pub id: String,

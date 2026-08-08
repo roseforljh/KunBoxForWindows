@@ -78,6 +78,133 @@ fn get_kernel_path_with_fallback(app: &AppHandle) -> Option<std::path::PathBuf> 
         .map(|dir| dir.join("resources").join("libs").join("sing-box.exe"))
 }
 
+fn split_temp_detour_reference(owner_profile_id: &str, value: &str) -> (String, String) {
+    crate::commands::singbox::parse_profile_scoped_node_ref(value)
+        .map(|(profile_id, tag)| (profile_id.to_string(), tag.to_string()))
+        .unwrap_or_else(|| (owner_profile_id.to_string(), value.to_string()))
+}
+
+fn resolve_temp_detour_dependency(
+    key: (String, String),
+    profile_nodes: &std::collections::HashMap<String, Vec<serde_json::Value>>,
+    visiting: &mut std::collections::HashSet<(String, String)>,
+    allocated_tags: &mut std::collections::HashMap<(String, String), String>,
+    dependencies: &mut Vec<serde_json::Value>,
+) -> Result<String, String> {
+    if visiting.contains(&key) {
+        return Err("前置代理形成循环引用".to_string());
+    }
+    if let Some(tag) = allocated_tags.get(&key) {
+        return Ok(tag.clone());
+    }
+
+    let (profile_id, node_tag) = &key;
+    let nodes = profile_nodes
+        .get(profile_id)
+        .ok_or_else(|| format!("前置代理所属配置已停用或失效: {}", profile_id))?;
+    let mut matches = nodes
+        .iter()
+        .filter(|node| node.get("tag").and_then(serde_json::Value::as_str) == Some(node_tag));
+    let mut node = matches
+        .next()
+        .cloned()
+        .ok_or_else(|| format!("前置代理节点已失效: {} / {}", profile_id, node_tag))?;
+    if matches.next().is_some() {
+        return Err(format!("前置代理节点重名: {} / {}", profile_id, node_tag));
+    }
+    if node_is_metered_protected(&node) {
+        return Err("高价计费保护节点不能作为前置代理".to_string());
+    }
+    let node_type = node
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if !crate::commands::singbox::is_proxy_type(node_type) {
+        return Err(format!("前置代理协议不受支持: {}", node_type));
+    }
+
+    let runtime_tag = format!("kb-detour-{}", allocated_tags.len());
+    allocated_tags.insert(key.clone(), runtime_tag.clone());
+    visiting.insert(key.clone());
+
+    let next_reference = node
+        .get("detour")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let next_runtime_tag = if let Some(next_reference) = next_reference {
+        let next_key = split_temp_detour_reference(profile_id, &next_reference);
+        Some(resolve_temp_detour_dependency(
+            next_key,
+            profile_nodes,
+            visiting,
+            allocated_tags,
+            dependencies,
+        )?)
+    } else {
+        None
+    };
+
+    let object = node
+        .as_object_mut()
+        .ok_or_else(|| "前置代理节点格式无效".to_string())?;
+    object.insert(
+        "tag".to_string(),
+        serde_json::Value::String(runtime_tag.clone()),
+    );
+    if let Some(next_runtime_tag) = next_runtime_tag {
+        object.insert(
+            "detour".to_string(),
+            serde_json::Value::String(next_runtime_tag),
+        );
+    } else {
+        object.remove("detour");
+    }
+
+    visiting.remove(&key);
+    dependencies.push(node);
+    Ok(runtime_tag)
+}
+
+pub(super) fn prepare_temp_nodes_with_detours(
+    active_profile_id: &str,
+    nodes: &[serde_json::Value],
+    profile_nodes: &std::collections::HashMap<String, Vec<serde_json::Value>>,
+) -> Result<(Vec<serde_json::Value>, Vec<serde_json::Value>), String> {
+    let mut prepared_nodes = Vec::with_capacity(nodes.len());
+    let mut dependencies = Vec::new();
+    let mut visiting = std::collections::HashSet::new();
+    let mut allocated_tags = std::collections::HashMap::new();
+
+    for source in nodes {
+        let mut node = source.clone();
+        let detour = node
+            .get("detour")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        if let Some(detour) = detour {
+            let key = split_temp_detour_reference(active_profile_id, &detour);
+            let runtime_tag = resolve_temp_detour_dependency(
+                key,
+                profile_nodes,
+                &mut visiting,
+                &mut allocated_tags,
+                &mut dependencies,
+            )?;
+            let object = node
+                .as_object_mut()
+                .ok_or_else(|| "节点格式无效".to_string())?;
+            object.insert("detour".to_string(), serde_json::Value::String(runtime_tag));
+        }
+        prepared_nodes.push(node);
+    }
+
+    Ok((prepared_nodes, dependencies))
+}
+
 #[cfg(windows)]
 fn support_file_available_for_executable(
     executable_path: &std::path::Path,
@@ -184,7 +311,7 @@ pub(super) async fn start_temp_singbox(
     let naive_runtime_available =
         support_file_available_for_executable(&kernel_path, "libcronet.dll");
     let data = load_profiles_data(state);
-    let profile_id = match data.active_profile_id {
+    let profile_id = match data.active_profile_id.clone() {
         Some(id) => id,
         None => return false,
     };
@@ -206,6 +333,41 @@ pub(super) async fn start_temp_singbox(
         );
     }
 
+    let settings = state.settings.lock().await.clone();
+    let runtime_allowed_nodes: Vec<serde_json::Value> = nodes_raw
+        .iter()
+        .filter(|node| {
+            !node_is_metered_protected(node)
+                || node.get("tag").and_then(serde_json::Value::as_str)
+                    == data.active_node_tag.as_deref()
+        })
+        .cloned()
+        .collect();
+    let profile_nodes: std::collections::HashMap<String, Vec<serde_json::Value>> = data
+        .profiles
+        .iter()
+        .filter(|profile| profile.enabled)
+        .map(|profile| {
+            let nodes = if profile.id == profile_id {
+                nodes_raw.clone()
+            } else {
+                load_profile_nodes_raw(state, &profile.id)
+            };
+            (profile.id.clone(), nodes)
+        })
+        .collect();
+    let (nodes_raw, detour_dependencies) = match prepare_temp_nodes_with_detours(
+        &profile_id,
+        &runtime_allowed_nodes,
+        &profile_nodes,
+    ) {
+        Ok(result) => result,
+        Err(err) => {
+            append_latency_diagnostic(state, &format!("temp detour resolution failed: {}", err));
+            log::warn!("Temp detour resolution failed: {}", err);
+            return false;
+        }
+    };
     // Create temp config
     let temp_dir = temp_singbox_dir(state);
     if let Err(err) = remove_temp_singbox_dir(&temp_dir) {
@@ -216,21 +378,20 @@ pub(super) async fn start_temp_singbox(
         return false;
     }
 
-    let temp_remote_dns = {
-        let settings = state.settings.lock().await.clone();
-        temp_latency_remote_dns(&settings)
-    };
+    let temp_remote_dns = temp_latency_remote_dns(&settings);
     append_latency_diagnostic(
         state,
         &format!("temp latency dns server: {}", temp_remote_dns),
     );
 
-    let (config, temp_tag_map, temp_proxy_port_map, plugin_bridge_specs) = generate_temp_config_raw(
-        &nodes_raw,
-        TEMP_SINGBOX_PORT,
-        naive_runtime_available,
-        &temp_remote_dns,
-    );
+    let (config, temp_tag_map, temp_proxy_port_map, plugin_bridge_specs) =
+        generate_temp_config_with_dependencies_raw(
+            &nodes_raw,
+            &detour_dependencies,
+            TEMP_SINGBOX_PORT,
+            naive_runtime_available,
+            &temp_remote_dns,
+        );
     if temp_tag_map.is_empty() {
         append_latency_diagnostic(
             state,
@@ -283,11 +444,40 @@ pub(super) async fn start_temp_singbox(
             append_latency_diagnostic(state, &format!("resolved temp Xray path: {:?}", xray_path));
             if xray_path.exists() {
                 for spec in &plugin_bridge_specs {
-                    let port = spec.get("port").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let port =
+                        match crate::commands::singbox::parse_plugin_bridge_port(spec, "port")
+                            .and_then(|port| port.ok_or_else(|| "插件桥接缺少端口".to_string()))
+                        {
+                            Ok(port) => port,
+                            Err(err) => {
+                                append_latency_diagnostic(
+                                    state,
+                                    &format!("invalid temp Xray bridge port: {}", err),
+                                );
+                                log::warn!("Invalid temp Xray bridge port: {}", err);
+                                continue;
+                            }
+                        };
                     let plugin_config = spec.get("node").cloned().unwrap_or(serde_json::json!({}));
+                    let front_proxy_chain_port =
+                        match crate::commands::singbox::parse_plugin_bridge_port(
+                            spec,
+                            "frontProxyChainPort",
+                        ) {
+                            Ok(port) => port,
+                            Err(err) => {
+                                append_latency_diagnostic(
+                                    state,
+                                    &format!("invalid temp front proxy chain port: {}", err),
+                                );
+                                log::warn!("Invalid temp front proxy chain port: {}", err);
+                                continue;
+                            }
+                        };
                     let config_for_xray = match crate::commands::singbox::build_xray_plugin_config(
                         &plugin_config,
-                        port as u16,
+                        port,
+                        front_proxy_chain_port,
                     ) {
                         Ok(config) => config,
                         Err(err) => {
@@ -358,6 +548,21 @@ pub(super) async fn start_temp_singbox(
         }
     }
 
+    if xray_processes.len() != plugin_bridge_specs.len() {
+        for mut child in xray_processes {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+        }
+        append_latency_diagnostic(
+            state,
+            "temp Xray bridge startup incomplete; temp sing-box startup aborted",
+        );
+        clear_temp_singbox_tag_map().await;
+        clear_temp_singbox_proxy_port_map().await;
+        let _ = remove_temp_singbox_dir(&temp_dir);
+        return false;
+    }
+
     {
         let mut global_xray = TEMP_XRAY_PROCESSES.lock().await;
         *global_xray = xray_processes;
@@ -368,9 +573,7 @@ pub(super) async fn start_temp_singbox(
         Some(s) => s,
         None => {
             log::error!("Config path contains invalid UTF-8 characters");
-            clear_temp_singbox_tag_map().await;
-            clear_temp_singbox_proxy_port_map().await;
-            let _ = remove_temp_singbox_dir(&temp_dir);
+            cleanup_temp_singbox(state).await;
             return false;
         }
     };
@@ -437,9 +640,7 @@ pub(super) async fn start_temp_singbox(
         }
         Err(e) => {
             log::error!("Failed to start temp sing-box: {}", e);
-            clear_temp_singbox_tag_map().await;
-            clear_temp_singbox_proxy_port_map().await;
-            let _ = remove_temp_singbox_dir(&temp_dir);
+            cleanup_temp_singbox(state).await;
             false
         }
     }

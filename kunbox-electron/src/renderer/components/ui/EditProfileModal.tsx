@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { Modal, ModalButton } from './Modal'
-import { Loader2, ChevronDown } from 'lucide-react'
+import { Loader2 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
+import { AppSelect } from './Select'
 
 interface ProfileSettings {
   autoUpdateInterval: number
@@ -44,7 +45,6 @@ export function EditProfileModal({
   const [autoUpdateMinutes, setAutoUpdateMinutes] = useState(initialAutoUpdateInterval > 0 ? initialAutoUpdateInterval.toString() : '60')
   const [dnsPreResolve, setDnsPreResolve] = useState(initialDnsPreResolve)
   const [dnsServer, setDnsServer] = useState(initialDnsServer || DNS_SERVERS[0].value)
-  const [dnsDropdownOpen, setDnsDropdownOpen] = useState(false)
   const [error, setError] = useState('')
 
   const handleSave = () => {
@@ -190,34 +190,16 @@ export function EditProfileModal({
                 transition={{ duration: 0.2 }}
                 className="overflow-hidden"
               >
-                <div className="pt-2 pb-1 relative">
+                <div className="pt-2 pb-1">
                   <label className="text-xs text-[var(--text-muted)]">DNS 服务器</label>
-                  <button
-                    onClick={() => setDnsDropdownOpen(!dnsDropdownOpen)}
+                  <AppSelect
+                    value={dnsServer}
+                    options={DNS_SERVERS}
+                    onValueChange={setDnsServer}
                     disabled={isLoading}
-                    className="mt-1 w-full px-3 py-2 bg-[var(--bg-elevated)] border border-[var(--border-secondary)] rounded-lg text-sm text-[var(--text-primary)] flex items-center justify-between disabled:opacity-50"
-                  >
-                    <span>{DNS_SERVERS.find(s => s.value === dnsServer)?.label || dnsServer}</span>
-                    <ChevronDown className={`w-4 h-4 text-[var(--text-muted)] transition-transform ${dnsDropdownOpen ? 'rotate-180' : ''}`} />
-                  </button>
-                  {dnsDropdownOpen && (
-                    <div className="absolute left-0 right-0 top-full mt-1 bg-[var(--glass-bg)] border border-[var(--glass-border)] rounded-lg shadow-xl z-10 overflow-hidden">
-                      {DNS_SERVERS.map((server) => (
-                        <button
-                          key={server.value}
-                          onClick={() => {
-                            setDnsServer(server.value)
-                            setDnsDropdownOpen(false)
-                          }}
-                          className={`w-full px-3 py-2.5 text-left text-sm hover:bg-[var(--bg-elevated)] transition-colors ${
-                            dnsServer === server.value ? 'text-[var(--accent-primary)] bg-[var(--accent-muted)]' : 'text-[var(--text-primary)]'
-                          }`}
-                        >
-                          {server.label}
-                        </button>
-                      ))}
-                    </div>
-                  )}
+                    ariaLabel="选择 DNS 服务器"
+                    className="mt-1"
+                  />
                 </div>
               </motion.div>
             )}

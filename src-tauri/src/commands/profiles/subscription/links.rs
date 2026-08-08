@@ -7,6 +7,10 @@ use super::{decode_base64_compat, parse_bool_param, parse_host_port, parse_port_
 pub(crate) fn parse_node_link(link: &str) -> Option<SingBoxOutbound> {
     if link.starts_with("ss://") {
         parse_ss_link(link)
+    } else if link.starts_with("socks5://") || link.starts_with("socks://") {
+        parse_socks_link(link)
+    } else if link.starts_with("http://") || link.starts_with("https://") {
+        parse_http_proxy_link(link)
     } else if link.starts_with("vless://") {
         parse_vless_link(link)
     } else if link.starts_with("vmess://") {
@@ -26,6 +30,94 @@ pub(crate) fn parse_node_link(link: &str) -> Option<SingBoxOutbound> {
     } else {
         None
     }
+}
+
+fn decode_link_fragment(url: &url::Url, default_tag: &str) -> Option<String> {
+    match url.fragment().filter(|value| !value.is_empty()) {
+        Some(value) => Some(urlencoding::decode(value).ok()?.to_string()),
+        None => Some(default_tag.to_string()),
+    }
+}
+
+fn insert_proxy_credentials(
+    url: &url::Url,
+    extra: &mut std::collections::HashMap<String, serde_json::Value>,
+) -> Option<()> {
+    let username = urlencoding::decode(url.username()).ok()?.to_string();
+    if !username.is_empty() {
+        extra.insert("username".to_string(), serde_json::Value::String(username));
+    }
+    if let Some(password) = url.password() {
+        extra.insert(
+            "password".to_string(),
+            serde_json::Value::String(urlencoding::decode(password).ok()?.to_string()),
+        );
+    }
+    Some(())
+}
+
+pub(super) fn parse_socks_link(link: &str) -> Option<SingBoxOutbound> {
+    let url = url::Url::parse(link).ok()?;
+    if !matches!(url.scheme(), "socks5" | "socks") {
+        return None;
+    }
+
+    let server = url.host_str()?.to_string();
+    let port = url.port().filter(|port| *port > 0)?;
+    let tag = decode_link_fragment(&url, "SOCKS5")?;
+    let mut extra = std::collections::HashMap::new();
+    insert_proxy_credentials(&url, &mut extra)?;
+
+    Some(SingBoxOutbound {
+        tag: Some(tag),
+        outbound_type: Some("socks".to_string()),
+        server: Some(server),
+        server_port: Some(port),
+        extra,
+    })
+}
+
+pub(super) fn parse_http_proxy_link(link: &str) -> Option<SingBoxOutbound> {
+    let url = url::Url::parse(link).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+
+    let server = url.host_str()?.to_string();
+    let port = url.port_or_known_default().filter(|port| *port > 0)?;
+    let tag = decode_link_fragment(&url, "HTTP")?;
+    let mut extra = std::collections::HashMap::new();
+    insert_proxy_credentials(&url, &mut extra)?;
+    if url.scheme() == "https" {
+        let params: std::collections::HashMap<String, String> = url
+            .query_pairs()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect();
+        extra.insert(
+            "tls".to_string(),
+            serde_json::json!({
+                "enabled": true,
+                "server_name": params
+                    .get("sni")
+                    .or_else(|| params.get("servername"))
+                    .filter(|value| !value.is_empty())
+                    .cloned()
+                    .unwrap_or_else(|| server.clone()),
+                "insecure": params
+                    .get("insecure")
+                    .or_else(|| params.get("allowInsecure"))
+                    .is_some_and(|value| parse_bool_param(value))
+            }),
+        );
+    }
+
+    Some(SingBoxOutbound {
+        tag: Some(tag),
+        outbound_type: Some("http".to_string()),
+        server: Some(server),
+        server_port: Some(port),
+        extra,
+    })
 }
 
 pub(super) fn parse_ss_link(link: &str) -> Option<SingBoxOutbound> {
@@ -124,6 +216,17 @@ pub(super) fn parse_vmess_link(link: &str) -> Option<SingBoxOutbound> {
                 "server_name".to_string(),
                 serde_json::Value::String(server.clone()),
             );
+        }
+        let allow_insecure = json
+            .get("allowInsecure")
+            .or_else(|| json.get("insecure"))
+            .is_some_and(|value| {
+                value
+                    .as_bool()
+                    .unwrap_or_else(|| value.as_str().is_some_and(parse_bool_param))
+            });
+        if allow_insecure {
+            tls_obj.insert("insecure".to_string(), serde_json::Value::Bool(true));
         }
         extra.insert("tls".to_string(), serde_json::Value::Object(tls_obj));
     }
@@ -447,6 +550,50 @@ pub(crate) fn export_node_to_link(node: &SingBoxOutbound) -> Result<String, Stri
     let port = node.server_port.unwrap_or(0);
 
     match node_type.to_lowercase().as_str() {
+        "socks" | "http" => {
+            let username = node
+                .extra
+                .get("username")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            let password = node
+                .extra
+                .get("password")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            let credentials = if username.is_empty() && password.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "{}:{}@",
+                    urlencoding::encode(username),
+                    urlencoding::encode(password)
+                )
+            };
+            let host =
+                if server.contains(':') && !(server.starts_with('[') && server.ends_with(']')) {
+                    format!("[{}]", server)
+                } else {
+                    server.to_string()
+                };
+            let scheme = if node_type == "socks" {
+                "socks5"
+            } else if node
+                .extra
+                .get("tls")
+                .and_then(|value| value.get("enabled"))
+                .and_then(|value| value.as_bool())
+                == Some(true)
+            {
+                "https"
+            } else {
+                "http"
+            };
+            Ok(format!(
+                "{}://{}{}:{}#{}",
+                scheme, credentials, host, port, tag
+            ))
+        }
         "shadowsocks" => {
             let method = node
                 .extra

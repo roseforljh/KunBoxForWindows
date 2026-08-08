@@ -1,7 +1,29 @@
 use super::*;
 
+#[cfg(test)]
 pub(super) fn generate_temp_config_raw(
     nodes: &[serde_json::Value],
+    api_port: u16,
+    naive_runtime_available: bool,
+    remote_dns: &str,
+) -> (
+    serde_json::Value,
+    std::collections::HashMap<String, Vec<String>>,
+    std::collections::HashMap<String, Vec<u16>>,
+    Vec<serde_json::Value>,
+) {
+    generate_temp_config_with_dependencies_raw(
+        nodes,
+        &[],
+        api_port,
+        naive_runtime_available,
+        remote_dns,
+    )
+}
+
+pub(super) fn generate_temp_config_with_dependencies_raw(
+    nodes: &[serde_json::Value],
+    detour_dependencies: &[serde_json::Value],
     api_port: u16,
     naive_runtime_available: bool,
     remote_dns: &str,
@@ -51,6 +73,11 @@ pub(super) fn generate_temp_config_raw(
         })
         .enumerate()
         .map(|(index, node)| {
+            let original_node_tag = node
+                .get("tag")
+                .and_then(|tag| tag.as_str())
+                .unwrap_or("")
+                .to_string();
             let bridge_index = plugin_bridge_specs.len();
             let processed_node = crate::commands::singbox::node_for_singbox_with_plugin_bridge(
                 node,
@@ -82,11 +109,7 @@ pub(super) fn generate_temp_config_raw(
                     .unwrap_or("")
                     .to_string();
                 let port = obj.get("server_port").and_then(|p| p.as_u64()).unwrap_or(0);
-                let original_tag = obj
-                    .get("tag")
-                    .and_then(|tag| tag.as_str())
-                    .unwrap_or("")
-                    .to_string();
+                let original_tag = original_node_tag;
                 let temp_tag = make_temp_latency_tag(index);
                 let inbound_tag = make_temp_latency_inbound_tag(index);
                 let proxy_port = temp_proxy_inbound_port(index);
@@ -165,6 +188,71 @@ pub(super) fn generate_temp_config_raw(
             node
         })
         .collect();
+
+    for dependency in detour_dependencies.iter().filter(|node| {
+        node.get("type")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|node_type| {
+                crate::commands::singbox::is_proxy_type(node_type)
+                    && (node_type != "naive" || naive_runtime_available)
+            })
+    }) {
+        let bridge_index = plugin_bridge_specs.len();
+        let mut dependency = crate::commands::singbox::node_for_singbox_with_plugin_bridge(
+            dependency,
+            &mut plugin_bridge_specs,
+        );
+        if plugin_bridge_specs.len() > bridge_index {
+            let bridge_port = temp_xray_bridge_port(bridge_index);
+            if let Some(spec) = plugin_bridge_specs
+                .last_mut()
+                .and_then(|spec| spec.as_object_mut())
+            {
+                spec.insert("port".to_string(), serde_json::json!(bridge_port));
+            }
+            if let Some(object) = dependency.as_object_mut() {
+                object.insert("server_port".to_string(), serde_json::json!(bridge_port));
+            }
+        }
+        outbounds.push(dependency);
+    }
+
+    let mut chain_routes = std::collections::HashSet::new();
+    for spec in &plugin_bridge_specs {
+        let Some(chain_port) = spec
+            .get("frontProxyChainPort")
+            .and_then(serde_json::Value::as_u64)
+        else {
+            continue;
+        };
+        let Some(outbound_tag) = spec
+            .get("frontProxyTag")
+            .and_then(serde_json::Value::as_str)
+        else {
+            continue;
+        };
+        if !chain_routes.insert((chain_port, outbound_tag.to_string())) {
+            continue;
+        }
+        let inbound_tag = if chain_routes.len() == 1 {
+            "kunbox-front-proxy-chain-in".to_string()
+        } else {
+            format!("kunbox-front-proxy-chain-in-{}", chain_routes.len())
+        };
+        inbounds.push(serde_json::json!({
+            "type": "mixed",
+            "tag": inbound_tag,
+            "listen": "127.0.0.1",
+            "listen_port": chain_port
+        }));
+        route_rules.insert(
+            0,
+            serde_json::json!({
+                "inbound": inbound_tag,
+                "outbound": outbound_tag
+            }),
+        );
+    }
 
     // 添加 direct 出站
     outbounds.push(serde_json::json!({ "type": "direct", "tag": "direct" }));

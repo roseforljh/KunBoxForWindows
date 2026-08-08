@@ -1,10 +1,10 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import * as Switch from '@radix-ui/react-switch'
-import * as Select from '@radix-ui/react-select'
-import { ChevronDown, Check, Globe, Shield, Wifi, Monitor, RefreshCw, Settings2, Cpu, RotateCcw } from 'lucide-react'
+import { Globe, Shield, Wifi, Monitor, RefreshCw, Settings2, Cpu, RotateCcw } from 'lucide-react'
 import type { AppSettings } from '../../shared/types'
 import { KernelSettings } from './KernelSettings'
+import { AppSelect } from './ui/Select'
 
 type SettingsTab = 'proxy' | 'tun' | 'dns' | 'kernel' | 'system'
 
@@ -81,8 +81,6 @@ export default function Settings() {
       setSaving(false)
     }
   }
-
-
 
   if (!settings) {
     return (
@@ -421,41 +419,21 @@ function TextInput({ value, onChange, placeholder }: { value: string; onChange: 
 }
 
 function Dropdown({ value, options, onChange, isTheme }: { value: string; options: { value: string; label: string }[]; onChange: (v: string) => void; isTheme?: boolean }) {
-  const handleChange = (v: string, e?: React.MouseEvent) => {
-    if (isTheme && e) {
-      document.documentElement.style.setProperty('--x', e.clientX + 'px')
-      document.documentElement.style.setProperty('--y', e.clientY + 'px')
+  const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (isTheme) {
+      document.documentElement.style.setProperty('--x', event.clientX + 'px')
+      document.documentElement.style.setProperty('--y', event.clientY + 'px')
     }
-    onChange(v)
   }
 
   return (
-    <Select.Root value={value} onValueChange={handleChange}>
-      <Select.Trigger className="glass-select inline-flex items-center justify-between gap-2 w-36 !py-2 rounded-xl">
-        <Select.Value />
-        <Select.Icon>
-          <ChevronDown className="w-4 h-4 text-[var(--text-faint)]" />
-        </Select.Icon>
-      </Select.Trigger>
-      <Select.Portal>
-        <Select.Content className="glass-card shadow-soft-lg overflow-hidden z-50 rounded-xl">
-          <Select.Viewport className="p-1">
-            {options.map((opt) => (
-              <Select.Item
-                key={opt.value}
-                value={opt.value}
-                className="flex items-center justify-between gap-2 px-4 py-2.5 text-sm text-[var(--text-primary)] rounded-lg cursor-pointer outline-none hover:bg-[var(--bg-hover)] data-[highlighted]:bg-[var(--bg-hover)]"
-                onClick={(e) => isTheme && handleChange(opt.value, e)}
-              >
-                <Select.ItemText>{opt.label}</Select.ItemText>
-                <Select.ItemIndicator>
-                  <Check className="w-4 h-4 text-[var(--accent-primary)]" />
-                </Select.ItemIndicator>
-              </Select.Item>
-            ))}
-          </Select.Viewport>
-        </Select.Content>
-      </Select.Portal>
-    </Select.Root>
+    <div className="w-36" onPointerDown={handlePointerDown}>
+      <AppSelect
+        value={value}
+        options={options}
+        onValueChange={onChange}
+        ariaLabel="选择设置值"
+      />
+    </div>
   )
 }

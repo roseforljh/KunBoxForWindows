@@ -272,6 +272,122 @@ fn temp_latency_remote_dns_falls_back_for_local_or_fakeip() {
 }
 
 #[test]
+fn temp_node_detour_resolves_cross_profile_chain() {
+    let target = serde_json::json!({
+        "type": "trojan",
+        "tag": "target",
+        "server": "target.example.com",
+        "server_port": 443,
+        "password": "target",
+        "detour": "profile-b::front"
+    });
+    let profile_nodes = std::collections::HashMap::from([
+        ("profile-a".to_string(), vec![target.clone()]),
+        (
+            "profile-b".to_string(),
+            vec![
+                serde_json::json!({
+                    "type": "socks",
+                    "tag": "front",
+                    "server": "front.example.com",
+                    "server_port": 1080,
+                    "detour": "hop"
+                }),
+                serde_json::json!({
+                    "type": "http",
+                    "tag": "hop",
+                    "server": "hop.example.com",
+                    "server_port": 8080
+                }),
+            ],
+        ),
+    ]);
+
+    let (prepared, dependencies) =
+        prepare_temp_nodes_with_detours("profile-a", &[target], &profile_nodes).unwrap();
+
+    assert_eq!(prepared[0]["detour"].as_str(), Some("kb-detour-0"));
+    assert_eq!(dependencies.len(), 2);
+    let front = dependencies
+        .iter()
+        .find(|node| node["server"].as_str() == Some("front.example.com"))
+        .unwrap();
+    let hop = dependencies
+        .iter()
+        .find(|node| node["server"].as_str() == Some("hop.example.com"))
+        .unwrap();
+    assert_eq!(front["tag"].as_str(), Some("kb-detour-0"));
+    assert_eq!(front["detour"].as_str(), hop["tag"].as_str());
+}
+
+#[test]
+fn temp_node_detour_rejects_metered_dependency() {
+    let target = serde_json::json!({
+        "type": "trojan",
+        "tag": "target",
+        "server": "target.example.com",
+        "server_port": 443,
+        "password": "target",
+        "detour": "metered"
+    });
+    let metered = serde_json::json!({
+        "type": "socks",
+        "tag": "metered",
+        "server": "metered.example.com",
+        "server_port": 1080,
+        "x_kunbox_metered_protected": true
+    });
+    let profile_nodes =
+        std::collections::HashMap::from([("profile-a".to_string(), vec![target.clone(), metered])]);
+
+    let error =
+        prepare_temp_nodes_with_detours("profile-a", &[target], &profile_nodes).unwrap_err();
+
+    assert_eq!(error, "高价计费保护节点不能作为前置代理");
+}
+
+#[test]
+fn temp_xhttp_node_detour_builds_non_null_chain_route() {
+    let target = serde_json::json!({
+        "type": "vless",
+        "tag": "xhttp-target",
+        "server": "target.example.com",
+        "server_port": 443,
+        "uuid": "00000000-0000-0000-0000-000000000000",
+        "detour": "front",
+        "transport": { "type": "xhttp", "path": "/proxy" }
+    });
+    let front = serde_json::json!({
+        "type": "socks",
+        "tag": "front",
+        "server": "front.example.com",
+        "server_port": 1080
+    });
+    let profile_nodes =
+        std::collections::HashMap::from([("profile-a".to_string(), vec![target.clone(), front])]);
+    let (prepared, dependencies) =
+        prepare_temp_nodes_with_detours("profile-a", &[target], &profile_nodes).unwrap();
+
+    let (config, _, _, specs) = generate_temp_config_with_dependencies_raw(
+        &prepared,
+        &dependencies,
+        TEMP_SINGBOX_PORT,
+        true,
+        TEMP_LATENCY_FALLBACK_REMOTE_DNS,
+    );
+
+    assert_eq!(specs[0]["frontProxyTag"].as_str(), Some("kb-detour-0"));
+    assert!(config["route"]["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|rule| {
+            rule["inbound"].as_str() == Some("kunbox-front-proxy-chain-in")
+                && rule["outbound"].as_str() == Some("kb-detour-0")
+        }));
+}
+
+#[test]
 fn generate_temp_config_uses_ascii_unique_tags_and_preserves_mapping() {
     let nodes = vec![
         serde_json::json!({

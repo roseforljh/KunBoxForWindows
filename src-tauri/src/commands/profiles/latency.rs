@@ -1,5 +1,7 @@
 use crate::state::AppState;
-use crate::types::{AppSettings, NodeLatencyResult, NodeLatencyStatus, ProxyState};
+use crate::types::{
+    node_is_metered_protected, AppSettings, NodeLatencyResult, NodeLatencyStatus, ProxyState,
+};
 use std::collections::HashSet;
 use std::fs;
 use std::io::Write;

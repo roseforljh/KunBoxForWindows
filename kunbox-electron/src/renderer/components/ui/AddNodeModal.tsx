@@ -16,7 +16,7 @@ interface AddNodeModalProps {
   currentProfileId: string | null
 }
 
-const SUPPORTED_PROTOCOLS = ['ss://', 'vmess://', 'vless://', 'trojan://', 'hysteria2://', 'hysteria://', 'tuic://']
+const SUPPORTED_PROTOCOLS = ['ss://', 'socks5://', 'socks://', 'http://', 'https://', 'vmess://', 'vless://', 'trojan://', 'hysteria2://', 'hy2://', 'hysteria://', 'tuic://', 'anytls://', 'naive+']
 
 export function AddNodeModal({ isOpen, onClose, onAdd, profiles, currentProfileId }: AddNodeModalProps) {
   const [link, setLink] = useState('')
@@ -62,7 +62,7 @@ export function AddNodeModal({ isOpen, onClose, onAdd, profiles, currentProfileI
 
     const hasValidProtocol = SUPPORTED_PROTOCOLS.some(p => trimmed.startsWith(p))
     if (!hasValidProtocol) {
-      setError('不支持的协议，请使用 ss://, vmess://, vless://, trojan://, hysteria2:// 等格式')
+      setError('不支持的协议，请使用 SOCKS5、Shadowsocks、VMess、VLESS、Trojan 等节点链接')
       return
     }
 
@@ -140,13 +140,13 @@ export function AddNodeModal({ isOpen, onClose, onAdd, profiles, currentProfileI
                 <textarea
                   value={link}
                   onChange={(e) => setLink(e.target.value)}
-                  placeholder="ss://..., vmess://..., vless://..."
+                  placeholder="socks5://..., ss://..., vless://..."
                   disabled={loading}
                   rows={3}
                   className="w-full px-3 py-2.5 bg-[var(--bg-elevated)] border border-[var(--border-secondary)] rounded-lg text-sm text-[var(--text-primary)] placeholder:text-[var(--text-faint)] outline-none focus:border-[var(--accent-primary)] resize-none font-mono disabled:opacity-50"
                 />
                 <p className="text-xs text-[var(--text-faint)]">
-                  支持 Shadowsocks, VMess, VLESS, Trojan, Hysteria2 等协议
+                  支持 SOCKS5、HTTP、Shadowsocks、VMess、VLESS、Trojan、Hysteria2 等协议
                 </p>
               </div>
 

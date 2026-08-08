@@ -1,10 +1,10 @@
-use tauri::{AppHandle, Emitter, Manager, State};
+use super::singbox::{singbox_start_impl, singbox_stop_impl};
+use crate::state::AppState;
+use crate::types::ProxyState;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use crate::state::AppState;
-use crate::types::ProxyState;
-use super::singbox::{singbox_start_impl, singbox_stop_impl};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 #[cfg(windows)]
 #[allow(unused_imports)]
@@ -17,17 +17,17 @@ const KERNEL_FILENAME: &str = "sing-box.exe";
 
 // GitHub 镜像源列表
 const GITHUB_MIRRORS: &[&str] = &[
-    "",                                    // 原始 GitHub（无镜像）
-    "https://ghfast.top/",                 // ghfast 镜像
-    "https://gh.llkk.cc/",                 // llkk 镜像
-    "https://ghp.ci/",                     // ghp.ci 镜像
-    "https://cf.ghproxy.cc/",              // cf ghproxy
+    "",                       // 原始 GitHub（无镜像）
+    "https://ghfast.top/",    // ghfast 镜像
+    "https://gh.llkk.cc/",    // llkk 镜像
+    "https://ghp.ci/",        // ghp.ci 镜像
+    "https://cf.ghproxy.cc/", // cf ghproxy
 ];
 
 // GitHub API 镜像源列表
 const GITHUB_API_MIRRORS: &[&str] = &[
-    "https://api.github.com",              // 原始 API
-    "https://ghfast.top/https://api.github.com",  // ghfast 代理
+    "https://api.github.com",                    // 原始 API
+    "https://ghfast.top/https://api.github.com", // ghfast 代理
 ];
 
 const VERSION_FALLBACK_API: &str = "https://data.jsdelivr.com/v1/package/gh/SagerNet/sing-box";
@@ -389,11 +389,11 @@ pub async fn kernel_get_local_version(app: AppHandle) -> Result<Option<KernelVer
         Ok(p) => p,
         Err(_) => return Ok(None),
     };
-    
+
     if !kernel_path.exists() {
         return Ok(None);
     }
-    
+
     #[cfg(windows)]
     let output = tokio::process::Command::new(&kernel_path)
         .arg("version")
@@ -408,11 +408,11 @@ pub async fn kernel_get_local_version(app: AppHandle) -> Result<Option<KernelVer
         .output()
         .await
         .map_err(|e| e.to_string())?;
-    
+
     if output.status.success() {
         let version_str = String::from_utf8_lossy(&output.stdout);
         let version_detail = version_str.trim().to_string();
-        
+
         // Parse version from output like "sing-box version 1.8.0"
         let version = version_str
             .lines()
@@ -420,14 +420,14 @@ pub async fn kernel_get_local_version(app: AppHandle) -> Result<Option<KernelVer
             .and_then(|line| line.split_whitespace().last())
             .map(|v| v.to_string())
             .unwrap_or_else(|| "unknown".to_string());
-        
+
         return Ok(Some(KernelVersion {
             version,
             version_detail,
             is_alpha: false,
         }));
     }
-    
+
     Ok(None)
 }
 
@@ -479,7 +479,9 @@ pub async fn kernel_get_capabilities(app: AppHandle) -> Result<KernelCapabilitie
     })
 }
 
-async fn fetch_trusted_remote_releases(include_prerelease: bool) -> Result<Vec<RemoteRelease>, String> {
+async fn fetch_trusted_remote_releases(
+    include_prerelease: bool,
+) -> Result<Vec<RemoteRelease>, String> {
     let client = reqwest::Client::builder()
         .user_agent("KunBox/1.0")
         .timeout(std::time::Duration::from_secs(15))
@@ -491,7 +493,8 @@ async fn fetch_trusted_remote_releases(include_prerelease: bool) -> Result<Vec<R
     let mut stable_result: Option<GithubRelease> = None;
     for api_base in GITHUB_API_MIRRORS {
         let api_url = format!("{}/repos/SagerNet/sing-box/releases/latest", api_base);
-        let resp = client.get(&api_url)
+        let resp = client
+            .get(&api_url)
             .header("Accept", "application/vnd.github.v3+json")
             .send()
             .await;
@@ -523,7 +526,8 @@ async fn fetch_trusted_remote_releases(include_prerelease: bool) -> Result<Vec<R
         let mut all_releases_result: Option<Vec<GithubRelease>> = None;
         for api_base in GITHUB_API_MIRRORS {
             let api_url = format!("{}/repos/SagerNet/sing-box/releases?per_page=10", api_base);
-            let resp = client.get(&api_url)
+            let resp = client
+                .get(&api_url)
                 .header("Accept", "application/vnd.github.v3+json")
                 .send()
                 .await;
@@ -605,12 +609,18 @@ fn is_valid_release_tag(tag_name: &str) -> bool {
 }
 
 #[tauri::command]
-pub async fn kernel_get_remote_releases(include_prerelease: Option<bool>) -> Result<Vec<RemoteRelease>, String> {
+pub async fn kernel_get_remote_releases(
+    include_prerelease: Option<bool>,
+) -> Result<Vec<RemoteRelease>, String> {
     fetch_trusted_remote_releases(include_prerelease.unwrap_or(true)).await
 }
 
 #[tauri::command]
-pub async fn kernel_download(app: AppHandle, state: State<'_, AppState>, tag_name: String) -> Result<serde_json::Value, String> {
+pub async fn kernel_download(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tag_name: String,
+) -> Result<serde_json::Value, String> {
     let _ = app.emit("kernel:download-start", ());
 
     let normalized_tag = tag_name.trim().to_string();
@@ -630,7 +640,9 @@ pub async fn kernel_download(app: AppHandle, state: State<'_, AppState>, tag_nam
             err
         })?;
 
-    if trusted_release.download_url.trim().is_empty() || trusted_release.asset_name.trim().is_empty() {
+    if trusted_release.download_url.trim().is_empty()
+        || trusted_release.asset_name.trim().is_empty()
+    {
         let err = "内核版本缺少可用的下载资源";
         let _ = app.emit("kernel:download-error", err);
         return Err(err.to_string());
@@ -689,7 +701,11 @@ pub async fn kernel_download(app: AppHandle, state: State<'_, AppState>, tag_nam
     remove_path_if_exists(&extracted_cronet_path)?;
 
     download_kernel_archive_to_path(&app, response, &archive_path).await?;
-    let has_cronet = extract_kernel_archive(&archive_path, &extracted_kernel_path, &extracted_cronet_path)?;
+    let has_cronet = extract_kernel_archive(
+        &archive_path,
+        &extracted_kernel_path,
+        &extracted_cronet_path,
+    )?;
     let _ = remove_path_if_exists(&archive_path);
 
     if !extracted_kernel_path.exists() {
@@ -698,12 +714,17 @@ pub async fn kernel_download(app: AppHandle, state: State<'_, AppState>, tag_nam
         return Err(err.to_string());
     }
 
-    let was_running = matches!(*state.proxy_state.lock().await, ProxyState::Connected | ProxyState::Connecting);
+    let was_running = matches!(
+        *state.proxy_state.lock().await,
+        ProxyState::Connected | ProxyState::Connecting
+    );
 
     if was_running {
         let stop_result = singbox_stop_impl(app.clone(), &state).await?;
         if !stop_result.success {
-            return Err(stop_result.error.unwrap_or_else(|| "停止内核失败".to_string()));
+            return Err(stop_result
+                .error
+                .unwrap_or_else(|| "停止内核失败".to_string()));
         }
     }
 
@@ -712,13 +733,18 @@ pub async fn kernel_download(app: AppHandle, state: State<'_, AppState>, tag_nam
 
     if has_cronet {
         replace_support_file(&kernel_dir.join("libcronet.dll"), &extracted_cronet_path)?;
-        log::info!("Naive runtime installed to {:?}", kernel_dir.join("libcronet.dll"));
+        log::info!(
+            "Naive runtime installed to {:?}",
+            kernel_dir.join("libcronet.dll")
+        );
     }
 
     if was_running {
         let start_result = singbox_start_impl(app.clone(), &state).await?;
         if !start_result.success {
-            return Err(start_result.error.unwrap_or_else(|| "内核已更新，但重新启动失败".to_string()));
+            return Err(start_result
+                .error
+                .unwrap_or_else(|| "内核已更新，但重新启动失败".to_string()));
         }
     }
 
@@ -732,24 +758,24 @@ pub async fn kernel_rollback(app: AppHandle) -> Result<serde_json::Value, String
     let kernel_dir = get_kernel_dir_for_install(&app)?;
     let kernel_path = kernel_dir.join(KERNEL_FILENAME);
     let backup_path = kernel_dir.join("sing-box.exe.bak");
-    
+
     if !backup_path.exists() {
         return Ok(serde_json::json!({ "success": false, "error": "No backup available" }));
     }
-    
+
     // Swap current and backup
     let temp_path = kernel_dir.join("sing-box.exe.tmp");
-    
+
     if kernel_path.exists() {
         fs::rename(&kernel_path, &temp_path).map_err(|e| e.to_string())?;
     }
-    
+
     fs::rename(&backup_path, &kernel_path).map_err(|e| e.to_string())?;
-    
+
     if temp_path.exists() {
         fs::rename(&temp_path, &backup_path).map_err(|e| e.to_string())?;
     }
-    
+
     Ok(serde_json::json!({ "success": true }))
 }
 
@@ -763,7 +789,7 @@ pub async fn kernel_can_rollback(app: AppHandle) -> Result<bool, String> {
 #[tauri::command]
 pub async fn kernel_clear_cache(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let freed_bytes = clear_kernel_cache_targets(&kernel_cache_targets(&state))?;
-    
+
     Ok(serde_json::json!({ "success": true, "freedBytes": freed_bytes }))
 }
 
@@ -915,7 +941,9 @@ mod tests {
         let release = build_release_from_version("1.13.0", false);
         assert_eq!(release.tag_name, "v1.13.0");
         assert_eq!(release.asset_name, "sing-box-1.13.0-windows-amd64.zip");
-        assert!(release.download_url.contains("/v1.13.0/sing-box-1.13.0-windows-amd64.zip"));
+        assert!(release
+            .download_url
+            .contains("/v1.13.0/sing-box-1.13.0-windows-amd64.zip"));
     }
 
     #[test]
@@ -927,7 +955,11 @@ mod tests {
         fs::create_dir_all(state.data_dir.join("cache")).unwrap();
         fs::write(state.config_dir.join("cache.db"), vec![1u8; 16]).unwrap();
         fs::write(state.rulesets_cache_dir().join("demo.srs"), vec![2u8; 24]).unwrap();
-        fs::write(state.data_dir.join("cache").join("legacy.bin"), vec![3u8; 8]).unwrap();
+        fs::write(
+            state.data_dir.join("cache").join("legacy.bin"),
+            vec![3u8; 8],
+        )
+        .unwrap();
 
         let freed = clear_kernel_cache_targets(&kernel_cache_targets(&state)).unwrap();
 

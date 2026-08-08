@@ -1,4 +1,4 @@
-  import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { Reorder } from 'framer-motion'
 import * as Switch from '@radix-ui/react-switch'
 import {
@@ -23,6 +23,7 @@ import {
   Check
 } from 'lucide-react'
 import { Modal, ModalButton } from './ui/Modal'
+import { AppSelect } from './ui/Select'
 import { useNodesStore } from '../stores/nodesStore'
 import { useToast } from './ui/Toast'
 import { useProfiles } from '../lib/useProfiles'
@@ -41,6 +42,24 @@ interface RuleSetItem {
   enabled: boolean
   isBuiltIn: boolean
 }
+
+const RULESET_TYPE_OPTIONS = [
+  { value: 'remote', label: '远程' },
+  { value: 'local', label: '本地' },
+] as const
+
+const RULESET_FORMAT_OPTIONS = [
+  { value: 'binary', label: '二进制（SRS）' },
+  { value: 'source', label: '源码（JSON）' },
+] as const
+
+const RULESET_OUTBOUND_OPTIONS = [
+  { value: 'direct', label: '直连，不经过代理' },
+  { value: 'proxy', label: '代理，通过当前代理服务器' },
+  { value: 'block', label: '拦截，阻止连接' },
+  { value: 'node', label: '节点，指定特定节点' },
+  { value: 'profile', label: '配置，指定特定配置' },
+] as const
 
 const defaultRuleSets: RuleSetItem[] = [
   {
@@ -506,12 +525,6 @@ export default function RuleSets() {
     setRuleSets(prev => prev.map(rs => rs.id === id ? { ...rs, enabled: newEnabled } : rs))
   }
 
-  const changeOutboundMode = (id: string, mode: RuleSetItem['outboundMode']) => {
-    setRuleSets((prev) =>
-      prev.map((rs) => (rs.id === id ? { ...rs, outboundMode: mode } : rs))
-    )
-  }
-
   const confirmDelete = (id: string) => {
     setDeleteTargetId(id)
     setShowDeleteConfirm(true)
@@ -866,23 +879,6 @@ export default function RuleSets() {
                   </span>
                 </div>
 
-                <select
-                  value={ruleSet.outboundMode}
-                  onChange={(e) =>
-                    changeOutboundMode(
-                      ruleSet.id,
-                      e.target.value as RuleSetItem['outboundMode']
-                    )
-                  }
-                  className="h-8 px-2 rounded-lg bg-[var(--bg-tertiary)] text-sm text-[var(--text-primary)] border border-[var(--glass-border)] outline-none cursor-pointer hover:bg-[var(--bg-hover)] transition-colors"
-                >
-                  <option value="direct">直连</option>
-                  <option value="proxy">代理</option>
-                  <option value="block">拦截</option>
-                  <option value="node">节点</option>
-                  <option value="profile">配置</option>
-                </select>
-
                 <div className="flex items-center gap-1">
                   <button
                     onClick={() => openEditDialog(ruleSet)}
@@ -988,37 +984,33 @@ export default function RuleSets() {
               <label className="block text-sm text-[var(--text-muted)] mb-1.5">
                 类型
               </label>
-              <select
+              <AppSelect
                 value={dialogData.type}
-                onChange={(e) =>
+                options={RULESET_TYPE_OPTIONS}
+                onValueChange={(value) =>
                   setDialogData({
                     ...dialogData,
-                    type: e.target.value as 'remote' | 'local'
+                    type: value as 'remote' | 'local'
                   })
                 }
-                className="w-full h-10 px-3 rounded-xl bg-[var(--bg-secondary)] text-[var(--text-primary)] border border-[var(--glass-border)] outline-none cursor-pointer"
-              >
-                <option value="remote">远程</option>
-                <option value="local">本地</option>
-              </select>
+                ariaLabel="选择规则集类型"
+              />
             </div>
             <div>
               <label className="block text-sm text-[var(--text-muted)] mb-1.5">
                 格式
               </label>
-              <select
+              <AppSelect
                 value={dialogData.format}
-                onChange={(e) =>
+                options={RULESET_FORMAT_OPTIONS}
+                onValueChange={(value) =>
                   setDialogData({
                     ...dialogData,
-                    format: e.target.value as 'binary' | 'source'
+                    format: value as 'binary' | 'source'
                   })
                 }
-                className="w-full h-10 px-3 rounded-xl bg-[var(--bg-secondary)] text-[var(--text-primary)] border border-[var(--glass-border)] outline-none cursor-pointer"
-              >
-                <option value="binary">二进制 (SRS)</option>
-                <option value="source">源码 (JSON)</option>
-              </select>
+                ariaLabel="选择规则集格式"
+              />
             </div>
           </div>
 
@@ -1045,23 +1037,18 @@ export default function RuleSets() {
             <label className="block text-sm text-[var(--text-muted)] mb-1.5">
               出站模式
             </label>
-            <select
+            <AppSelect
               value={dialogData.outboundMode}
-              onChange={(e) =>
+              options={RULESET_OUTBOUND_OPTIONS}
+              onValueChange={(value) =>
                 setDialogData({
                   ...dialogData,
-                  outboundMode: e.target.value as RuleSetItem['outboundMode'],
+                  outboundMode: value as RuleSetItem['outboundMode'],
                   outboundValue: ''
                 })
               }
-              className="w-full h-10 px-3 rounded-xl bg-[var(--bg-secondary)] text-[var(--text-primary)] border border-[var(--glass-border)] outline-none cursor-pointer"
-            >
-              <option value="direct">直连 - 不经过代理</option>
-              <option value="proxy">代理 - 通过代理服务器</option>
-              <option value="block">拦截 - 阻止连接</option>
-              <option value="node">节点 - 指定特定节点</option>
-              <option value="profile">配置 - 指定特定配置</option>
-            </select>
+              ariaLabel="选择出站模式"
+            />
           </div>
 
           {/* Node/Profile Selector */}
@@ -1076,30 +1063,25 @@ export default function RuleSets() {
                   加载中...
                 </div>
               ) : (
-                <select
+                <AppSelect
                   value={dialogData.outboundValue}
-                  onChange={(e) =>
-                    setDialogData({ ...dialogData, outboundValue: e.target.value })
+                  onValueChange={(value) =>
+                    setDialogData({ ...dialogData, outboundValue: value })
                   }
-                  className="w-full h-10 px-3 rounded-xl bg-[var(--bg-secondary)] text-[var(--text-primary)] border border-[var(--glass-border)] outline-none cursor-pointer"
-                >
-                  <option value="">
-                    -- 请选择{dialogData.outboundMode === 'node' ? '节点' : '配置'} --
-                  </option>
-                  {dialogData.outboundMode === 'node'
+                  options={dialogData.outboundMode === 'node'
                     ? allNodes
                         .filter((n) => n.tag)
-                        .map((node) => (
-                          <option key={`${node.sourceProfileId}::${node.tag}`} value={`${node.sourceProfileId}::${node.tag}`}>
-                            {node.tag} ({node.type}) - {node.sourceProfileName}
-                          </option>
-                        ))
-                    : profiles.map((profile) => (
-                        <option key={profile.id} value={profile.id}>
-                          {profile.name}
-                        </option>
-                      ))}
-                </select>
+                        .map((node) => ({
+                          value: `${node.sourceProfileId}::${node.tag}`,
+                          label: `${node.tag}（${node.type}）· ${node.sourceProfileName}`,
+                        }))
+                    : profiles.map((profile) => ({
+                        value: profile.id,
+                        label: profile.name,
+                      }))}
+                  placeholder={`请选择${dialogData.outboundMode === 'node' ? '节点' : '配置'}`}
+                  ariaLabel={`选择${dialogData.outboundMode === 'node' ? '节点' : '配置'}`}
+                />
               )}
               {dialogData.outboundMode === 'node' && allNodes.filter((n) => n.tag).length === 0 && !isLoadingData && (
                 <p className="text-xs text-amber-400 mt-1">暂无可用节点</p>

@@ -121,13 +121,13 @@ export const mockApi = {
         dnsPreResolve: false,
         dnsServer: null,
       }),
-    createCustom: (_name: string, _selections: CustomProfileNodeSelection[]): Promise<Profile> =>
+    createCustom: (_name: string, _selections: CustomProfileNodeSelection[], _newNodeLinks: string[] = []): Promise<Profile> =>
       Promise.resolve({
         id: `mock-profile-${Date.now()}`,
         name: _name,
         url: '',
         lastUpdate: Date.now(),
-        nodeCount: _selections.length,
+        nodeCount: _selections.length + _newNodeLinks.length,
         enabled: true,
         autoUpdateInterval: 0,
         dnsPreResolve: false,
@@ -167,6 +167,11 @@ export const mockApi = {
       return Promise.resolve(result)
     },
     delete: (_tag: string): Promise<void> => Promise.resolve(),
+    update: (_profileId: string, originalTag: string, node: SingBoxOutbound): Promise<SingBoxOutbound> => {
+      const index = mockNodes.findIndex((item) => item.tag === originalTag)
+      if (index >= 0) mockNodes[index] = { ...node }
+      return Promise.resolve({ ...node })
+    },
     export: (_tag: string): Promise<string> => Promise.resolve('ss://mock-exported-link'),
     listAll: (_includeDisabled?: boolean): Promise<NodeWithProfile[]> => Promise.resolve([...mockNodesWithProfile]),
   },

@@ -47,43 +47,113 @@ export interface Profile {
   dnsServer: string | null
 }
 
+export interface OutboundTls {
+  enabled?: boolean
+  server_name?: string
+  insecure?: boolean
+  disable_sni?: boolean
+  alpn?: string[]
+  ca?: string[]
+  certificate?: string[]
+  key?: string[]
+  utls?: {
+    enabled?: boolean
+    fingerprint?: string
+  }
+  reality?: {
+    enabled?: boolean
+    public_key?: string
+    short_id?: string
+  }
+  ech?: {
+    enabled?: boolean
+    config?: string[]
+  }
+}
+
+export interface OutboundTransport {
+  type?: string
+  path?: string
+  headers?: Record<string, string | string[]>
+  host?: string[]
+  service_name?: string
+  max_early_data?: number
+  early_data_header_name?: string
+  mode?: string
+  x_padding_bytes?: string
+  sc_max_each_post_bytes?: number
+  sc_min_posts_interval_ms?: number
+  sc_max_buffered_posts?: number
+  no_grpc_header?: boolean
+  no_sse_header?: boolean
+}
+
+export interface OutboundMultiplex {
+  enabled?: boolean
+  protocol?: string
+  max_connections?: number
+  min_streams?: number
+  max_streams?: number
+  padding?: boolean
+}
+
 export interface SingBoxOutbound {
   tag?: string
   type?: string
   server?: string
   server_port?: number
   method?: string
+  username?: string
   password?: string
   uuid?: string
   flow?: string
   security?: string
   alter_id?: number
   packet_encoding?: string
-  tls?: {
-    enabled?: boolean
-    server_name?: string
-    insecure?: boolean
-    alpn?: string[]
-    utls?: {
-      enabled?: boolean
-      fingerprint?: string
-    }
-    reality?: {
-      enabled?: boolean
-      public_key?: string
-      short_id?: string
-    }
-  }
-  transport?: {
-    type?: string
-    path?: string
-    headers?: Record<string, string>
-    host?: string[]
-    service_name?: string
-    max_early_data?: number
-    early_data_header_name?: string
-  }
-  multiplex?: object
+  plugin?: string
+  plugin_opts?: string
+  version?: string | number
+  auth_str?: string
+  server_ports?: string[]
+  obfs?: string | { type?: string; password?: string }
+  up_mbps?: number
+  down_mbps?: number
+  congestion_control?: string
+  udp_relay_mode?: string
+  heartbeat?: string
+  zero_rtt_handshake?: boolean
+  quic?: boolean
+  network?: string | string[]
+  insecure_concurrency?: number
+  extra_headers?: Record<string, string | string[]>
+  udp_over_tcp?: boolean | { enabled?: boolean; version?: number }
+  idle_session_check_interval?: string
+  idle_session_timeout?: string
+  min_idle_session?: number
+  user?: string
+  private_key?: string | string[]
+  private_key_passphrase?: string
+  host_key?: string[]
+  local_address?: string[]
+  mtu?: number
+  peers?: Array<{
+    server?: string
+    server_port?: number
+    public_key?: string
+    pre_shared_key?: string
+    allowed_ips?: string[]
+    persistent_keepalive_interval?: number
+    reserved?: number[]
+  }>
+  hop_interval?: string
+  detour?: string
+  tcp_fast_open?: boolean
+  tls?: OutboundTls
+  transport?: OutboundTransport
+  multiplex?: OutboundMultiplex
+  x_kunbox_auto_selection_eligible?: boolean
+  x_kunbox_metered_protected?: boolean
+  [key: string]: unknown
 }
 
 export interface NodeWithProfile extends SingBoxOutbound {

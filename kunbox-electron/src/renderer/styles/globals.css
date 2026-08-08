@@ -48,6 +48,10 @@
     --glass-border: rgba(255, 255, 255, 0.08);
     --glass-border-hover: rgba(255, 255, 255, 0.12);
     --glass-blur: 12px;
+    --floating-surface-bg: rgba(7, 13, 12, 0.38);
+    --floating-surface-glint: rgba(255, 255, 255, 0.08);
+    --floating-surface-shadow: 0 20px 56px rgba(0, 0, 0, 0.42);
+    --floating-search-bg: rgba(255, 255, 255, 0.07);
     
     /* Shadows */
     --shadow-soft: 0 4px 24px rgba(0, 0, 0, 0.4);
@@ -126,6 +130,10 @@
     --glass-border: rgba(180, 175, 165, 0.12);
     --glass-border-hover: rgba(140, 155, 145, 0.18);
     --glass-blur: 20px;
+    --floating-surface-bg: rgba(247, 245, 240, 0.42);
+    --floating-surface-glint: rgba(255, 255, 255, 0.34);
+    --floating-surface-shadow: 0 20px 48px rgba(89, 82, 70, 0.18);
+    --floating-search-bg: rgba(255, 255, 255, 0.34);
     
     /* Shadows - Neumorphic style */
     --shadow-soft: 0 4px 12px rgba(166, 160, 148, 0.12);
@@ -273,6 +281,19 @@
 
 /* ===== Glass Morphism Components ===== */
 @layer components {
+  /* 统一悬浮面板：下拉菜单与卡片操作菜单共用 */
+  .floating-surface {
+    background:
+      linear-gradient(135deg, var(--floating-surface-glint), transparent 48%),
+      var(--floating-surface-bg);
+    backdrop-filter: blur(42px) saturate(165%);
+    -webkit-backdrop-filter: blur(42px) saturate(165%);
+    border: 0;
+    border-radius: 12px;
+    box-shadow: var(--floating-surface-shadow);
+    will-change: backdrop-filter;
+  }
+
   /* Glass Card */
   .glass-card {
     background: var(--glass-bg);
@@ -761,29 +782,6 @@
 .light .proxy-toggle-btn-stop:hover {
   background: rgba(217, 139, 133, 0.32);
 }
-
-/* ===== Select/Option Dark Mode Fix ===== */
-select {
-  background-color: var(--bg-tertiary);
-  color: var(--text-primary);
-}
-
-select option {
-  background-color: #1a1a1a;
-  color: #ffffff;
-  padding: 8px;
-}
-
-.light select option {
-  background-color: #ffffff;
-  color: #3d4043;
-}
-
-select:focus {
-  outline: none;
-  border-color: var(--accent-primary);
-}
-
 
 /* ===== Theme Transition Animation ===== */
 /* Smooth transitions for main containers only */

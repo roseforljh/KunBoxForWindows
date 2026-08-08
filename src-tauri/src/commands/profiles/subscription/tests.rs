@@ -1,4 +1,6 @@
-use super::links::{parse_ss_link, parse_trojan_link, parse_vmess_link};
+use super::links::{
+    parse_http_proxy_link, parse_socks_link, parse_ss_link, parse_trojan_link, parse_vmess_link,
+};
 use super::quic::parse_hysteria2_link;
 use super::vless::parse_vless_link;
 use super::*;
@@ -179,6 +181,177 @@ fn parse_subscription_decodes_url_safe_no_padding_base64() {
     assert_eq!(nodes.len(), 1);
     assert_eq!(nodes[0].tag.as_deref(), Some("SS"));
     assert_eq!(nodes[0].server.as_deref(), Some("example.com"));
+}
+
+#[test]
+fn parse_subscription_imports_authenticated_socks5_link() {
+    let nodes = parse_subscription_content(
+        "socks5://demo-user:p%40ss%3Aword@proxy.example.com:1080#US%20SOCKS",
+    )
+    .expect("expected SOCKS5 node");
+
+    assert_eq!(nodes.len(), 1);
+    let node = &nodes[0];
+    assert_eq!(node.tag.as_deref(), Some("US SOCKS"));
+    assert_eq!(node.outbound_type.as_deref(), Some("socks"));
+    assert_eq!(node.server.as_deref(), Some("proxy.example.com"));
+    assert_eq!(node.server_port, Some(1080));
+    assert_eq!(
+        node.extra.get("username").and_then(|value| value.as_str()),
+        Some("demo-user")
+    );
+    assert_eq!(
+        node.extra.get("password").and_then(|value| value.as_str()),
+        Some("p@ss:word")
+    );
+}
+
+#[test]
+fn parse_socks5_link_supports_no_auth_and_rejects_invalid_ports() {
+    let node = parse_socks_link("socks5://127.0.0.1:1080#Local").unwrap();
+
+    assert_eq!(node.tag.as_deref(), Some("Local"));
+    assert!(node.extra.get("username").is_none());
+    assert!(node.extra.get("password").is_none());
+    assert!(parse_socks_link("socks5://127.0.0.1:0#Invalid").is_none());
+    assert!(parse_socks_link("socks5://127.0.0.1:70000#Invalid").is_none());
+}
+
+#[test]
+fn parse_https_proxy_link_adds_tls_and_credentials() {
+    let node = parse_http_proxy_link(
+        "https://proxy-user:proxy-pass@proxy.example.com:8443?sni=tls.example.com&insecure=1#HTTPS%20Proxy",
+    )
+    .unwrap();
+
+    assert_eq!(node.tag.as_deref(), Some("HTTPS Proxy"));
+    assert_eq!(node.outbound_type.as_deref(), Some("http"));
+    assert_eq!(node.server_port, Some(8443));
+    assert_eq!(
+        node.extra
+            .get("tls")
+            .and_then(|value| value.get("enabled"))
+            .and_then(|value| value.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        node.extra
+            .get("tls")
+            .and_then(|value| value.get("server_name"))
+            .and_then(|value| value.as_str()),
+        Some("tls.example.com")
+    );
+    assert_eq!(
+        node.extra
+            .get("tls")
+            .and_then(|value| value.get("insecure"))
+            .and_then(|value| value.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        node.extra.get("username").and_then(|value| value.as_str()),
+        Some("proxy-user")
+    );
+}
+
+#[test]
+fn parse_vmess_link_preserves_allow_insecure() {
+    let json = serde_json::json!({
+        "v": "2",
+        "ps": "VMess TLS",
+        "add": "example.com",
+        "port": 443,
+        "id": "11111111-1111-1111-1111-111111111111",
+        "tls": "tls",
+        "allowInsecure": true
+    });
+    let encoded = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        serde_json::to_string(&json).unwrap(),
+    );
+    let node = parse_vmess_link(&format!("vmess://{}", encoded)).unwrap();
+
+    assert_eq!(
+        node.extra
+            .get("tls")
+            .and_then(|value| value.get("insecure"))
+            .and_then(|value| value.as_bool()),
+        Some(true)
+    );
+}
+
+#[test]
+fn socks5_link_export_round_trips_credentials_and_tag() {
+    let node =
+        parse_socks_link("socks5://demo-user:p%40ss%3Aword@proxy.example.com:1080#US%20SOCKS")
+            .unwrap();
+    let exported = export_node_to_link(&node).unwrap();
+    let round_trip = parse_socks_link(&exported).unwrap();
+
+    assert_eq!(round_trip.tag, node.tag);
+    assert_eq!(round_trip.server, node.server);
+    assert_eq!(round_trip.server_port, node.server_port);
+    assert_eq!(round_trip.extra.get("username"), node.extra.get("username"));
+    assert_eq!(round_trip.extra.get("password"), node.extra.get("password"));
+}
+
+#[test]
+fn manual_node_links_for_all_supported_protocols_are_parseable() {
+    let vmess_json = serde_json::json!({
+        "v": "2",
+        "ps": "vmess node",
+        "add": "node.example.com",
+        "port": 443,
+        "id": "11111111-1111-1111-1111-111111111111",
+        "aid": 0,
+        "scy": "auto",
+        "net": "tcp",
+        "type": "none",
+        "host": "",
+        "path": "/",
+        "tls": "tls",
+        "sni": "node.example.com",
+        "allowInsecure": false
+    });
+    let vmess_link = format!(
+        "vmess://{}",
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            serde_json::to_string(&vmess_json).unwrap()
+        )
+    );
+    let links = [
+        "socks5://user:password@node.example.com:1080#socks5%20node".to_string(),
+        "http://user:password@node.example.com:8080#http%20node".to_string(),
+        "ss://aes-128-gcm%3Apassword@node.example.com:8388#shadowsocks%20node".to_string(),
+        vmess_link,
+        "vless://11111111-1111-1111-1111-111111111111@node.example.com:443?type=tcp&security=tls&sni=node.example.com&fp=chrome#vless%20node".to_string(),
+        "trojan://password@node.example.com:443?type=tcp&sni=node.example.com#trojan%20node".to_string(),
+        "hysteria2://password@node.example.com:443?sni=node.example.com#hysteria2%20node".to_string(),
+        "hysteria://node.example.com:443?auth=auth&peer=node.example.com&upmbps=100&downmbps=100#hysteria%20node".to_string(),
+        "tuic://11111111-1111-1111-1111-111111111111:password@node.example.com:443?sni=node.example.com&congestion_control=bbr&udp_relay_mode=native&alpn=h3#tuic%20node".to_string(),
+        "anytls://password@node.example.com:443?sni=node.example.com#anytls%20node".to_string(),
+        "naive+https://user:password@node.example.com:443?sni=node.example.com#naive%20node".to_string(),
+    ];
+    let expected_types = [
+        "socks",
+        "http",
+        "shadowsocks",
+        "vmess",
+        "vless",
+        "trojan",
+        "hysteria2",
+        "hysteria",
+        "tuic",
+        "anytls",
+        "naive",
+    ];
+
+    for (link, expected_type) in links.iter().zip(expected_types) {
+        let node = parse_node_link(link)
+            .unwrap_or_else(|| panic!("手工节点链接无法解析: {expected_type}"));
+        assert_eq!(node.outbound_type.as_deref(), Some(expected_type));
+    }
 }
 
 #[test]

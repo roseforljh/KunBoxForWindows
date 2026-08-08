@@ -64,13 +64,11 @@ export default function Nodes() {
 
   const loadProfilesSafe = useCallback(async () => {
     try {
-      const list = await loadProfiles()
-      if (list.length > 0) {
-        const active = list.find((p) => p.enabled) || list[0]
-        setActiveProfileId(active?.id || null)
-      }
+      await loadProfiles()
+      setActiveProfileId(await window.api.profile.getActive())
     } catch (error) {
       console.error('Failed to load profiles:', error)
+      setActiveProfileId(null)
     }
   }, [loadProfiles])
 
@@ -195,6 +193,14 @@ export default function Nodes() {
     setOpenMenuTag(null)
     setDetailTarget(node)
     setDetailModalOpen(true)
+  }
+
+  const handleSaveNode = async (originalTag: string, node: SingBoxOutbound) => {
+    if (!activeProfileId) throw new Error('当前没有活动配置')
+    await window.api.node.update(activeProfileId, originalTag, node)
+    await loadNodes()
+    await loadProfilesSafe()
+    toast.showRestartToast('节点已更新')
   }
 
   const handleExport = async (node: NodeItem) => {
@@ -418,7 +424,7 @@ export default function Nodes() {
                     </button>
 
                     <div
-                      className={`absolute right-0 top-9 z-[100] w-24 py-1 glass-card rounded-xl border border-[var(--glass-border)] shadow-xl transition-opacity duration-150 ${
+                      className={`floating-surface absolute right-0 top-9 z-[100] w-24 p-1.5 transition-opacity duration-150 ${
                         openMenuTag === node.tag
                           ? 'opacity-100 pointer-events-auto'
                           : 'opacity-0 pointer-events-none'
@@ -426,21 +432,21 @@ export default function Nodes() {
                     >
                       <button
                         onClick={() => handleEdit(node)}
-                        className="w-full px-3 py-2 text-xs text-[var(--text-primary)] hover:bg-[var(--bg-elevated)] flex items-center gap-2 transition-colors"
+                        className="w-full rounded-lg px-3 py-2 text-xs text-[var(--text-primary)] hover:bg-[var(--bg-elevated)] flex items-center gap-2 transition-colors"
                       >
                         <Edit3 className="w-3.5 h-3.5 shrink-0" />
                         <span>编辑</span>
                       </button>
                       <button
                         onClick={() => handleExport(node)}
-                        className="w-full px-3 py-2 text-xs text-[var(--text-primary)] hover:bg-[var(--bg-elevated)] flex items-center gap-2 transition-colors"
+                        className="w-full rounded-lg px-3 py-2 text-xs text-[var(--text-primary)] hover:bg-[var(--bg-elevated)] flex items-center gap-2 transition-colors"
                       >
                         <Share2 className="w-3.5 h-3.5 shrink-0" />
                         <span>导出</span>
                       </button>
                       <button
                         onClick={() => node.tag && handleTestSingleNode(node.tag)}
-                        className="w-full px-3 py-2 text-xs text-[var(--text-primary)] hover:bg-[var(--bg-elevated)] flex items-center gap-2 transition-colors"
+                        className="w-full rounded-lg px-3 py-2 text-xs text-[var(--text-primary)] hover:bg-[var(--bg-elevated)] flex items-center gap-2 transition-colors"
                       >
                         <Zap className="w-3.5 h-3.5 shrink-0" />
                         <span>延迟</span>
@@ -448,7 +454,7 @@ export default function Nodes() {
                       <div className="my-1 mx-2 border-t border-[var(--border-secondary)]" />
                       <button
                         onClick={() => openDeleteModal(node)}
-                        className="w-full px-3 py-2 text-xs text-[var(--status-error)] hover:bg-[var(--status-error)]/10 flex items-center gap-2 transition-colors"
+                        className="w-full rounded-lg px-3 py-2 text-xs text-[var(--status-error)] hover:bg-[var(--status-error)]/10 flex items-center gap-2 transition-colors"
                       >
                         <Trash2 className="w-3.5 h-3.5 shrink-0" />
                         <span>删除</span>
@@ -484,6 +490,8 @@ export default function Nodes() {
           setDetailTarget(null)
         }}
         node={detailTarget}
+        profileId={activeProfileId}
+        onSave={handleSaveNode}
         onExport={async (tag) => {
           const link = await window.api.node.export(tag)
           await navigator.clipboard.writeText(link)

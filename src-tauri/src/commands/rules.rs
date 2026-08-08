@@ -1,7 +1,7 @@
-use tauri::State;
-use std::fs;
 use crate::state::AppState;
 use crate::types::{CustomRules, DomainRule};
+use std::fs;
+use tauri::State;
 
 pub(crate) fn load_custom_rules(state: &AppState) -> CustomRules {
     let file = state.custom_rules_file();
@@ -13,7 +13,7 @@ pub(crate) fn load_custom_rules(state: &AppState) -> CustomRules {
                         return rules;
                     }
                     // File exists but domainRules is empty, fall through to default
-                },
+                }
                 Err(e) => log::warn!("Failed to parse custom rules file {:?}: {}", file, e),
             },
             Err(e) => log::warn!("Failed to read custom rules file {:?}: {}", file, e),
@@ -42,7 +42,10 @@ pub async fn custom_rules_get(state: State<'_, AppState>) -> Result<CustomRules,
 }
 
 #[tauri::command]
-pub async fn custom_rules_save(state: State<'_, AppState>, rules: CustomRules) -> Result<(), String> {
+pub async fn custom_rules_save(
+    state: State<'_, AppState>,
+    rules: CustomRules,
+) -> Result<(), String> {
     save_custom_rules(&state, &rules)?;
     *state.custom_rules.lock().await = rules;
     Ok(())
@@ -56,10 +59,12 @@ pub async fn domain_rules_get(state: State<'_, AppState>) -> Result<Vec<DomainRu
 }
 
 #[tauri::command]
-pub async fn domain_rules_save(state: State<'_, AppState>, rules: Vec<DomainRule>) -> Result<(), String> {
+pub async fn domain_rules_save(
+    state: State<'_, AppState>,
+    rules: Vec<DomainRule>,
+) -> Result<(), String> {
     let mut custom_rules = state.custom_rules.lock().await;
     custom_rules.domain_rules = rules;
     save_custom_rules(&state, &custom_rules)?;
     Ok(())
 }
-

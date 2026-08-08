@@ -134,8 +134,8 @@ export const api = {
         dnsPreResolve: settings?.dnsPreResolve,
         dnsServer: settings?.dnsServer
       }),
-    createCustom: (name: string, selections: CustomProfileNodeSelection[]): Promise<Profile> =>
-      invoke('profile_create_custom', { name, selections }),
+    createCustom: (name: string, selections: CustomProfileNodeSelection[], newNodeLinks: string[] = []): Promise<Profile> =>
+      invoke('profile_create_custom', { name, selections, newNodeLinks }),
     update: (id: string): Promise<Profile> => invoke('profile_update', { id }),
     delete: (id: string): Promise<void> => invoke('profile_delete', { id }),
     getActive: (): Promise<string | null> => invoke('profile_get_active'),
@@ -169,6 +169,8 @@ export const api = {
     testAll: (): Promise<Record<string, number>> => invoke('node_test_all'),
     cancelLatencyTests: (runId?: number): Promise<void> => invoke('node_cancel_latency_tests', { runId }),
     delete: (tag: string): Promise<void> => invoke('node_delete', { tag }),
+    update: (profileId: string, originalTag: string, node: SingBoxOutbound): Promise<SingBoxOutbound> =>
+      invoke('node_update', { profileId, originalTag, node }),
     export: (tag: string): Promise<string> => invoke('node_export', { tag }),
     listAll: (includeDisabled?: boolean): Promise<NodeWithProfile[]> => invoke('node_list_all', { includeDisabled })
   },

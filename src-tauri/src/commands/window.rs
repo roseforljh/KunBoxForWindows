@@ -1,27 +1,27 @@
-use tauri::{AppHandle, State, WebviewWindow};
 use crate::state::AppState;
+use tauri::{AppHandle, State, WebviewWindow};
 
 /// Check if the current process is running with administrator privileges
 #[tauri::command]
 pub fn is_admin() -> bool {
     #[cfg(windows)]
     {
+        use windows::Win32::Foundation::HANDLE;
         use windows::Win32::Security::{
             GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
         };
         use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-        use windows::Win32::Foundation::HANDLE;
-        
+
         unsafe {
             let mut token_handle: HANDLE = HANDLE::default();
-            
+
             if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token_handle).is_err() {
                 return false;
             }
-            
+
             let mut elevation = TOKEN_ELEVATION::default();
             let mut size: u32 = 0;
-            
+
             let result = GetTokenInformation(
                 token_handle,
                 TokenElevation,
@@ -29,17 +29,17 @@ pub fn is_admin() -> bool {
                 std::mem::size_of::<TOKEN_ELEVATION>() as u32,
                 &mut size,
             );
-            
+
             let _ = windows::Win32::Foundation::CloseHandle(token_handle);
-            
+
             if result.is_err() {
                 return false;
             }
-            
+
             elevation.TokenIsElevated != 0
         }
     }
-    
+
     #[cfg(not(windows))]
     {
         false
@@ -79,18 +79,19 @@ pub async fn restart_as_admin(app: AppHandle, state: State<'_, AppState>) -> Res
         use windows::core::PCWSTR;
         use windows::Win32::UI::Shell::ShellExecuteW;
         use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-        
+
         let _ = crate::commands::singbox::singbox_stop_impl(app.clone(), &state).await;
-        
+
         // Get current executable path
         let exe_path = env::current_exe().map_err(|e| e.to_string())?;
-        let exe_path_wide: Vec<u16> = exe_path.to_string_lossy()
+        let exe_path_wide: Vec<u16> = exe_path
+            .to_string_lossy()
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect();
-        
+
         let runas: Vec<u16> = "runas\0".encode_utf16().collect();
-        
+
         let result = unsafe {
             ShellExecuteW(
                 None,
@@ -111,10 +112,9 @@ pub async fn restart_as_admin(app: AppHandle, state: State<'_, AppState>) -> Res
         app.exit(0);
         Ok(())
     }
-    
+
     #[cfg(not(windows))]
     {
         Err("Admin restart is only supported on Windows".to_string())
     }
 }
-

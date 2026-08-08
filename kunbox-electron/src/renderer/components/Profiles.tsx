@@ -95,9 +95,9 @@ export default function Profiles() {
     }
   }
 
-  const handleCreateCustom = async (name: string, selections: CustomProfileNodeSelection[]) => {
+  const handleCreateCustom = async (name: string, selections: CustomProfileNodeSelection[], newNodeLinks: string[]) => {
     try {
-      const profile = await window.api.profile.createCustom(name, selections)
+      const profile = await window.api.profile.createCustom(name, selections, newNodeLinks)
       await loadProfiles()
       toast.showRestartToast(`自定义订阅已创建，共 ${profile.nodeCount} 个节点`)
     } catch (err) {
@@ -317,7 +317,7 @@ export default function Profiles() {
                       </button>
 
                       <div
-                        className={`absolute right-0 top-12 z-[100] w-32 py-2 glass-card rounded-xl border border-[var(--glass-border)] shadow-xl origin-top-right transition-all duration-150 ${openMenuId === profile.id
+                        className={`floating-surface absolute right-0 top-12 z-[100] w-32 p-1.5 origin-top-right transition-all duration-150 ${openMenuId === profile.id
                             ? 'opacity-100 scale-100 pointer-events-auto'
                             : 'opacity-0 scale-90 pointer-events-none'
                           }`}
@@ -325,21 +325,21 @@ export default function Profiles() {
                         <button
                           onClick={() => handleRefresh(profile.id)}
                           disabled={isUpdating}
-                          className="w-full px-4 py-2.5 text-sm text-[var(--text-primary)] hover:bg-[var(--bg-elevated)] flex items-center gap-3 transition-colors disabled:opacity-50"
+                          className="w-full rounded-lg px-3 py-2.5 text-sm text-[var(--text-primary)] hover:bg-[var(--bg-elevated)] flex items-center gap-3 transition-colors disabled:opacity-50"
                         >
                           <RefreshCw className={`w-4 h-4 ${isUpdating ? 'animate-spin' : ''}`} />
                           更新
                         </button>
                         <button
                           onClick={() => openEditModal(profile)}
-                          className="w-full px-4 py-2.5 text-sm text-[var(--text-primary)] hover:bg-[var(--bg-elevated)] flex items-center gap-3 transition-colors"
+                          className="w-full rounded-lg px-3 py-2.5 text-sm text-[var(--text-primary)] hover:bg-[var(--bg-elevated)] flex items-center gap-3 transition-colors"
                         >
                           <Edit3 className="w-4 h-4" />
                           编辑
                         </button>
                         <button
                           onClick={() => handleToggleEnabled(profile)}
-                          className="w-full px-4 py-2.5 text-sm text-[var(--text-primary)] hover:bg-[var(--bg-elevated)] flex items-center gap-3 transition-colors"
+                          className="w-full rounded-lg px-3 py-2.5 text-sm text-[var(--text-primary)] hover:bg-[var(--bg-elevated)] flex items-center gap-3 transition-colors"
                         >
                           {profile.enabled ? (
                             <>
@@ -356,7 +356,7 @@ export default function Profiles() {
                         <div className="my-1 mx-3 border-t border-[var(--border-secondary)]" />
                         <button
                           onClick={() => openDeleteModal(profile)}
-                          className="w-full px-4 py-2.5 text-sm text-[var(--status-error)] hover:bg-[var(--status-error)]/10 flex items-center gap-3 transition-colors"
+                          className="w-full rounded-lg px-3 py-2.5 text-sm text-[var(--status-error)] hover:bg-[var(--status-error)]/10 flex items-center gap-3 transition-colors"
                         >
                           <Trash2 className="w-4 h-4" />
                           删除
