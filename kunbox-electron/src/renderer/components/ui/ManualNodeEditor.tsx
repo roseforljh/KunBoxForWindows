@@ -54,7 +54,7 @@ function SelectField({ label, value, onChange, options, disabled }: {
   disabled?: boolean
 }) {
   return (
-    <label className="space-y-1.5">
+    <div className="space-y-1.5">
       <span className="block text-xs font-medium text-[var(--text-muted)]">{label}</span>
       <AppSelect
         value={value}
@@ -63,7 +63,7 @@ function SelectField({ label, value, onChange, options, disabled }: {
         disabled={disabled}
         ariaLabel={label}
       />
-    </label>
+    </div>
   )
 }
 

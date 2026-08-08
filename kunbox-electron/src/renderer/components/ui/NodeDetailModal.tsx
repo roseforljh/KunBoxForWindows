@@ -88,7 +88,7 @@ function SelectField({ label, value, options, onChange, disabled }: {
   disabled?: boolean
 }) {
   return (
-    <label className="space-y-1.5 min-w-0">
+    <div className="space-y-1.5 min-w-0">
       <span className="block text-xs font-medium text-[var(--text-muted)]">{label}</span>
       <AppSelect
         value={value}
@@ -97,7 +97,7 @@ function SelectField({ label, value, options, onChange, disabled }: {
         disabled={disabled}
         ariaLabel={label}
       />
-    </label>
+    </div>
   )
 }
 
@@ -610,7 +610,6 @@ export function NodeDetailModal({ isOpen, onClose, node, profileId, onSave, onEx
           <SelectField label="前置代理" value={detourSelectValue} disabled={disabled} onChange={(value) => setDraft({ ...draft, detour: value || undefined })} options={[
             { value: '', label: '不使用前置代理' }, ...detourSelectOptions,
           ]} />
-          <Field label="前置代理标签（高级）" value={draft.detour ?? ''} placeholder="留空禁用，或填写 profileId::节点名称" disabled={disabled} onChange={(value) => setDraft({ ...draft, detour: value.trim() || undefined })} />
           <ToggleField
             label="高价计费节点保护"
             description="仅在明确手动选中时进入运行配置，并阻止分流、DNS、链式代理和后台探测使用"
