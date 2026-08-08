@@ -31,11 +31,9 @@ interface LatencyCache {
     latencyMs: number | null
     latencyStatus?: NodeLatencyStatus
     isTimeout: boolean
-    timestamp: number
   }
 }
 
-const LATENCY_CACHE_TTL_MS = 3600000
 const MIN_VALID_CACHED_LATENCY_MS = 10
 
 function normalizeLatencyResult(result: NodeLatencyResult) {
@@ -56,9 +54,8 @@ function localFailureLatencyResult(): ReturnType<typeof normalizeLatencyResult> 
 
 function isUsableCachedLatency(
   entry: LatencyCache[string] | null | undefined,
-  now: number,
 ): entry is LatencyCache[string] {
-  if (!entry || now - entry.timestamp >= LATENCY_CACHE_TTL_MS) return false
+  if (!entry) return false
   if (
     entry.latencyStatus === 'success' &&
     (!entry.latencyMs || entry.latencyMs < MIN_VALID_CACHED_LATENCY_MS)
@@ -125,14 +122,13 @@ export const useNodesStore = create<NodesState>()(
 
       setNodes: async (nodes: SingBoxOutbound[]) => {
         const { latencyCache, nodeHealth } = get()
-        const now = Date.now()
         const activeProfileId = await window.api.profile.getActive()
         
         const nodesWithLatency = nodes.map((n: SingBoxOutbound) => {
           const cacheKey = activeProfileId && n.tag ? `${activeProfileId}::${n.tag}` : null
           const cached = cacheKey ? latencyCache[cacheKey] : null
           const healthStatus = n.tag ? nodeHealth[n.tag] : undefined
-          if (isUsableCachedLatency(cached, now)) {
+          if (isUsableCachedLatency(cached)) {
             return {
               ...n,
               latencyMs: cached.latencyMs,
@@ -248,8 +244,7 @@ export const useNodesStore = create<NodesState>()(
                 normalized = localFailureLatencyResult()
               }
 
-              const timestamp = Date.now()
-              batchLatencyCache[`${activeProfileId}::${tag}`] = { ...normalized, timestamp }
+              batchLatencyCache[`${activeProfileId}::${tag}`] = normalized
               set((state: NodesState) => {
                 if (signal.aborted || runId !== testAllRunId) return state
                 return {
@@ -272,15 +267,13 @@ export const useNodesStore = create<NodesState>()(
         } catch {
           if (signal.aborted || runId !== testAllRunId) return
 
-          const timestamp = Date.now()
           for (const node of queue) {
             if (!node.node.tag) continue
             const fallback = localFailureLatencyResult()
             batchLatencyCache[`${activeProfileId}::${node.node.tag}`] = {
               latencyMs: fallback.latencyMs,
               latencyStatus: fallback.latencyStatus,
-              isTimeout: fallback.isTimeout,
-              timestamp
+              isTimeout: fallback.isTimeout
             }
           }
           set((state: NodesState) => {
@@ -343,7 +336,7 @@ export const useNodesStore = create<NodesState>()(
             ),
             latencyCache: {
               ...state.latencyCache,
-              [cacheKey]: { ...normalized, timestamp: Date.now() }
+              [cacheKey]: normalized
             }
           }))
         } catch {
@@ -355,7 +348,7 @@ export const useNodesStore = create<NodesState>()(
             ),
             latencyCache: {
               ...state.latencyCache,
-              [cacheKey]: { ...fallback, timestamp: Date.now() }
+              [cacheKey]: fallback
             }
           }))
         }
@@ -366,22 +359,12 @@ export const useNodesStore = create<NodesState>()(
         const activeProfileId = await window.api.profile.getActive()
         const backendActiveNodeTag = await window.api.node.getActive()
         const { activeNodeTag, latencyCache, nodeHealth } = get()
-        const now = Date.now()
-
-        const newCache = { ...latencyCache }
-        let cacheChanged = false
-        for (const tag in newCache) {
-          if (now - newCache[tag].timestamp >= 3600000) {
-            delete newCache[tag]
-            cacheChanged = true
-          }
-        }
 
         const nodesWithLatency = nodes.map((n: SingBoxOutbound) => {
           const cacheKey = activeProfileId && n.tag ? `${activeProfileId}::${n.tag}` : null
-          const cached = cacheKey ? newCache[cacheKey] : null
+          const cached = cacheKey ? latencyCache[cacheKey] : null
           const healthStatus = n.tag ? nodeHealth[n.tag] : undefined
-          if (cached) {
+          if (isUsableCachedLatency(cached)) {
             return {
               ...n,
               latencyMs: cached.latencyMs,
@@ -408,21 +391,19 @@ export const useNodesStore = create<NodesState>()(
 
         set({
           nodes: nodesWithLatency,
-          activeNodeTag: nextActiveTag,
-          ...(cacheChanged ? { latencyCache: newCache } : {})
+          activeNodeTag: nextActiveTag
         })
       },
 
       loadAllNodes: async () => {
         const allNodes = await window.api.node.listAll()
         const { latencyCache, nodeHealth } = get()
-        const now = Date.now()
         
         const nodesWithLatency = allNodes.map((n: NodeWithProfile) => {
           const cacheKey = n.sourceProfileId && n.tag ? `${n.sourceProfileId}::${n.tag}` : null
           const cached = cacheKey ? latencyCache[cacheKey] : null
           const healthStatus = n.tag ? nodeHealth[n.tag] : undefined
-          if (cached && now - cached.timestamp < 3600000) {
+          if (isUsableCachedLatency(cached)) {
             return {
               ...n,
               latencyMs: cached.latencyMs,
@@ -443,18 +424,7 @@ export const useNodesStore = create<NodesState>()(
         latencyCache: state.latencyCache,
         activeNodeTag: state.activeNodeTag,
         nodeSelections: state.nodeSelections
-      }),
-       merge: (persisted: any, current: NodesState) => {
-        const now = Date.now()
-        if (persisted.latencyCache) {
-          for (const key in persisted.latencyCache) {
-            if (now - persisted.latencyCache[key].timestamp >= 3600000) {
-              delete persisted.latencyCache[key]
-            }
-          }
-        }
-        return { ...current, ...persisted }
-      }
+      })
     }
   )
 )
