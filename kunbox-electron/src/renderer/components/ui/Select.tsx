@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import * as RadixSelect from '@radix-ui/react-select'
 import { Check, ChevronDown, Search } from 'lucide-react'
 
@@ -39,15 +39,10 @@ export function AppSelect({
   const hasEmptyOption = options.some((option) => option.value === '')
   const selectedValue = value === '' && !hasEmptyOption ? undefined : toInternalValue(value)
   const normalizedSearch = search.trim().toLocaleLowerCase()
-  const filteredOptions = useMemo(
-    () =>
-      normalizedSearch
-        ? options.filter((option) =>
-            `${option.label} ${option.value}`.toLocaleLowerCase().includes(normalizedSearch)
-          )
-        : options,
-    [normalizedSearch, options]
-  )
+  const matchesSearch = (option: SelectOption) =>
+    !normalizedSearch ||
+    `${option.label} ${option.value}`.toLocaleLowerCase().includes(normalizedSearch)
+  const hasMatchingOption = options.some(matchesSearch)
 
   useEffect(() => {
     if (!open) return
@@ -112,21 +107,26 @@ export function AppSelect({
           </div>
 
           <RadixSelect.Viewport className="min-h-0 max-h-[22.5rem] flex-1 overflow-y-auto pr-1">
-            {filteredOptions.length > 0 ? (
-              filteredOptions.map((option) => (
+            {/* ponytail: 保持选项挂载并隐藏未匹配项，避免 Radix 因选中项卸载而抢走搜索焦点。 */}
+            {options.map((option) => {
+              const isFilteredOut = !matchesSearch(option)
+
+              return (
                 <RadixSelect.Item
                   key={option.value}
                   value={toInternalValue(option.value)}
-                  disabled={option.disabled}
-                  className="relative flex min-h-9 cursor-pointer select-none items-center rounded-lg py-2 pl-3 pr-9 text-sm text-[var(--text-secondary)] outline-none transition-colors data-[disabled]:pointer-events-none data-[disabled]:opacity-40 data-[highlighted]:bg-[var(--bg-hover)] data-[highlighted]:text-[var(--text-primary)] data-[state=checked]:bg-[var(--accent-primary)]/10 data-[state=checked]:text-[var(--accent-primary)]"
+                  hidden={isFilteredOut}
+                  disabled={option.disabled || isFilteredOut}
+                  className={`relative ${isFilteredOut ? 'hidden' : 'flex'} min-h-9 cursor-pointer select-none items-center rounded-lg py-2 pl-3 pr-9 text-sm text-[var(--text-secondary)] outline-none transition-colors data-[disabled]:pointer-events-none data-[disabled]:opacity-40 data-[highlighted]:bg-[var(--bg-hover)] data-[highlighted]:text-[var(--text-primary)] data-[state=checked]:bg-[var(--accent-primary)]/10 data-[state=checked]:text-[var(--accent-primary)]`}
                 >
                   <RadixSelect.ItemText>{option.label}</RadixSelect.ItemText>
                   <RadixSelect.ItemIndicator className="absolute right-3 inline-flex items-center">
                     <Check className="h-4 w-4" />
                   </RadixSelect.ItemIndicator>
                 </RadixSelect.Item>
-              ))
-            ) : (
+              )
+            })}
+            {!hasMatchingOption && (
               <div className="px-3 py-8 text-center text-sm text-[var(--text-muted)]">
                 未找到匹配项
               </div>
