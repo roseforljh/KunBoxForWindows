@@ -37,6 +37,18 @@ fn append_startup_diagnostic(state: &AppState, message: &str) {
     }
 }
 
+fn report_git_proxy_failure(state: &AppState, operation: &str, error: &str) {
+    let message = format!("{}: {}", operation, error);
+    append_startup_diagnostic(state, &message);
+    log::warn!("{}", message);
+}
+
+fn restore_git_proxy(state: &AppState) {
+    if let Err(err) = crate::commands::git_proxy::restore_after_disconnect(state) {
+        report_git_proxy_failure(state, "Git proxy restore failed", &err);
+    }
+}
+
 #[cfg(windows)]
 fn extract_singbox_fatal_error(line: &str) -> Option<String> {
     let stripped = line.replace('\u{1b}', "");
@@ -659,6 +671,8 @@ pub(crate) async fn singbox_start_impl(
                                 }
                                 cancel_health_monitor(health_cancel.clone()).await;
                                 let _ = disable_system_proxy_for_state_on_crash(&wait_app).await;
+                                let crash_state = wait_app.state::<AppState>();
+                                restore_git_proxy(&crash_state);
                                 let _ = wait_app.emit("singbox:state", "error");
                                 let _ = wait_app.emit("singbox:log", serde_json::json!({
                                     "timestamp": chrono::Utc::now().timestamp_millis(),
@@ -692,6 +706,8 @@ pub(crate) async fn singbox_start_impl(
                                 }
                                 cancel_health_monitor(health_cancel.clone()).await;
                                 let _ = disable_system_proxy_for_state_on_crash(&wait_app).await;
+                                let crash_state = wait_app.state::<AppState>();
+                                restore_git_proxy(&crash_state);
                                 let _ = wait_app.emit("singbox:state", "error");
                             }
                             break;
@@ -818,6 +834,10 @@ pub(crate) async fn singbox_start_impl(
         );
     }
 
+    if let Err(err) = crate::commands::git_proxy::sync_for_connection(state, &effective_settings) {
+        report_git_proxy_failure(state, "Git proxy synchronization failed", &err);
+    }
+
     append_startup_diagnostic(state, "singbox_start finished successfully");
     Ok(match startup_warning {
         Some(warning) => CommandResult::ok_with_warning(warning),
@@ -886,6 +906,8 @@ pub(crate) async fn singbox_stop_impl(
     if cleanup_result.is_err() {
         let _ = disable_system_proxy_for_state(state, ProxyCleanupMode::ForceClear).await;
     }
+
+    restore_git_proxy(state);
 
     #[cfg(windows)]
     let _ = clear_proxy_session_marker(state);

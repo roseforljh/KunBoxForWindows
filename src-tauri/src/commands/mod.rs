@@ -1,3 +1,4 @@
+pub(crate) mod git_proxy;
 pub mod kernel;
 pub mod plugins;
 pub mod profiles;
