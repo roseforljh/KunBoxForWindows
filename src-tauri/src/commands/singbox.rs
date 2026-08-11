@@ -1183,9 +1183,20 @@ fn process_node(node: &serde_json::Value) -> serde_json::Value {
             .and_then(|value| value.as_bool())
             .unwrap_or(false);
 
-        obj.remove(crate::commands::profiles::ECH_DNS_SERVER_META_KEY);
-        obj.remove(NODE_AUTO_SELECTION_ELIGIBLE_META_KEY);
-        obj.remove(NODE_METERED_PROTECTED_META_KEY);
+        for key in [
+            crate::commands::profiles::ECH_DNS_SERVER_META_KEY,
+            NODE_AUTO_SELECTION_ELIGIBLE_META_KEY,
+            NODE_METERED_PROTECTED_META_KEY,
+            "latencyMs",
+            "latencyStatus",
+            "healthStatus",
+            "isTimeout",
+            "isTesting",
+            "sourceProfileId",
+            "sourceProfileName",
+        ] {
+            obj.remove(key);
+        }
 
         if node_type != "shadowsocks" && node_type != "shadowsocksr" {
             obj.remove("method");
@@ -4279,6 +4290,76 @@ mod tests {
                 .is_none()
                 && outbound.get(NODE_METERED_PROTECTED_META_KEY).is_none()
         }));
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn generate_config_strips_frontend_runtime_fields_from_socks_outbounds() {
+        let data_dir = unique_test_dir("socks-frontend-runtime-fields");
+        let state = AppState::new(data_dir.clone());
+        let profiles_data = ProfilesData {
+            profiles: vec![make_profile("profile-a", "Profile A")],
+            active_profile_id: Some("profile-a".to_string()),
+            active_node_tag: Some("residential".to_string()),
+            node_selections: HashMap::new(),
+        };
+        let nodes = vec![
+            serde_json::json!({
+                "tag": "residential",
+                "type": "socks",
+                "server": "proxy.example.com",
+                "server_port": 1000,
+                "version": "5",
+                "username": "user",
+                "password": "password",
+                "latencyMs": 128,
+                "latencyStatus": "success",
+                "healthStatus": "healthy",
+                "isTimeout": false,
+                "isTesting": false,
+                "sourceProfileId": "profile-a",
+                "sourceProfileName": "Profile A"
+            }),
+            serde_json::json!({
+                "tag": "idc",
+                "type": "socks",
+                "server": "203.0.113.10",
+                "server_port": 1080,
+                "version": "5",
+                "username": "user",
+                "password": "password",
+                "latencyMs": null,
+                "latencyStatus": "timeout",
+                "isTimeout": true,
+                "isTesting": true
+            }),
+        ];
+        write_json_file(&state.profiles_file(), &profiles_data);
+        write_json_file(&state.configs_dir().join("profile-a.json"), &nodes);
+
+        let result = generate_config(&state).await.unwrap();
+        assert!(result.success);
+
+        let config = read_generated_config(&state);
+        let outbounds = config["outbounds"].as_array().unwrap();
+        for tag in ["residential", "idc"] {
+            let outbound = outbounds
+                .iter()
+                .find(|outbound| outbound["tag"].as_str() == Some(tag))
+                .unwrap();
+            for key in [
+                "latencyMs",
+                "latencyStatus",
+                "healthStatus",
+                "isTimeout",
+                "isTesting",
+                "sourceProfileId",
+                "sourceProfileName",
+            ] {
+                assert!(outbound.get(key).is_none(), "unexpected field: {key}");
+            }
+        }
 
         let _ = fs::remove_dir_all(data_dir);
     }
