@@ -4,7 +4,7 @@ use crate::types::{
     HealthStatus, ProxyState, TrafficStats, NODE_AUTO_SELECTION_ELIGIBLE_META_KEY,
     NODE_METERED_PROTECTED_META_KEY,
 };
-use futures_util::stream::{FuturesUnordered, StreamExt};
+use futures_util::stream::StreamExt;
 use std::fs;
 use std::fs::OpenOptions;
 use std::future::Future;
@@ -86,6 +86,13 @@ const HEALTH_FAILED_BACKOFF_BASE_MS: i64 = 30_000;
 const HEALTH_FAILED_BACKOFF_MAX_MS: i64 = 300_000;
 const HEALTH_SELECTOR_SWITCH_COOLDOWN_MS: i64 = 60_000;
 const HEALTH_BACKUP_PROBE_LIMIT: usize = 3;
+
+fn local_clash_api_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .expect("创建本地 Clash API 客户端失败")
+}
 
 #[cfg(windows)]
 #[derive(Debug, serde::Deserialize)]
@@ -1004,21 +1011,16 @@ pub async fn singbox_switch_node(
         return singbox_restart(app, state).await;
     }
 
-    let client = reqwest::Client::new();
-    let res = client
-        .put(format!(
-            "http://127.0.0.1:{}/proxies/PROXY",
-            get_clash_api_port(&state).await
-        ))
-        .json(&serde_json::json!({ "name": node_tag }))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if res.status().is_success() {
-        Ok(CommandResult::ok())
-    } else {
-        Ok(CommandResult::err(format!("API returned {}", res.status())))
+    match switch_selector_to_node(
+        &local_clash_api_client(),
+        get_clash_api_port(&state).await,
+        "PROXY",
+        &node_tag,
+    )
+    .await
+    {
+        Ok(()) => Ok(CommandResult::ok()),
+        Err(err) => Ok(CommandResult::err(err)),
     }
 }
 
@@ -2217,6 +2219,40 @@ fn should_probe(health: &NodeHealth, now_ms: i64) -> bool {
     }
 
     now_ms >= health.next_probe_after
+}
+
+fn select_backup_probe_candidates(
+    backup_nodes: &[String],
+    node_health: &std::collections::HashMap<String, NodeHealth>,
+    now_ms: i64,
+    limit: usize,
+) -> Vec<String> {
+    let mut candidates = backup_nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, tag)| {
+            let health = node_health.get(tag);
+            if health.is_some_and(|health| !should_probe(health, now_ms)) {
+                return None;
+            }
+            let priority = match health.map(|health| &health.status) {
+                Some(HealthStatus::Recovering) => 0,
+                None | Some(HealthStatus::Unknown) => 1,
+                Some(HealthStatus::Suspect) => 2,
+                Some(HealthStatus::Failed) => 3,
+                Some(HealthStatus::Healthy) => 4,
+            };
+            let last_checked_at = health.map_or(0, |health| health.last_checked_at);
+            Some((priority, last_checked_at, index, tag.clone()))
+        })
+        .collect::<Vec<_>>();
+    candidates
+        .sort_by_key(|(priority, last_checked_at, index, _)| (*priority, *last_checked_at, *index));
+    candidates
+        .into_iter()
+        .take(limit)
+        .map(|(_, _, _, tag)| tag)
+        .collect()
 }
 
 fn decide_health_action(
@@ -4711,7 +4747,7 @@ mod tests {
         });
 
         let result = probe_selector_node_latency(
-            reqwest::Client::new(),
+            local_clash_api_client(),
             port,
             "node-a".to_string(),
             "https://example.com/probe".to_string(),
@@ -4796,12 +4832,75 @@ mod tests {
                 .unwrap();
         });
 
-        let err =
-            switch_selector_to_node(&reqwest::Client::new(), port, "P:profile-a", "backup-node")
-                .await
-                .unwrap_err();
+        let client = local_clash_api_client();
+        let err = switch_selector_to_node(&client, port, "P:profile-a", "backup-node")
+            .await
+            .unwrap_err();
 
         assert!(err.contains("500"));
+    }
+
+    #[tokio::test]
+    async fn selector_switch_closes_only_connections_still_using_previous_node() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (request_tx, mut request_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buffer = [0_u8; 4096];
+                let n = socket.read(&mut buffer).await.unwrap();
+                let request = String::from_utf8_lossy(&buffer[..n]).to_string();
+                let request_line = request.lines().next().unwrap_or_default().to_string();
+                let _ = request_tx.send(request_line.clone());
+
+                let (status, body) = if request_line.starts_with("GET /connections ") {
+                    (
+                        "200 OK",
+                        r#"{"connections":[{"id":"stale-connection","chains":["old-node","P:profile-a"]},{"id":"detoured-stale-connection","chains":["backup-node","old-node","P:profile-a"]},{"id":"current-connection","chains":["front-node","backup-node","P:profile-a"]},{"id":"other-connection","chains":["other-node","P:profile-b"]}]}"#,
+                    )
+                } else {
+                    ("204 No Content", "")
+                };
+                let response = format!(
+                    "HTTP/1.1 {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    status,
+                    body.len(),
+                    body
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+
+        let client = local_clash_api_client();
+        switch_selector_to_node(&client, port, "P:profile-a", "backup-node")
+            .await
+            .unwrap();
+
+        let mut requests = Vec::new();
+        for _ in 0..4 {
+            requests.push(
+                tokio::time::timeout(Duration::from_secs(1), request_rx.recv())
+                    .await
+                    .expect("selector 切换后必须清理旧连接")
+                    .unwrap(),
+            );
+        }
+        assert!(requests[0].starts_with("PUT /proxies/P%3Aprofile-a "));
+        assert_eq!(requests[1], "GET /connections HTTP/1.1");
+        assert_eq!(requests[2], "DELETE /connections/stale-connection HTTP/1.1");
+        assert_eq!(
+            requests[3],
+            "DELETE /connections/detoured-stale-connection HTTP/1.1"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), request_rx.recv())
+                .await
+                .is_err()
+        );
     }
 
     #[test]
@@ -4845,6 +4944,38 @@ mod tests {
                 from: "node-a".to_string(),
                 to: "node-c".to_string(),
             }
+        );
+    }
+
+    #[test]
+    fn backup_probe_candidates_rotate_past_previously_checked_prefix() {
+        let backup_nodes = (0..6)
+            .map(|index| format!("node-{index}"))
+            .collect::<Vec<_>>();
+        let mut node_health = HashMap::new();
+        for tag in backup_nodes.iter().take(3) {
+            let mut health = NodeHealth::new(tag.clone());
+            health.status = HealthStatus::Suspect;
+            health.last_checked_at = 10_000;
+            node_health.insert(tag.clone(), health);
+        }
+
+        assert_eq!(
+            select_backup_probe_candidates(&backup_nodes, &node_health, 20_000, 3),
+            vec![
+                "node-3".to_string(),
+                "node-4".to_string(),
+                "node-5".to_string()
+            ]
+        );
+
+        let mut recovering = NodeHealth::new("node-3".to_string());
+        recovering.status = HealthStatus::Recovering;
+        recovering.last_checked_at = 20_000;
+        node_health.insert("node-3".to_string(), recovering);
+        assert_eq!(
+            select_backup_probe_candidates(&backup_nodes, &node_health, 30_000, 3)[0],
+            "node-3"
         );
     }
 
@@ -6411,23 +6542,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bounded_selector_probe_helper_caps_concurrency() {
+    async fn bounded_selector_probe_stream_yields_before_all_probes_finish() {
         let active = Arc::new(AtomicUsize::new(0));
         let max_active = Arc::new(AtomicUsize::new(0));
+        let completed = Arc::new(AtomicUsize::new(0));
         let tags: Vec<String> = (0..12).map(|idx| format!("node-{idx}")).collect();
 
-        let results = run_bounded_selector_probes(tags.clone(), 3, |tag| {
+        let probes = bounded_selector_probe_stream(tags.clone(), 3, |tag| {
             let active = active.clone();
             let max_active = max_active.clone();
+            let completed = completed.clone();
             async move {
                 let current = active.fetch_add(1, Ordering::SeqCst) + 1;
                 update_max(&max_active, current);
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                let delay = if tag == "node-0" { 5 } else { 50 };
+                tokio::time::sleep(Duration::from_millis(delay)).await;
                 active.fetch_sub(1, Ordering::SeqCst);
+                completed.fetch_add(1, Ordering::SeqCst);
                 (tag, Some(10))
             }
-        })
-        .await;
+        });
+        futures_util::pin_mut!(probes);
+
+        let first = probes.next().await.unwrap();
+        assert_eq!(first.0, "node-0");
+        assert!(completed.load(Ordering::SeqCst) < tags.len());
+        assert!(active.load(Ordering::SeqCst) > 0);
+
+        let mut results = vec![first];
+        while let Some(result) = probes.next().await {
+            results.push(result);
+        }
 
         assert_eq!(results.len(), tags.len());
         assert!(max_active.load(Ordering::SeqCst) <= 3);
@@ -6466,7 +6611,7 @@ async fn start_traffic_polling(
     start_time: u64,
     cancel: CancellationToken,
 ) {
-    let client = reqwest::Client::new();
+    let client = local_clash_api_client();
     let mut last_upload: u64 = 0;
     let mut last_download: u64 = 0;
     let mut error_streak: u32 = 0;
@@ -6577,7 +6722,7 @@ async fn run_health_monitor(
         _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => {}
     }
 
-    let client = reqwest::Client::new();
+    let client = local_clash_api_client();
     let mut node_health = std::collections::HashMap::new();
     let mut selector_health = std::collections::HashMap::new();
 
@@ -6668,21 +6813,35 @@ async fn run_health_monitor_once(
                     }
                 }
 
-                for backup_node in selector.backup_nodes.iter().take(HEALTH_BACKUP_PROBE_LIMIT) {
+                let backup_probe_nodes = select_backup_probe_candidates(
+                    &selector.backup_nodes,
+                    node_health,
+                    now_ms,
+                    HEALTH_BACKUP_PROBE_LIMIT,
+                );
+                let backup_probe_results = bounded_selector_probe_stream(
+                    backup_probe_nodes,
+                    HEALTH_BACKUP_PROBE_LIMIT,
+                    |backup_node| {
+                        let client = client.clone();
+                        let test_url = settings.latency_test_url.clone();
+                        async move {
+                            probe_selector_node_latency(
+                                client,
+                                clash_api_port,
+                                backup_node,
+                                test_url,
+                                settings.latency_test_timeout as u64,
+                            )
+                            .await
+                        }
+                    },
+                );
+                futures_util::pin_mut!(backup_probe_results);
+                while let Some((backup_node, latency)) = backup_probe_results.next().await {
                     let health = node_health
                         .entry(backup_node.clone())
                         .or_insert_with(|| NodeHealth::new(backup_node.clone()));
-                    if !should_probe(health, now_ms) {
-                        continue;
-                    }
-                    let (_, latency) = probe_selector_node_latency(
-                        client.clone(),
-                        clash_api_port,
-                        backup_node.clone(),
-                        settings.latency_test_url.clone(),
-                        settings.latency_test_timeout as u64,
-                    )
-                    .await;
                     match latency {
                         Some(value) => record_probe_success(health, value, now_ms),
                         None => record_probe_failure(
@@ -7212,7 +7371,104 @@ async fn switch_selector_to_node(
         ));
     }
 
+    match close_stale_selector_connections(client, clash_api_port, selector_tag, node_tag).await {
+        Ok(closed) if closed > 0 => {
+            log::info!(
+                "Closed {} stale connections after switching selector '{}' to '{}'",
+                closed,
+                selector_tag,
+                node_tag
+            );
+        }
+        Err(err) => {
+            log::warn!(
+                "Selector '{}' switched to '{}', but stale connection cleanup failed: {}",
+                selector_tag,
+                node_tag,
+                err
+            );
+        }
+        _ => {}
+    }
+
     Ok(())
+}
+
+async fn close_stale_selector_connections(
+    client: &reqwest::Client,
+    clash_api_port: u16,
+    selector_tag: &str,
+    selected_node_tag: &str,
+) -> Result<usize, String> {
+    let resp = client
+        .get(format!("http://127.0.0.1:{}/connections", clash_api_port))
+        .timeout(std::time::Duration::from_secs(2))
+        .send()
+        .await
+        .map_err(|err| format!("获取活跃连接失败: {}", err))?;
+    if !resp.status().is_success() {
+        return Err(format!("获取活跃连接返回 {}", resp.status()));
+    }
+
+    let data: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|err| format!("解析活跃连接失败: {}", err))?;
+    let stale_connection_ids = data
+        .get("connections")
+        .and_then(|connections| connections.as_array())
+        .into_iter()
+        .flatten()
+        .filter(|connection| {
+            connection
+                .get("chains")
+                .and_then(|chains| chains.as_array())
+                .is_some_and(|chains| {
+                    let selector_index = chains
+                        .iter()
+                        .rposition(|tag| tag.as_str() == Some(selector_tag));
+                    selector_index.is_some_and(|selector_index| {
+                        selector_index
+                            .checked_sub(1)
+                            .and_then(|index| chains.get(index))
+                            .and_then(|tag| tag.as_str())
+                            != Some(selected_node_tag)
+                    })
+                })
+        })
+        .filter_map(|connection| {
+            connection
+                .get("id")
+                .and_then(|id| id.as_str())
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+        })
+        .collect::<Vec<_>>();
+
+    let mut closed = 0;
+    let mut failures = Vec::new();
+    for connection_id in stale_connection_ids {
+        match client
+            .delete(format!(
+                "http://127.0.0.1:{}/connections/{}",
+                clash_api_port,
+                urlencoding::encode(&connection_id)
+            ))
+            .timeout(std::time::Duration::from_secs(2))
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => closed += 1,
+            Ok(resp) => failures.push(format!("{} 返回 {}", connection_id, resp.status())),
+            Err(err) => failures.push(format!("{} 删除失败: {}", connection_id, err)),
+        }
+    }
+
+    if failures.is_empty() {
+        Ok(closed)
+    } else {
+        Err(failures.join("；"))
+    }
 }
 
 async fn probe_real_proxy_path(local_port: u16, url: &str, timeout_ms: u64) -> Result<u32, String> {
@@ -7281,36 +7537,19 @@ async fn probe_selector_node_latency(
     (tag, delay)
 }
 
-async fn run_bounded_selector_probes<I, F, Fut>(
+fn bounded_selector_probe_stream<I, F, Fut>(
     items: I,
     concurrency_limit: usize,
-    mut probe: F,
-) -> Vec<(String, Option<u32>)>
+    probe: F,
+) -> impl futures_util::Stream<Item = (String, Option<u32>)>
 where
     I: IntoIterator<Item = String>,
     F: FnMut(String) -> Fut,
     Fut: Future<Output = (String, Option<u32>)>,
 {
-    let mut remaining = items.into_iter();
-    let mut in_flight = FuturesUnordered::new();
-    let concurrency_limit = concurrency_limit.max(1);
-
-    for _ in 0..concurrency_limit {
-        let Some(item) = remaining.next() else {
-            break;
-        };
-        in_flight.push(probe(item));
-    }
-
-    let mut results = Vec::new();
-    while let Some(result) = in_flight.next().await {
-        results.push(result);
-        if let Some(item) = remaining.next() {
-            in_flight.push(probe(item));
-        }
-    }
-
-    results
+    futures_util::stream::iter(items)
+        .map(probe)
+        .buffer_unordered(concurrency_limit.max(1))
 }
 
 async fn test_selector_latency_internal(
@@ -7320,7 +7559,7 @@ async fn test_selector_latency_internal(
 ) -> Result<serde_json::Value, String> {
     let state = app.state::<AppState>();
     let clash_api_port = get_clash_api_port(&state).await;
-    let client = reqwest::Client::new();
+    let client = local_clash_api_client();
     let settings = state.settings.lock().await.clone();
     let timeout_ms = settings.latency_test_timeout as u64;
     let test_url = test_url.unwrap_or_else(|| settings.latency_test_url.clone());
@@ -7366,7 +7605,7 @@ async fn test_selector_latency_internal(
         selector_tag
     );
 
-    let results = run_bounded_selector_probes(
+    let probe_results = bounded_selector_probe_stream(
         node_tags.clone(),
         SELECTOR_LATENCY_CONCURRENCY_LIMIT,
         |tag| {
@@ -7376,20 +7615,21 @@ async fn test_selector_latency_internal(
                 probe_selector_node_latency(client, clash_api_port, tag, test_url, timeout_ms).await
             }
         },
-    )
-    .await;
+    );
+    futures_util::pin_mut!(probe_results);
 
     let mut first_switch_done = false;
     let mut best_node: Option<(String, u32)> = None;
     let mut valid_count: usize = 0;
     let first_switch_threshold = std::cmp::min(5usize, node_tags.len());
+    let mut results = Vec::with_capacity(node_tags.len());
 
-    for (tag, delay) in &results {
+    while let Some((tag, delay)) = probe_results.next().await {
         if let Some(d) = delay {
             valid_count += 1;
             match &best_node {
-                None => best_node = Some((tag.clone(), *d)),
-                Some((_, best_delay)) if *d < *best_delay => best_node = Some((tag.clone(), *d)),
+                None => best_node = Some((tag.clone(), d)),
+                Some((_, best_delay)) if d < *best_delay => best_node = Some((tag.clone(), d)),
                 _ => {}
             }
         }
@@ -7431,6 +7671,8 @@ async fn test_selector_latency_internal(
             }
             first_switch_done = true;
         }
+
+        results.push((tag, delay));
     }
 
     if let Some((best_tag, best_delay)) = &best_node {

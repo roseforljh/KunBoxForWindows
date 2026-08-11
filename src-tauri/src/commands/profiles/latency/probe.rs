@@ -8,6 +8,7 @@ pub(super) async fn test_latency_via_clash_api(
 ) -> Result<i64, LatencyProbeError> {
     let effective_timeout_ms = timeout_ms.max(1) as u64;
     let client = reqwest::Client::builder()
+        .no_proxy()
         .timeout(std::time::Duration::from_millis(
             effective_timeout_ms.saturating_add(2_000),
         ))

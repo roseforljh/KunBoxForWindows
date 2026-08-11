@@ -648,6 +648,7 @@ pub(super) async fn start_temp_singbox(
 
 pub(crate) async fn check_clash_api_running(port: u16) -> bool {
     let client = reqwest::Client::builder()
+        .no_proxy()
         .timeout(std::time::Duration::from_millis(500))
         .build();
 
