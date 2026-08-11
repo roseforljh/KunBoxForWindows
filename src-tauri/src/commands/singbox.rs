@@ -1,8 +1,8 @@
 use crate::state::AppState;
 use crate::types::{
-    node_is_auto_selection_eligible, node_is_metered_protected, AppSettings, CommandResult,
-    HealthEvent, HealthEventKind, HealthStatus, ProxyState, TrafficStats,
-    NODE_AUTO_SELECTION_ELIGIBLE_META_KEY, NODE_METERED_PROTECTED_META_KEY,
+    node_is_auto_selection_eligible, AppSettings, CommandResult, HealthEvent, HealthEventKind,
+    HealthStatus, ProxyState, TrafficStats, NODE_AUTO_SELECTION_ELIGIBLE_META_KEY,
+    NODE_METERED_PROTECTED_META_KEY,
 };
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use std::fs;
@@ -2123,6 +2123,7 @@ impl NodeHealth {
 struct SelectorHealth {
     selector_tag: String,
     current_node: Option<String>,
+    current_auto_selection_eligible: bool,
     backup_nodes: Vec<String>,
     last_switch_at: Option<i64>,
     switch_cooldown_until: Option<i64>,
@@ -2240,10 +2241,13 @@ fn decide_health_action(
     let Some(current_node) = selector.current_node.as_deref() else {
         return HealthAction::None;
     };
-    let Some(current_health) = node_health.get(current_node) else {
+    if !selector.current_auto_selection_eligible && is_main_selector_tag(selector_tag) {
         return HealthAction::None;
-    };
-    if current_health.status != HealthStatus::Failed || current_health.last_checked_at != now_ms {
+    }
+    let current_failed = node_health.get(current_node).is_some_and(|health| {
+        health.status == HealthStatus::Failed && health.last_checked_at == now_ms
+    });
+    if selector.current_auto_selection_eligible && !current_failed {
         return HealthAction::None;
     }
 
@@ -2265,9 +2269,10 @@ fn decide_health_action(
             from: current_node.to_string(),
             to,
         },
-        None => HealthAction::NotifyNoBackup {
+        None if selector.current_auto_selection_eligible => HealthAction::NotifyNoBackup {
             selector: selector_tag.to_string(),
         },
+        None => HealthAction::None,
     }
 }
 
@@ -2446,14 +2451,7 @@ fn load_all_profiles(
         };
         if nodes_file.exists() {
             if let Ok(content) = fs::read_to_string(&nodes_file) {
-                if let Ok(mut nodes) = serde_json::from_str::<Vec<serde_json::Value>>(&content) {
-                    nodes.retain(|node| {
-                        !node_is_metered_protected(node)
-                            || (profiles_data.active_profile_id.as_deref()
-                                == Some(profile.id.as_str())
-                                && node.get("tag").and_then(serde_json::Value::as_str)
-                                    == profiles_data.active_node_tag.as_deref())
-                    });
+                if let Ok(nodes) = serde_json::from_str::<Vec<serde_json::Value>>(&content) {
                     result.push(ProfileInfo {
                         id: profile.id.clone(),
                         name: profile.name.clone(),
@@ -2545,14 +2543,9 @@ async fn generate_config_with_settings(
         }
     }
 
-    let requested_active_node_tag = profiles_data.active_node_tag.as_deref();
-    let node_is_runtime_allowed = |node: &serde_json::Value| {
-        !node_is_metered_protected(node)
-            || node.get("tag").and_then(serde_json::Value::as_str) == requested_active_node_tag
-    };
     let auto_eligible_active_tags: std::collections::HashSet<String> = raw_nodes
         .iter()
-        .filter(|node| node_is_runtime_allowed(node) && node_is_auto_selection_eligible(node))
+        .filter(|node| node_is_auto_selection_eligible(node))
         .filter_map(|node| node.get("tag").and_then(serde_json::Value::as_str))
         .map(str::to_string)
         .collect();
@@ -2560,7 +2553,6 @@ async fn generate_config_with_settings(
     // 处理当前配置的节点，并过滤 sing-box 不支持的类型，避免单个无效节点拖垮整份配置。
     let nodes: Vec<serde_json::Value> = raw_nodes
         .iter()
-        .filter(|node| node_is_runtime_allowed(node))
         .map(|node| {
             prepare_profile_node_for_runtime(node.clone(), &active_profile_id, &active_profile_id)
         })
@@ -2619,11 +2611,7 @@ async fn generate_config_with_settings(
     let enabled_rulesets: Vec<_> = rulesets.iter().filter(|r| r.enabled).collect();
     let (referenced_profile_ids, mut referenced_profile_scoped_node_refs) =
         collect_route_profile_and_node_references(&rulesets, &custom_rules);
-    let runtime_detour_nodes: Vec<serde_json::Value> = raw_nodes
-        .iter()
-        .filter(|node| node_is_runtime_allowed(node))
-        .cloned()
-        .collect();
+    let runtime_detour_nodes = raw_nodes.clone();
     referenced_profile_scoped_node_refs.extend(collect_node_detour_references(
         &runtime_detour_nodes,
         &active_profile_id,
@@ -3014,7 +3002,7 @@ async fn generate_config_with_settings(
             }
 
             // 收集该配置的所有代理节点
-            let mut profile_proxy_entries: Vec<(String, String)> = Vec::new();
+            let mut profile_proxy_entries: Vec<(String, String, bool)> = Vec::new();
             for node in &profile.nodes {
                 let node_type = node.get("type").and_then(|t| t.as_str()).unwrap_or("");
                 if is_proxy_type(node_type) {
@@ -3043,27 +3031,32 @@ async fn generate_config_with_settings(
                             ));
                             existing_tags.insert(outbound_tag.clone());
                         }
-                        profile_proxy_entries.push((tag.to_string(), outbound_tag));
+                        profile_proxy_entries.push((
+                            tag.to_string(),
+                            outbound_tag,
+                            node_is_auto_selection_eligible(node),
+                        ));
                     }
                 }
             }
-            let profile_proxy_tags: Vec<String> = profile_proxy_entries
+            let profile_selector_tags: Vec<String> = profile_proxy_entries
                 .iter()
-                .map(|(_, outbound_tag)| outbound_tag.clone())
+                .filter(|(_, _, eligible)| *eligible)
+                .map(|(_, outbound_tag, _)| outbound_tag.clone())
                 .collect();
 
             // 创建 selector 类型（由应用层管理延迟测试和切换）
-            if !profile_proxy_tags.is_empty() {
+            if !profile_selector_tags.is_empty() {
                 let selector_default = profiles_data
                     .node_selections
                     .get(&profile.id)
                     .and_then(|saved_tag| {
                         profile_proxy_entries
                             .iter()
-                            .find(|(raw_tag, outbound_tag)| {
-                                raw_tag == saved_tag || outbound_tag == saved_tag
+                            .find(|(raw_tag, outbound_tag, eligible)| {
+                                *eligible && (raw_tag == saved_tag || outbound_tag == saved_tag)
                             })
-                            .map(|(_, outbound_tag)| outbound_tag.clone())
+                            .map(|(_, outbound_tag, _)| outbound_tag.clone())
                     })
                     .or_else(|| {
                         (profiles_data.active_profile_id.as_deref() == Some(profile.id.as_str()))
@@ -3072,27 +3065,29 @@ async fn generate_config_with_settings(
                             .and_then(|active_tag| {
                                 profile_proxy_entries
                                     .iter()
-                                    .find(|(raw_tag, outbound_tag)| {
-                                        raw_tag == &active_tag || outbound_tag == &active_tag
+                                    .find(|(raw_tag, outbound_tag, eligible)| {
+                                        *eligible
+                                            && (raw_tag == &active_tag
+                                                || outbound_tag == &active_tag)
                                     })
-                                    .map(|(_, outbound_tag)| outbound_tag.clone())
+                                    .map(|(_, outbound_tag, _)| outbound_tag.clone())
                             })
                     })
-                    .or_else(|| profile_proxy_tags.first().cloned());
+                    .or_else(|| profile_selector_tags.first().cloned());
 
                 outbounds.push(serde_json::json!({
                     "type": "selector",
                     "tag": selector_tag,
-                    "outbounds": profile_proxy_tags,
+                    "outbounds": profile_selector_tags,
                     "default": selector_default,
-                    "interrupt_exist_connections": false
+                    "interrupt_exist_connections": true
                 }));
                 existing_tags.insert(selector_tag.clone());
                 profile_id_to_selector.insert(profile_id.clone(), selector_tag.clone());
                 log::info!(
                     "Created profile selector: {} with {} nodes",
                     selector_tag,
-                    profile_proxy_tags.len()
+                    profile_selector_tags.len()
                 );
             }
         }
@@ -3109,7 +3104,7 @@ async fn generate_config_with_settings(
                 "tag": proxy_tag,
                 "outbounds": proxy_outbounds.clone(),
                 "default": default_tag,
-                "interrupt_exist_connections": false
+                "interrupt_exist_connections": true
             }),
         );
         existing_tags.insert(proxy_tag.to_string());
@@ -4247,7 +4242,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn node_policies_filter_metered_and_auto_selection_nodes() {
+    async fn node_policies_keep_manual_nodes_and_filter_automatic_candidates() {
         let data_dir = unique_test_dir("node-policy-filtering");
         let state = AppState::new(data_dir.clone());
         let profiles_data = ProfilesData {
@@ -4273,9 +4268,17 @@ mod tests {
 
         let config = read_generated_config(&state);
         let outbounds = config["outbounds"].as_array().unwrap();
-        assert!(!outbounds
+        assert!(outbounds
             .iter()
             .any(|outbound| outbound["tag"].as_str() == Some("metered")));
+        let main_selector = outbounds
+            .iter()
+            .find(|outbound| outbound["tag"].as_str() == Some("PROXY"))
+            .unwrap();
+        assert_eq!(
+            main_selector["outbounds"],
+            serde_json::json!(["eligible-a", "disabled", "eligible-b", "metered"])
+        );
         let automatic = outbounds
             .iter()
             .find(|outbound| outbound["type"].as_str() == Some("urltest"))
@@ -4696,6 +4699,8 @@ mod tests {
 
         assert_eq!(result, ("node-a".to_string(), Some(42)));
         let request = request_rx.await.unwrap();
+        assert!(request.starts_with("GET /proxies/node-a/delay?"));
+        assert!(request.contains("url=https%3A%2F%2Fexample.com%2Fprobe"));
         assert!(request.contains("timeout=1234"));
     }
 
@@ -4789,6 +4794,7 @@ mod tests {
         let selector = SelectorHealth {
             selector_tag: "P:profile-a".to_string(),
             current_node: Some("node-a".to_string()),
+            current_auto_selection_eligible: true,
             backup_nodes: vec!["node-b".to_string(), "node-c".to_string()],
             last_switch_at: None,
             switch_cooldown_until: None,
@@ -4832,6 +4838,7 @@ mod tests {
         let selector = SelectorHealth {
             selector_tag: "P:profile-a".to_string(),
             current_node: Some("node-a".to_string()),
+            current_auto_selection_eligible: true,
             backup_nodes: vec!["node-b".to_string()],
             last_switch_at: Some(1_000),
             switch_cooldown_until: Some(60_000),
@@ -4864,6 +4871,7 @@ mod tests {
         let selector = SelectorHealth {
             selector_tag: "P:profile-a".to_string(),
             current_node: Some("node-a".to_string()),
+            current_auto_selection_eligible: true,
             backup_nodes: vec!["node-b".to_string()],
             last_switch_at: None,
             switch_cooldown_until: None,
@@ -4885,6 +4893,68 @@ mod tests {
             HealthAction::NotifyNoBackup {
                 selector: "P:profile-a".to_string(),
             }
+        );
+    }
+
+    #[test]
+    fn selector_with_ineligible_current_switches_to_healthy_eligible_backup() {
+        let target = HealthTarget {
+            kind: HealthTargetKind::Selector,
+            selector_tag: Some("P:profile-a".to_string()),
+            node_tag: None,
+            rule_label: None,
+            auto_failover: true,
+        };
+        let selector = SelectorHealth {
+            selector_tag: "P:profile-a".to_string(),
+            current_node: Some("metered-node".to_string()),
+            current_auto_selection_eligible: false,
+            backup_nodes: vec!["eligible-node".to_string()],
+            last_switch_at: None,
+            switch_cooldown_until: None,
+        };
+        let mut backup = NodeHealth::new("eligible-node".to_string());
+        backup.status = HealthStatus::Healthy;
+        backup.last_latency_ms = Some(70);
+        let node_health = HashMap::from([("eligible-node".to_string(), backup)]);
+
+        let action = decide_health_action(&target, Some(&selector), &node_health, 10_000);
+
+        assert_eq!(
+            action,
+            HealthAction::SwitchSelector {
+                selector: "P:profile-a".to_string(),
+                from: "metered-node".to_string(),
+                to: "eligible-node".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn main_selector_keeps_explicit_ineligible_node() {
+        let target = HealthTarget {
+            kind: HealthTargetKind::Selector,
+            selector_tag: Some("PROXY".to_string()),
+            node_tag: None,
+            rule_label: None,
+            auto_failover: true,
+        };
+        let selector = SelectorHealth {
+            selector_tag: "PROXY".to_string(),
+            current_node: Some("metered-node".to_string()),
+            current_auto_selection_eligible: false,
+            backup_nodes: vec!["eligible-node".to_string()],
+            last_switch_at: None,
+            switch_cooldown_until: None,
+        };
+        let mut backup = NodeHealth::new("eligible-node".to_string());
+        backup.status = HealthStatus::Healthy;
+        backup.last_latency_ms = Some(70);
+        let node_health = HashMap::from([("eligible-node".to_string(), backup)]);
+
+        assert_eq!(
+            decide_health_action(&target, Some(&selector), &node_health, 10_000),
+            HealthAction::None
         );
     }
 
@@ -5067,6 +5137,204 @@ mod tests {
             selector.get("default").and_then(|value| value.as_str()),
             Some("node-b")
         );
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn profile_selector_defaults_to_auto_eligible_node_and_interrupts_old_connections() {
+        let data_dir = unique_test_dir("profile-selector-auto-policy");
+        let state = AppState::new(data_dir.clone());
+
+        let profiles_data = ProfilesData {
+            profiles: vec![
+                make_profile("profile-a", "Alpha"),
+                make_profile("profile-b", "Beta"),
+                make_profile("profile-c", "Gamma"),
+            ],
+            active_profile_id: Some("profile-a".to_string()),
+            active_node_tag: Some("main-node".to_string()),
+            node_selections: HashMap::from([
+                ("profile-b".to_string(), "metered-node".to_string()),
+                ("profile-c".to_string(), "only-metered-node".to_string()),
+            ]),
+        };
+        let mut metered = make_node("metered-node");
+        metered[NODE_METERED_PROTECTED_META_KEY] = serde_json::json!(true);
+        let mut auto_disabled = make_node("auto-disabled-node");
+        auto_disabled[NODE_AUTO_SELECTION_ELIGIBLE_META_KEY] = serde_json::json!(false);
+
+        write_json_file(&state.profiles_file(), &profiles_data);
+        write_json_file(
+            &state.configs_dir().join("profile-a.json"),
+            &vec![make_node("main-node")],
+        );
+        write_json_file(
+            &state.configs_dir().join("profile-b.json"),
+            &vec![metered, auto_disabled, make_node("eligible-node")],
+        );
+        let mut only_metered = make_node("only-metered-node");
+        only_metered[NODE_METERED_PROTECTED_META_KEY] = serde_json::json!(true);
+        write_json_file(
+            &state.configs_dir().join("profile-c.json"),
+            &vec![only_metered],
+        );
+        *state.rulesets.lock().await = vec![
+            make_ruleset("rs-b", "profile", Some("profile-b")),
+            make_ruleset("rs-c", "profile", Some("profile-c")),
+        ];
+
+        let result = generate_config(&state).await.unwrap();
+        assert!(result.success);
+
+        let config = read_generated_config(&state);
+        let outbounds = config["outbounds"].as_array().unwrap();
+        let selector = outbounds
+            .iter()
+            .find(|outbound| outbound["tag"].as_str() == Some("P:profile-b"))
+            .expect("expected profile selector");
+
+        assert_eq!(
+            selector["outbounds"],
+            serde_json::json!(["profile-b::eligible-node"])
+        );
+        assert_eq!(
+            selector["default"].as_str(),
+            Some("profile-b::eligible-node")
+        );
+        assert_eq!(
+            selector["interrupt_exist_connections"].as_bool(),
+            Some(true)
+        );
+        assert!(outbounds
+            .iter()
+            .any(|outbound| { outbound["tag"].as_str() == Some("profile-b::metered-node") }));
+        assert!(outbounds
+            .iter()
+            .any(|outbound| { outbound["tag"].as_str() == Some("profile-b::auto-disabled-node") }));
+        assert!(outbounds
+            .iter()
+            .all(|outbound| { outbound["tag"].as_str() != Some("P:profile-c") }));
+        assert!(outbounds
+            .iter()
+            .any(|outbound| { outbound["tag"].as_str() == Some("profile-c::only-metered-node") }));
+
+        let main_selector = outbounds
+            .iter()
+            .find(|outbound| outbound["tag"].as_str() == Some("PROXY"))
+            .expect("expected main selector");
+        assert_eq!(
+            main_selector["interrupt_exist_connections"].as_bool(),
+            Some(true)
+        );
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn profile_selector_switch_persists_scoped_selection_without_changing_main_node() {
+        let data_dir = unique_test_dir("profile-selector-persistence");
+        let state = AppState::new(data_dir.clone());
+        let profiles_data = ProfilesData {
+            profiles: vec![
+                make_profile("profile-a", "Alpha"),
+                make_profile("profile-b", "Beta"),
+            ],
+            active_profile_id: Some("profile-a".to_string()),
+            active_node_tag: Some("main-node".to_string()),
+            node_selections: HashMap::new(),
+        };
+        write_json_file(&state.profiles_file(), &profiles_data);
+        write_json_file(
+            &state.configs_dir().join("profile-a.json"),
+            &vec![make_node("main-node"), make_node("profile-route-node")],
+        );
+        write_json_file(
+            &state.configs_dir().join("profile-b.json"),
+            &vec![make_node("selected-node")],
+        );
+
+        persist_selector_selection(&state, "P:profile-b", "profile-b::selected-node")
+            .await
+            .unwrap();
+        persist_selector_selection(&state, "P:profile-a", "profile-route-node")
+            .await
+            .unwrap();
+
+        let persisted: ProfilesData =
+            serde_json::from_str(&fs::read_to_string(state.profiles_file()).unwrap()).unwrap();
+        assert_eq!(persisted.active_node_tag.as_deref(), Some("main-node"));
+        assert_eq!(
+            persisted
+                .node_selections
+                .get("profile-b")
+                .map(String::as_str),
+            Some("selected-node")
+        );
+        assert_eq!(
+            persisted
+                .node_selections
+                .get("profile-a")
+                .map(String::as_str),
+            Some("profile-route-node")
+        );
+        assert_eq!(
+            state
+                .profiles_data
+                .lock()
+                .await
+                .node_selections
+                .get("profile-b")
+                .map(String::as_str),
+            Some("selected-node")
+        );
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn explicit_scoped_metered_node_remains_available_for_single_node_routing() {
+        let data_dir = unique_test_dir("explicit-metered-node-routing");
+        let state = AppState::new(data_dir.clone());
+        let profiles_data = ProfilesData {
+            profiles: vec![
+                make_profile("profile-a", "Alpha"),
+                make_profile("profile-b", "Beta"),
+            ],
+            active_profile_id: Some("profile-a".to_string()),
+            active_node_tag: Some("main-node".to_string()),
+            node_selections: HashMap::new(),
+        };
+        let mut metered = make_node("metered-node");
+        metered[NODE_METERED_PROTECTED_META_KEY] = serde_json::json!(true);
+        write_json_file(&state.profiles_file(), &profiles_data);
+        write_json_file(
+            &state.configs_dir().join("profile-a.json"),
+            &vec![make_node("main-node")],
+        );
+        write_json_file(&state.configs_dir().join("profile-b.json"), &vec![metered]);
+        *state.custom_rules.lock().await = CustomRules {
+            domain_rules: vec![make_domain_rule(
+                "metered.example.com",
+                "profile-b::metered-node",
+            )],
+            ..CustomRules::default()
+        };
+
+        let result = generate_config(&state).await.unwrap();
+        assert!(result.success);
+
+        let config = read_generated_config(&state);
+        assert!(config["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|outbound| { outbound["tag"].as_str() == Some("profile-b::metered-node") }));
+        assert!(config["route"]["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|rule| { rule["outbound"].as_str() == Some("profile-b::metered-node") }));
 
         let _ = fs::remove_dir_all(data_dir);
     }
@@ -6338,13 +6606,10 @@ async fn run_health_monitor_once(
                 else {
                     continue;
                 };
-                if selector
+                selector.current_auto_selection_eligible = selector
                     .current_node
                     .as_ref()
-                    .is_some_and(|tag| !health_eligible_nodes.contains(tag))
-                {
-                    continue;
-                }
+                    .is_some_and(|tag| health_eligible_nodes.contains(tag));
                 selector
                     .backup_nodes
                     .retain(|tag| health_eligible_nodes.contains(tag));
@@ -6353,21 +6618,30 @@ async fn run_health_monitor_once(
                     selector.switch_cooldown_until = previous.switch_cooldown_until;
                 }
 
-                if let Some(current_node) = selector.current_node.clone() {
+                if selector.current_auto_selection_eligible {
+                    let Some(current_node) = selector.current_node.clone() else {
+                        continue;
+                    };
                     let probe_url = health_probe_url_for_target(&target, settings);
                     let health = node_health
                         .entry(current_node.clone())
                         .or_insert_with(|| NodeHealth::new(current_node.clone()));
                     if should_probe(health, now_ms) {
-                        match probe_real_proxy_path(
-                            settings.local_port,
-                            &probe_url,
+                        let (_, latency) = probe_selector_node_latency(
+                            client.clone(),
+                            clash_api_port,
+                            current_node,
+                            probe_url,
                             settings.latency_test_timeout as u64,
                         )
-                        .await
-                        {
-                            Ok(latency) => record_probe_success(health, latency, now_ms),
-                            Err(err) => record_probe_failure(health, err, now_ms),
+                        .await;
+                        match latency {
+                            Some(value) => record_probe_success(health, value, now_ms),
+                            None => record_probe_failure(
+                                health,
+                                "Clash API delay 探针失败".to_string(),
+                                now_ms,
+                            ),
                         }
                     }
                 }
@@ -6713,6 +6987,7 @@ async fn fetch_selector_health(
     Some(SelectorHealth {
         selector_tag: selector_tag.to_string(),
         current_node,
+        current_auto_selection_eligible: true,
         backup_nodes,
         last_switch_at: None,
         switch_cooldown_until: None,
@@ -6766,13 +7041,81 @@ async fn gate_health_action_for_state(
     )
 }
 
-async fn persist_main_active_node(state: &AppState, node_tag: &str) -> Result<(), String> {
-    let mut profiles_data = load_profiles_data_from_file(state).await;
-    profiles_data.active_node_tag = Some(node_tag.to_string());
+async fn persist_selector_selection(
+    state: &AppState,
+    selector_tag: &str,
+    runtime_node_tag: &str,
+) -> Result<(), String> {
+    let mut cached_profiles = state.profiles_data.lock().await;
+    let profiles_file = state.profiles_file();
     let profiles_content =
-        serde_json::to_string_pretty(&profiles_data).map_err(|e| e.to_string())?;
-    fs::write(state.profiles_file(), profiles_content).map_err(|e| e.to_string())?;
-    *state.profiles_data.lock().await = profiles_data;
+        fs::read_to_string(&profiles_file).map_err(|err| format!("读取配置选择失败: {}", err))?;
+    let mut profiles_data: crate::types::ProfilesData = serde_json::from_str(&profiles_content)
+        .map_err(|err| format!("解析配置选择失败: {}", err))?;
+
+    if is_main_selector_tag(selector_tag) {
+        let active_profile_id = profiles_data
+            .active_profile_id
+            .as_deref()
+            .ok_or_else(|| "当前没有活动配置".to_string())?;
+        let nodes_file = profile_nodes_path(state, active_profile_id)?;
+        let nodes_content = fs::read_to_string(nodes_file)
+            .map_err(|err| format!("读取活动配置节点失败: {}", err))?;
+        let nodes: Vec<serde_json::Value> = serde_json::from_str(&nodes_content)
+            .map_err(|err| format!("解析活动配置节点失败: {}", err))?;
+        if !nodes.iter().any(|node| {
+            node.get("tag").and_then(serde_json::Value::as_str) == Some(runtime_node_tag)
+        }) {
+            return Err(format!("活动配置中不存在节点 '{}'", runtime_node_tag));
+        }
+        profiles_data.active_node_tag = Some(runtime_node_tag.to_string());
+    } else {
+        let profile_id = selector_tag
+            .strip_prefix("P:")
+            .filter(|profile_id| is_valid_profile_id(profile_id))
+            .ok_or_else(|| format!("无效的配置 selector '{}'", selector_tag))?;
+        if !profiles_data
+            .profiles
+            .iter()
+            .any(|profile| profile.id == profile_id)
+        {
+            return Err(format!("selector 对应的配置 '{}' 不存在", profile_id));
+        }
+
+        let nodes_file = profile_nodes_path(state, profile_id)?;
+        let nodes_content = fs::read_to_string(nodes_file)
+            .map_err(|err| format!("读取 selector 配置节点失败: {}", err))?;
+        let nodes: Vec<serde_json::Value> = serde_json::from_str(&nodes_content)
+            .map_err(|err| format!("解析 selector 配置节点失败: {}", err))?;
+        let node_exists = |tag: &str| {
+            nodes
+                .iter()
+                .any(|node| node.get("tag").and_then(serde_json::Value::as_str) == Some(tag))
+        };
+        let scoped_prefix = format!("{}::", profile_id);
+        let scoped_raw_tag = runtime_node_tag.strip_prefix(&scoped_prefix);
+        let profile_is_active = profiles_data.active_profile_id.as_deref() == Some(profile_id);
+        let raw_node_tag = if profile_is_active && node_exists(runtime_node_tag) {
+            runtime_node_tag
+        } else if let Some(raw_tag) = scoped_raw_tag.filter(|tag| node_exists(tag)) {
+            raw_tag
+        } else if node_exists(runtime_node_tag) {
+            runtime_node_tag
+        } else {
+            return Err(format!(
+                "配置 '{}' 中不存在 selector 节点 '{}'",
+                profile_id, runtime_node_tag
+            ));
+        };
+        profiles_data
+            .node_selections
+            .insert(profile_id.to_string(), raw_node_tag.to_string());
+    }
+
+    let updated_content =
+        serde_json::to_string_pretty(&profiles_data).map_err(|err| err.to_string())?;
+    fs::write(profiles_file, updated_content).map_err(|err| err.to_string())?;
+    *cached_profiles = profiles_data;
     Ok(())
 }
 
@@ -6796,14 +7139,13 @@ async fn execute_health_action(
                 return false;
             }
 
-            if is_main_selector_tag(selector) {
-                if let Err(err) = persist_main_active_node(state, to).await {
-                    log::warn!(
-                        "Failed to persist health failover main node '{}': {}",
-                        to,
-                        err
-                    );
-                }
+            if let Err(err) = persist_selector_selection(state, selector, to).await {
+                log::warn!(
+                    "Failed to persist health failover selector '{}' node '{}': {}",
+                    selector,
+                    to,
+                    err
+                );
             }
         }
         HealthAction::NotifyFixedNodeFailed { .. }
@@ -6977,7 +7319,7 @@ async fn test_selector_latency_internal(
     }
 
     let selector_info: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-    let node_tags: Vec<String> = selector_info
+    let mut node_tags: Vec<String> = selector_info
         .get("all")
         .and_then(|a| a.as_array())
         .map(|arr| {
@@ -6986,9 +7328,14 @@ async fn test_selector_latency_internal(
                 .collect()
         })
         .unwrap_or_default();
+    let auto_eligible_nodes = collect_health_eligible_node_tags(&state).await;
+    node_tags.retain(|tag| auto_eligible_nodes.contains(tag));
 
     if node_tags.is_empty() {
-        return Ok(serde_json::json!({ "success": true, "message": "No nodes to test" }));
+        return Ok(serde_json::json!({
+            "success": true,
+            "message": "No auto-selection eligible nodes to test"
+        }));
     }
 
     log::info!(
@@ -7037,6 +7384,14 @@ async fn test_selector_latency_internal(
                     .await
                 {
                     Ok(()) => {
+                        if let Err(err) =
+                            persist_selector_selection(&state, &selector_tag, best_tag).await
+                        {
+                            log::warn!(
+                                "First phase selector selection persistence failed: {}",
+                                err
+                            );
+                        }
                         let _ = app.emit(
                             "singbox:selector-switch",
                             serde_json::json!({
@@ -7065,6 +7420,10 @@ async fn test_selector_latency_internal(
         );
         match switch_selector_to_node(&client, clash_api_port, &selector_tag, best_tag).await {
             Ok(()) => {
+                if let Err(err) = persist_selector_selection(&state, &selector_tag, best_tag).await
+                {
+                    log::warn!("Final selector selection persistence failed: {}", err);
+                }
                 let _ = app.emit(
                     "singbox:selector-switch",
                     serde_json::json!({
