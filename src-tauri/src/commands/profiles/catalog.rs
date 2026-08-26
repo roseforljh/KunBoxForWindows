@@ -56,7 +56,10 @@ pub(super) fn load_profile_nodes(state: &AppState, profile_id: &str) -> Vec<Sing
     };
     if file.exists() {
         if let Ok(content) = fs::read_to_string(&file) {
-            if let Ok(nodes) = serde_json::from_str(&content) {
+            if let Ok(mut nodes) = serde_json::from_str::<Vec<SingBoxOutbound>>(&content) {
+                for node in &mut nodes {
+                    node.strip_runtime_metadata();
+                }
                 return nodes;
             }
         }
@@ -86,9 +89,64 @@ fn save_profile_nodes(
 ) -> Result<(), String> {
     fs::create_dir_all(state.configs_dir()).map_err(|e| e.to_string())?;
     let file = profile_nodes_path(state, profile_id)?;
-    let content = serde_json::to_string_pretty(nodes).map_err(|e| e.to_string())?;
+    let mut nodes = nodes.to_vec();
+    for node in &mut nodes {
+        node.strip_runtime_metadata();
+    }
+    let content = serde_json::to_string_pretty(&nodes).map_err(|e| e.to_string())?;
     fs::write(file, content).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+pub(crate) fn migrate_persisted_node_runtime_metadata(state: &AppState) -> usize {
+    let mut migrated = 0;
+    for profile in load_profiles_data(state).profiles {
+        let file = match profile_nodes_path(state, &profile.id) {
+            Ok(file) => file,
+            Err(err) => {
+                log::warn!("Skipping invalid profile id during node metadata migration: {err}");
+                continue;
+            }
+        };
+        if !file.exists() {
+            continue;
+        }
+
+        let content = match fs::read_to_string(&file) {
+            Ok(content) => content,
+            Err(err) => {
+                log::warn!(
+                    "Failed to read node config {:?} during migration: {err}",
+                    file
+                );
+                continue;
+            }
+        };
+        let mut nodes = match serde_json::from_str::<Vec<SingBoxOutbound>>(&content) {
+            Ok(nodes) => nodes,
+            Err(err) => {
+                log::warn!(
+                    "Failed to parse node config {:?} during migration: {err}",
+                    file
+                );
+                continue;
+            }
+        };
+
+        let mut changed = false;
+        for node in &mut nodes {
+            changed |= node.strip_runtime_metadata();
+        }
+        if !changed {
+            continue;
+        }
+
+        match save_profile_nodes(state, &profile.id, &nodes) {
+            Ok(()) => migrated += 1,
+            Err(err) => log::warn!("Failed to migrate node config {:?}: {err}", file),
+        }
+    }
+    migrated
 }
 
 fn preserve_node_editor_fields(
@@ -581,6 +639,7 @@ pub async fn node_update(
         return Err("节点名称过长".to_string());
     }
     node.tag = Some(updated_tag.clone());
+    node.strip_runtime_metadata();
 
     let node_type = node.outbound_type.as_deref().unwrap_or("");
     if !super::super::singbox::is_proxy_type(node_type) {
@@ -960,6 +1019,114 @@ mod tests {
             server_port: Some(1080),
             extra: std::collections::HashMap::new(),
         }
+    }
+
+    fn add_runtime_metadata(node: &mut SingBoxOutbound) {
+        for key in crate::types::NODE_RUNTIME_META_KEYS {
+            node.extra
+                .insert(key.to_string(), serde_json::Value::Bool(true));
+        }
+    }
+
+    #[test]
+    fn runtime_metadata_is_stripped_on_load_and_save() {
+        let data_dir = unique_test_dir("runtime-metadata-boundaries");
+        let state = AppState::new(data_dir.clone());
+        let mut node = test_node("dirty");
+        add_runtime_metadata(&mut node);
+        node.extra.insert(
+            "custom_protocol_field".to_string(),
+            serde_json::json!({ "enabled": true }),
+        );
+        node.extra.insert(
+            NODE_AUTO_SELECTION_ELIGIBLE_META_KEY.to_string(),
+            serde_json::Value::Bool(true),
+        );
+
+        save_profile_nodes(&state, "profile-a", &[node.clone()]).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(profile_nodes_path(&state, "profile-a").unwrap()).unwrap(),
+        )
+        .unwrap();
+        for key in crate::types::NODE_RUNTIME_META_KEYS {
+            assert!(saved[0].get(key).is_none(), "saved runtime field: {key}");
+        }
+
+        fs::write(
+            profile_nodes_path(&state, "profile-a").unwrap(),
+            serde_json::to_string_pretty(&vec![node]).unwrap(),
+        )
+        .unwrap();
+        let loaded = load_profile_nodes(&state, "profile-a");
+        assert_eq!(loaded.len(), 1);
+        for key in crate::types::NODE_RUNTIME_META_KEYS {
+            assert!(
+                loaded[0].extra.get(key).is_none(),
+                "loaded runtime field: {key}"
+            );
+        }
+        assert_eq!(
+            loaded[0]
+                .extra
+                .get("custom_protocol_field")
+                .and_then(|value| value.get("enabled"))
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            loaded[0]
+                .extra
+                .get(NODE_AUTO_SELECTION_ELIGIBLE_META_KEY)
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn runtime_metadata_migration_continues_after_invalid_config() {
+        let data_dir = unique_test_dir("runtime-metadata-migration");
+        let state = AppState::new(data_dir.clone());
+        let profiles = ProfilesData {
+            profiles: vec![test_profile("broken"), test_profile("dirty")],
+            active_profile_id: Some("dirty".to_string()),
+            active_node_tag: Some("dirty-node".to_string()),
+            node_selections: std::collections::HashMap::new(),
+        };
+        save_profiles_data(&state, &profiles).unwrap();
+        fs::create_dir_all(state.configs_dir()).unwrap();
+        let broken_path = profile_nodes_path(&state, "broken").unwrap();
+        fs::write(&broken_path, "{invalid json").unwrap();
+
+        let mut node = test_node("dirty-node");
+        add_runtime_metadata(&mut node);
+        node.extra.insert(
+            "custom_protocol_field".to_string(),
+            serde_json::Value::String("kept".to_string()),
+        );
+        let dirty_path = profile_nodes_path(&state, "dirty").unwrap();
+        fs::write(
+            &dirty_path,
+            serde_json::to_string_pretty(&vec![node]).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(migrate_persisted_node_runtime_metadata(&state), 1);
+        assert_eq!(migrate_persisted_node_runtime_metadata(&state), 0);
+        assert_eq!(fs::read_to_string(&broken_path).unwrap(), "{invalid json");
+
+        let migrated: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&dirty_path).unwrap()).unwrap();
+        for key in crate::types::NODE_RUNTIME_META_KEYS {
+            assert!(
+                migrated[0].get(key).is_none(),
+                "migrated runtime field: {key}"
+            );
+        }
+        assert_eq!(migrated[0]["custom_protocol_field"], "kept");
+
+        let _ = fs::remove_dir_all(data_dir);
     }
 
     #[test]

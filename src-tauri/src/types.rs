@@ -220,6 +220,25 @@ pub struct SingBoxOutbound {
 
 pub const NODE_AUTO_SELECTION_ELIGIBLE_META_KEY: &str = "x_kunbox_auto_selection_eligible";
 pub const NODE_METERED_PROTECTED_META_KEY: &str = "x_kunbox_metered_protected";
+pub const NODE_RUNTIME_META_KEYS: [&str; 7] = [
+    "latencyMs",
+    "latencyStatus",
+    "healthStatus",
+    "isTimeout",
+    "isTesting",
+    "sourceProfileId",
+    "sourceProfileName",
+];
+
+impl SingBoxOutbound {
+    pub fn strip_runtime_metadata(&mut self) -> bool {
+        let mut changed = false;
+        for key in NODE_RUNTIME_META_KEYS {
+            changed |= self.extra.remove(key).is_some();
+        }
+        changed
+    }
+}
 
 pub fn node_is_metered_protected(node: &serde_json::Value) -> bool {
     node.get(NODE_METERED_PROTECTED_META_KEY)
@@ -296,6 +315,7 @@ pub enum NodeLatencyStatus {
     ControllerUnavailable,
     ProxyFailed,
     LocalTestFailed,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -337,6 +357,13 @@ impl NodeLatencyResult {
     pub fn local_test_failed() -> Self {
         Self {
             status: NodeLatencyStatus::LocalTestFailed,
+            latency_ms: None,
+        }
+    }
+
+    pub fn cancelled() -> Self {
+        Self {
+            status: NodeLatencyStatus::Cancelled,
             latency_ms: None,
         }
     }

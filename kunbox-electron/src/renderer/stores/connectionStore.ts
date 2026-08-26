@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { ProxyState, TrafficStats } from '@shared/types'
+import { useNodesStore } from './nodesStore'
 
 interface ConnectionState {
   state: ProxyState
@@ -38,6 +39,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       return { success: false, error: '已经在连接中' }
     }
 
+    useNodesStore.getState().cancelTestAllLatency()
     set({ state: 'connecting', lastError: null })
     try {
       const result = await window.api.singbox.start()
@@ -60,6 +62,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       return { success: false, error: '未在运行中' }
     }
 
+    useNodesStore.getState().cancelTestAllLatency()
     set({ state: 'disconnecting' })
     try {
       const result = await window.api.singbox.stop()

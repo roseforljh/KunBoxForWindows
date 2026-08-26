@@ -5,6 +5,22 @@ export const NODE_POLICY_KEYS = {
   meteredProtected: 'x_kunbox_metered_protected',
 } as const
 
+export const NODE_RUNTIME_KEYS = [
+  'latencyMs',
+  'latencyStatus',
+  'healthStatus',
+  'isTimeout',
+  'isTesting',
+  'sourceProfileId',
+  'sourceProfileName',
+] as const
+
+export function toEditableNode(node: SingBoxOutbound): SingBoxOutbound {
+  const editable = structuredClone(node)
+  for (const key of NODE_RUNTIME_KEYS) delete editable[key]
+  return editable
+}
+
 export function makeNodeReference(node: Pick<NodeWithProfile, 'sourceProfileId' | 'tag'>): string {
   return `${node.sourceProfileId}::${node.tag ?? ''}`
 }

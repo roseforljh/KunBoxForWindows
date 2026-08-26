@@ -2,7 +2,7 @@ use crate::state::AppState;
 use crate::types::{
     node_is_auto_selection_eligible, AppSettings, CommandResult, HealthEvent, HealthEventKind,
     HealthStatus, ProxyState, TrafficStats, NODE_AUTO_SELECTION_ELIGIBLE_META_KEY,
-    NODE_METERED_PROTECTED_META_KEY,
+    NODE_METERED_PROTECTED_META_KEY, NODE_RUNTIME_META_KEYS,
 };
 use futures_util::stream::StreamExt;
 use std::fs;
@@ -356,6 +356,7 @@ pub(crate) async fn singbox_start_impl(
     app: AppHandle,
     state: &AppState,
 ) -> Result<CommandResult, String> {
+    let _latency_lifecycle = crate::commands::profiles::begin_latency_lifecycle(state).await;
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
     append_startup_diagnostic(state, "singbox_start invoked");
     cancel_health_monitor(state.health_cancel.clone()).await;
@@ -856,6 +857,7 @@ pub(crate) async fn singbox_stop_impl(
     app: AppHandle,
     state: &AppState,
 ) -> Result<CommandResult, String> {
+    let _latency_lifecycle = crate::commands::profiles::begin_latency_lifecycle(state).await;
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
     append_startup_diagnostic(state, "singbox_stop invoked");
     *state.shutdown_in_progress.lock().await = true;
@@ -1211,14 +1213,10 @@ fn process_node(node: &serde_json::Value) -> serde_json::Value {
             crate::commands::profiles::ECH_DNS_SERVER_META_KEY,
             NODE_AUTO_SELECTION_ELIGIBLE_META_KEY,
             NODE_METERED_PROTECTED_META_KEY,
-            "latencyMs",
-            "latencyStatus",
-            "healthStatus",
-            "isTimeout",
-            "isTesting",
-            "sourceProfileId",
-            "sourceProfileName",
         ] {
+            obj.remove(key);
+        }
+        for key in NODE_RUNTIME_META_KEYS {
             obj.remove(key);
         }
 
@@ -4409,15 +4407,7 @@ mod tests {
                 .iter()
                 .find(|outbound| outbound["tag"].as_str() == Some(tag))
                 .unwrap();
-            for key in [
-                "latencyMs",
-                "latencyStatus",
-                "healthStatus",
-                "isTimeout",
-                "isTesting",
-                "sourceProfileId",
-                "sourceProfileName",
-            ] {
+            for key in NODE_RUNTIME_META_KEYS {
                 assert!(outbound.get(key).is_none(), "unexpected field: {key}");
             }
         }

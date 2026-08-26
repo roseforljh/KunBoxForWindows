@@ -36,6 +36,10 @@ interface LatencyCache {
 
 const MIN_VALID_CACHED_LATENCY_MS = 10
 
+export function shouldCommitLatencyResult(requestGeneration: number, currentGeneration: number) {
+  return requestGeneration === currentGeneration
+}
+
 function normalizeLatencyResult(result: NodeLatencyResult) {
   const latencyStatus = result.status
   return {
@@ -68,6 +72,7 @@ function isUsableCachedLatency(
 // Abort controller for batch testing
 let abortController: AbortController | null = null
 let testAllRunId = 0
+let latencyCancelGeneration = 0
 
 interface NodesState {
   nodes: NodeItem[]
@@ -238,6 +243,7 @@ export const useNodesStore = create<NodesState>()(
               try {
                 const result = await window.api.node.testLatency(tag, runId)
                 if (signal.aborted || runId !== testAllRunId) return
+                if (result.status === 'cancelled') return
                 normalized = normalizeLatencyResult(result)
               } catch {
                 if (signal.aborted || runId !== testAllRunId) return
@@ -301,13 +307,13 @@ export const useNodesStore = create<NodesState>()(
       },
 
       cancelTestAllLatency: () => {
-        const cancelledRunId = testAllRunId
+        latencyCancelGeneration += 1
         testAllRunId += 1
         if (abortController) {
           abortController.abort()
           abortController = null
         }
-        void window.api.node.cancelLatencyTests(cancelledRunId).catch(() => {})
+        void window.api.node.cancelLatencyTests().catch(() => {})
         set((state: NodesState) => ({
           isTesting: false,
           testProgress: 0,
@@ -318,6 +324,7 @@ export const useNodesStore = create<NodesState>()(
       testNodeLatency: async (tag) => {
         const activeProfileId = await window.api.profile.getActive()
         if (!activeProfileId) return
+        const requestGeneration = latencyCancelGeneration
 
         set((state) => ({
           nodes: state.nodes.map(n => n.tag === tag ? { ...n, isTesting: true } : n)
@@ -327,6 +334,13 @@ export const useNodesStore = create<NodesState>()(
 
         try {
           const result = await window.api.node.testLatency(tag)
+          if (!shouldCommitLatencyResult(requestGeneration, latencyCancelGeneration)) return
+          if (result.status === 'cancelled') {
+            set((state: NodesState) => ({
+              nodes: state.nodes.map(n => n.tag === tag ? { ...n, isTesting: false } : n)
+            }))
+            return
+          }
           const normalized = normalizeLatencyResult(result)
           
           set((state: NodesState) => ({
@@ -340,6 +354,7 @@ export const useNodesStore = create<NodesState>()(
             }
           }))
         } catch {
+          if (!shouldCommitLatencyResult(requestGeneration, latencyCancelGeneration)) return
           const fallback = localFailureLatencyResult()
           set((state: NodesState) => ({
             nodes: state.nodes.map(n => n.tag === tag 

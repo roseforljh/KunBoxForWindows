@@ -183,6 +183,15 @@ pub fn run() {
             log::info!("Data directory: {:?}", data_dir);
 
             let state = AppState::new(data_dir.clone());
+            let migrated_profiles = commands::migrate_persisted_node_runtime_metadata(&state);
+            if migrated_profiles > 0 {
+                let message = format!(
+                    "cleaned runtime metadata from {} node config(s)",
+                    migrated_profiles
+                );
+                log::info!("{message}");
+                append_startup_diagnostic(&data_dir, &message);
+            }
             let settings = read_settings_sync(&data_dir);
             let rulesets = commands::rulesets::load_rulesets(&state);
             let custom_rules = commands::rules::load_custom_rules(&state);

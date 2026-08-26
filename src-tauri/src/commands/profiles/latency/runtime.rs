@@ -236,7 +236,10 @@ pub(super) async fn start_temp_singbox(
     cancel_token: &CancellationToken,
     allow_main_process_alive: bool,
 ) -> bool {
-    let _lifecycle_guard = state.lifecycle_lock.lock().await;
+    let _lifecycle_guard = tokio::select! {
+        guard = state.lifecycle_lock.lock() => guard,
+        _ = cancel_token.cancelled() => return false,
+    };
 
     if cancel_token.is_cancelled() {
         return false;

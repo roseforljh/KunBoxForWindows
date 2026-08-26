@@ -1,7 +1,7 @@
 use crate::types::{AppSettings, CustomRules, ProfilesData, ProxyState, RuleSet, TrafficStats};
 use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::{atomic::AtomicBool, Arc};
+use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
@@ -21,6 +21,8 @@ pub struct AppState {
     pub health_cancel: Arc<Mutex<Option<CancellationToken>>>,
     pub shutdown_in_progress: Arc<Mutex<bool>>,
     pub lifecycle_lock: Arc<Mutex<()>>,
+    pub latency_gate: Arc<RwLock<()>>,
+    pub latency_blocked: Arc<AtomicBool>,
     pub clash_api_port: Arc<Mutex<u16>>,
 }
 
@@ -43,6 +45,8 @@ impl AppState {
             health_cancel: Arc::new(Mutex::new(None)),
             shutdown_in_progress: Arc::new(Mutex::new(false)),
             lifecycle_lock: Arc::new(Mutex::new(())),
+            latency_gate: Arc::new(RwLock::new(())),
+            latency_blocked: Arc::new(AtomicBool::new(false)),
             clash_api_port: Arc::new(Mutex::new(9090)),
         }
     }

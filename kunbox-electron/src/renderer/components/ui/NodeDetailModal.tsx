@@ -13,6 +13,7 @@ import {
   applyNodePolicies,
   makeNodeReference,
   nodePolicyState,
+  toEditableNode,
   validateNodeForSave,
 } from './node-editor'
 import { AppSelect } from './Select'
@@ -488,7 +489,7 @@ export function NodeDetailModal({ isOpen, onClose, node, profileId, onSave, onEx
 
   useEffect(() => {
     if (!isOpen || !node) return
-    const cloned = structuredClone(node)
+    const cloned = toEditableNode(node)
     const policy = nodePolicyState(cloned)
     setDraft(cloned)
     setAutoSelectionEligible(policy.autoSelectionEligible)

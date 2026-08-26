@@ -19,6 +19,27 @@ fn make_test_state() -> AppState {
 }
 
 #[tokio::test]
+async fn vpn_lifecycle_gate_blocks_new_latency_requests() {
+    let state = make_test_state();
+    let lifecycle = begin_latency_lifecycle(&state).await;
+    assert!(latency_read_guard(&state).await.is_none());
+    drop(lifecycle);
+    assert!(latency_read_guard(&state).await.is_some());
+}
+
+#[tokio::test]
+async fn vpn_lifecycle_cancels_active_batch_before_releasing_gate() {
+    let state = make_test_state();
+    begin_latency_test_batch(700).await;
+    let token = current_latency_test_cancel_token().await;
+    let lifecycle = begin_latency_lifecycle(&state).await;
+    assert!(token.is_cancelled());
+    assert_eq!(*ACTIVE_LATENCY_BATCH_ID.lock().await, None);
+    drop(lifecycle);
+    assert!(!state.latency_blocked.load(Ordering::Acquire));
+}
+
+#[tokio::test]
 async fn temp_start_forbidden_when_shutdown_in_progress() {
     let state = make_test_state();
     *state.shutdown_in_progress.lock().await = true;

@@ -5,9 +5,9 @@ use crate::types::{
 use std::collections::HashSet;
 use std::fs;
 use std::io::Write;
-use std::sync::Arc;
+use std::sync::{atomic::Ordering, Arc};
 use tauri::{AppHandle, Manager, State};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLockReadGuard, RwLockWriteGuard};
 use tokio_util::sync::CancellationToken;
 
 use super::catalog::{load_profile_nodes, load_profile_nodes_raw, load_profiles_data};
@@ -52,6 +52,46 @@ static ACTIVE_LATENCY_BATCH_ID: once_cell::sync::Lazy<Arc<Mutex<Option<u64>>>> =
     once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(None)));
 static CANCELED_LATENCY_BATCHES: once_cell::sync::Lazy<Arc<Mutex<HashSet<u64>>>> =
     once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(HashSet::new())));
+
+pub(crate) struct LatencyLifecycleGuard<'a> {
+    blocked: Arc<std::sync::atomic::AtomicBool>,
+    _write_guard: RwLockWriteGuard<'a, ()>,
+}
+
+impl Drop for LatencyLifecycleGuard<'_> {
+    fn drop(&mut self) {
+        self.blocked.store(false, Ordering::Release);
+    }
+}
+
+async fn latency_read_guard(state: &AppState) -> Option<RwLockReadGuard<'_, ()>> {
+    if state.latency_blocked.load(Ordering::Acquire) {
+        return None;
+    }
+    let guard = state.latency_gate.read().await;
+    if state.latency_blocked.load(Ordering::Acquire) {
+        return None;
+    }
+    Some(guard)
+}
+
+async fn cancel_active_latency_batch() {
+    if let Some(run_id) = *ACTIVE_LATENCY_BATCH_ID.lock().await {
+        CANCELED_LATENCY_BATCHES.lock().await.insert(run_id);
+    }
+    cancel_and_reset_latency_test_token().await;
+    *ACTIVE_LATENCY_BATCH_ID.lock().await = None;
+}
+
+pub(crate) async fn begin_latency_lifecycle(state: &AppState) -> LatencyLifecycleGuard<'_> {
+    state.latency_blocked.store(true, Ordering::Release);
+    cancel_active_latency_batch().await;
+    let write_guard = state.latency_gate.write().await;
+    LatencyLifecycleGuard {
+        blocked: state.latency_blocked.clone(),
+        _write_guard: write_guard,
+    }
+}
 const TEMP_SINGBOX_PORT: u16 = 19090;
 const TEMP_XRAY_BRIDGE_PORT_BASE: u16 = 19180;
 const TEMP_PROXY_INBOUND_PORT_BASE: u16 = 19280;
@@ -126,6 +166,7 @@ fn map_latency_probe_result(
             NodeLatencyStatus::Timeout => NodeLatencyResult::timeout(),
             NodeLatencyStatus::ProxyFailed => NodeLatencyResult::proxy_failed(),
             NodeLatencyStatus::Success => NodeLatencyResult::local_test_failed(),
+            NodeLatencyStatus::Cancelled => NodeLatencyResult::cancelled(),
         },
     }
 }
@@ -586,6 +627,7 @@ pub async fn node_begin_latency_tests(
     state: State<'_, AppState>,
     run_id: u64,
 ) -> Result<(), String> {
+    let _lifecycle = begin_latency_lifecycle(&state).await;
     cleanup_temp_singbox(&state).await;
     begin_latency_test_batch(run_id).await;
     Ok(())
@@ -598,8 +640,11 @@ pub async fn node_test_latency(
     tag: String,
     run_id: Option<u64>,
 ) -> Result<NodeLatencyResult, String> {
+    let Some(_latency_read_guard) = latency_read_guard(&state).await else {
+        return Ok(NodeLatencyResult::cancelled());
+    };
     if is_latency_test_batch_cancelled(run_id).await {
-        return Ok(NodeLatencyResult::local_test_failed());
+        return Ok(NodeLatencyResult::cancelled());
     }
 
     let cancel_token = if run_id.is_some() {
@@ -667,6 +712,9 @@ pub async fn node_test_all(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<std::collections::HashMap<String, i64>, String> {
+    let Some(_latency_read_guard) = latency_read_guard(&state).await else {
+        return Ok(std::collections::HashMap::new());
+    };
     let cancel_token = current_latency_test_cancel_token().await;
     let (test_url, timeout_ms) = current_latency_test_settings(&state).await;
 
@@ -829,18 +877,16 @@ pub async fn node_cancel_latency_tests(
     state: State<'_, AppState>,
     run_id: Option<u64>,
 ) -> Result<(), String> {
-    let should_cleanup_temp = {
+    if let Some(run_id) = run_id {
         let active_run_id = *ACTIVE_LATENCY_BATCH_ID.lock().await;
-        run_id.is_none() || active_run_id == run_id
-    };
-
-    mark_latency_test_batch_cancelled(run_id).await;
-    let still_safe_to_cleanup = {
-        let active_run_id = *ACTIVE_LATENCY_BATCH_ID.lock().await;
-        run_id.is_none() || active_run_id.is_none() || active_run_id == run_id
-    };
-    if should_cleanup_temp && still_safe_to_cleanup {
-        cleanup_temp_singbox(&state).await;
+        if active_run_id != Some(run_id) {
+            return Ok(());
+        }
     }
+    let _lifecycle = begin_latency_lifecycle(&state).await;
+    if let Some(run_id) = run_id {
+        CANCELED_LATENCY_BATCHES.lock().await.insert(run_id);
+    }
+    cleanup_temp_singbox(&state).await;
     Ok(())
 }
