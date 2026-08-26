@@ -3,13 +3,7 @@ use crate::types::RuleSet;
 use std::fs;
 use tauri::State;
 
-// GitHub 镜像列表
-const GITHUB_MIRRORS: &[&str] = &[
-    "https://raw.githubusercontent.com/", // 原始地址
-    "https://mirror.ghproxy.com/https://raw.githubusercontent.com/", // ghproxy
-    "https://raw.gitmirror.com/",         // gitmirror
-    "https://raw.fastgit.org/",           // fastgit (可能失效)
-];
+const RULESET_CDN_PREFIX: &str = "https://cdn.jsdelivr.net/gh/";
 
 fn get_default_rulesets() -> Vec<RuleSet> {
     vec![
@@ -131,6 +125,50 @@ async fn build_local_proxy_client(state: &AppState, timeout_secs: u64) -> Option
     })
 }
 
+fn build_direct_client(timeout_secs: u64) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .no_proxy()
+        .timeout(std::time::Duration::from_secs(timeout_secs))
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+fn is_official_source_url(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    (lower.contains("sing-geosite/rule-set/") || lower.contains("sing-geoip/rule-set/"))
+        && lower.ends_with(".json")
+}
+
+fn github_download_urls(url: &str) -> Vec<String> {
+    let Some(path) = extract_github_path(url) else {
+        return vec![url.to_string()];
+    };
+    let canonical = format!("https://raw.githubusercontent.com/{}", path);
+    let mut urls = vec![canonical.clone()];
+    let parts: Vec<&str> = path.split('/').collect();
+    if parts.len() >= 4 {
+        let owner = parts[0];
+        let repo = parts[1];
+        let branch = parts[2];
+        let rest = parts[3..].join("/");
+        urls.push(format!(
+            "{}{}/{}@{}/{}",
+            RULESET_CDN_PREFIX, owner, repo, branch, rest
+        ));
+    }
+    urls
+}
+
+fn write_cache_atomically(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    let temp_path = path.with_extension("srs.tmp");
+    fs::write(&temp_path, bytes).map_err(|e| e.to_string())?;
+    if let Err(err) = fs::rename(&temp_path, path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(err.to_string());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn ruleset_download(
     state: State<'_, AppState>,
@@ -151,6 +189,10 @@ pub async fn ruleset_download(
 
     let original_url = ruleset.url.ok_or("No URL for ruleset")?;
 
+    if ruleset.format == "source" && is_official_source_url(&original_url) {
+        return Err("官方规则集仓库当前只提供 Binary 格式，请选择 Binary 下载".to_string());
+    }
+
     // 提取 GitHub 路径（如果是 GitHub URL）
     let github_path = extract_github_path(&original_url);
 
@@ -158,20 +200,12 @@ pub async fn ruleset_download(
     let proxy_client = build_local_proxy_client(&state, 30).await;
 
     // 创建直连客户端
-    let direct_client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let direct_client = build_direct_client(30)?;
 
     // 尝试下载的 URL 列表
-    let urls_to_try: Vec<String> = if let Some(path) = &github_path {
-        // 如果是 GitHub 地址，尝试多个镜像
-        GITHUB_MIRRORS
-            .iter()
-            .map(|mirror| format!("{}{}", mirror, path))
-            .collect()
+    let urls_to_try = if github_path.is_some() {
+        github_download_urls(&original_url)
     } else {
-        // 非 GitHub 地址，直接使用原始 URL
         vec![original_url.clone()]
     };
 
@@ -181,9 +215,9 @@ pub async fn ruleset_download(
     for url in &urls_to_try {
         // 1. 先尝试代理下载
         if let Some(client) = &proxy_client {
-            match download_and_verify(client, url).await {
+            match download_and_verify(client, url, &ruleset.format).await {
                 Ok(bytes) => {
-                    fs::write(&cache_file, bytes).map_err(|e| e.to_string())?;
+                    write_cache_atomically(&cache_file, &bytes)?;
                     log::info!("Ruleset downloaded via proxy: {}", ruleset.tag);
                     return Ok(serde_json::json!({ "success": true, "cached": false, "url": url }));
                 }
@@ -195,9 +229,9 @@ pub async fn ruleset_download(
         }
 
         // 2. 回退到直连
-        match download_and_verify(&direct_client, url).await {
+        match download_and_verify(&direct_client, url, &ruleset.format).await {
             Ok(bytes) => {
-                fs::write(&cache_file, bytes).map_err(|e| e.to_string())?;
+                write_cache_atomically(&cache_file, &bytes)?;
                 log::info!("Ruleset downloaded via direct: {}", ruleset.tag);
                 return Ok(serde_json::json!({ "success": true, "cached": false, "url": url }));
             }
@@ -241,15 +275,23 @@ fn extract_github_path(url: &str) -> Option<String> {
 const MAX_RULESET_SIZE_BYTES: usize = 10 * 1024 * 1024;
 
 /// 下载并验证文件
-async fn download_and_verify(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| format!("Request failed: {}", e))?;
+async fn download_and_verify(
+    client: &reqwest::Client,
+    url: &str,
+    format: &str,
+) -> Result<Vec<u8>, String> {
+    let response = client.get(url).send().await.map_err(|e| {
+        if e.is_timeout() {
+            format!("连接超时: {}", e)
+        } else if e.is_connect() {
+            format!("连接失败: {}", e)
+        } else {
+            format!("请求失败: {}", e)
+        }
+    })?;
 
     if !response.status().is_success() {
-        return Err(format!("HTTP {}", response.status()));
+        return Err(format!("HTTP {}", response.status().as_u16()));
     }
 
     if let Some(content_length) = response.content_length() {
@@ -261,7 +303,7 @@ async fn download_and_verify(client: &reqwest::Client, url: &str) -> Result<Vec<
     let bytes = response
         .bytes()
         .await
-        .map_err(|e| format!("Read body failed: {}", e))?
+        .map_err(|e| format!("读取响应失败: {}", e))?
         .to_vec();
 
     if bytes.len() > MAX_RULESET_SIZE_BYTES {
@@ -281,9 +323,11 @@ async fn download_and_verify(client: &reqwest::Client, url: &str) -> Result<Vec<
         return Err("Received HTML instead of binary".to_string());
     }
 
-    // 检查是否是 JSON 错误
-    if header.trim().starts_with('{') {
-        return Err("Received JSON error response".to_string());
+    if format == "source" {
+        serde_json::from_slice::<serde_json::Value>(&bytes)
+            .map_err(|e| format!("Source JSON 格式无效: {}", e))?;
+    } else if header.trim().starts_with('{') {
+        return Err("收到 JSON 错误响应，而不是 Binary 规则集".to_string());
     }
 
     Ok(bytes)
@@ -330,6 +374,78 @@ mod tests {
         assert_eq!(extract_github_path("https://example.com/file.srs"), None);
     }
 
+    #[test]
+    fn github_download_urls_use_official_then_cdn() {
+        assert_eq!(
+            github_download_urls(
+                "https://ghp.ci/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs"
+            ),
+            vec![
+                "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
+                "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-cn.srs",
+            ]
+        );
+    }
+
+    #[test]
+    fn official_source_urls_are_rejected_but_custom_sources_are_allowed() {
+        assert!(is_official_source_url(
+            "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.json"
+        ));
+        assert!(!is_official_source_url(
+            "https://example.com/custom-rules.json"
+        ));
+    }
+
+    #[test]
+    fn atomic_cache_write_leaves_no_temp_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "kunbox-ruleset-atomic-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("demo.srs");
+        write_cache_atomically(&path, b"valid ruleset bytes").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"valid ruleset bytes");
+        assert!(!dir.join("demo.srs.tmp").exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn source_content_accepts_json_and_binary_rejects_json_error() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for body in [b"{\"rules\":[]}".as_slice(), b"{\"error\":true}".as_slice()] {
+                let (socket, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 512];
+                let _ = socket.readable().await;
+                let _ = socket.try_read(&mut request);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    String::from_utf8_lossy(body)
+                );
+                socket.writable().await.unwrap();
+                socket.try_write(response.as_bytes()).unwrap();
+            }
+        });
+
+        let client = build_direct_client(5).unwrap();
+        let source = download_and_verify(&client, &format!("http://{}/source", address), "source")
+            .await
+            .unwrap();
+        assert_eq!(source, b"{\"rules\":[]}");
+        let binary = download_and_verify(&client, &format!("http://{}/binary", address), "binary")
+            .await
+            .unwrap_err();
+        assert!(binary.contains("JSON"));
+        server.await.unwrap();
+    }
+
     #[tokio::test]
     async fn local_proxy_client_uses_settings_port() {
         let state = AppState::new(std::path::PathBuf::from("/tmp/test"));
@@ -347,10 +463,7 @@ pub async fn ruleset_fetch_hub(state: State<'_, AppState>) -> Result<serde_json:
     let url = "https://api.github.com/repos/SagerNet/sing-geosite/git/trees/rule-set?recursive=1";
     let proxy_client = build_local_proxy_client(&state, 15).await;
 
-    let direct_client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let direct_client = build_direct_client(15)?;
 
     if let Some(client) = &proxy_client {
         match client
@@ -379,7 +492,13 @@ pub async fn ruleset_fetch_hub(state: State<'_, AppState>) -> Result<serde_json:
         .header("User-Agent", "KunBox-Windows-App")
         .send()
         .await
-        .map_err(|e| format!("Request failed: {}", e))?;
+        .map_err(|e| {
+            if e.is_timeout() {
+                format!("连接超时: {}", e)
+            } else {
+                format!("请求失败: {}", e)
+            }
+        })?;
 
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));

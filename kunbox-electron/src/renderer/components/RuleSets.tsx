@@ -25,6 +25,13 @@ import {
 import { Modal, ModalButton } from './ui/Modal'
 import { AppSelect } from './ui/Select'
 import { useNodesStore } from '../stores/nodesStore'
+import {
+  buildHubRuleSets,
+  isHubFormatAvailable,
+  sanitizeBuiltInHubRule,
+  type HubRuleSet,
+  type HubTreeEntry,
+} from './rulesets-model'
 import { useToast } from './ui/Toast'
 import { useProfiles } from '../lib/useProfiles'
 
@@ -107,13 +114,6 @@ const defaultRuleSets: RuleSetItem[] = [
     isBuiltIn: true
   }
 ]
-
-interface HubRuleSet {
-  name: string
-  tags: string[]
-  sourceUrl: string
-  binaryUrl: string
-}
 
 const builtInHubRules: HubRuleSet[] = [
   {
@@ -300,7 +300,7 @@ const builtInHubRules: HubRuleSet[] = [
     binaryUrl:
       'https://ghp.ci/https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-facebook.srs'
   }
-]
+].map(sanitizeBuiltInHubRule)
 
 export default function RuleSets() {
   const [ruleSets, setRuleSets] = useState<RuleSetItem[]>([])
@@ -421,7 +421,7 @@ export default function RuleSets() {
       // Detect Tauri environment
       const isTauri = '__TAURI_INTERNALS__' in window
       
-      let data: { tree: Array<{ type: string; path: string }> }
+      let data: { tree: HubTreeEntry[] }
       
       if (isTauri && window.api.ruleset.fetchHub) {
         // Use Tauri backend API (proxy support)
@@ -440,25 +440,7 @@ export default function RuleSets() {
         data = await response.json()
       }
       
-      const srsFiles = data.tree.filter(
-        (item: { type: string; path: string }) =>
-          item.type === 'blob' && item.path.endsWith('.srs')
-      )
-      const newRuleSets: HubRuleSet[] = srsFiles.map(
-        (file: { path: string }) => {
-          const name = file.path.replace('.srs', '')
-          const isGeoip = name.startsWith('geoip-')
-          const baseUrl = isGeoip
-            ? 'https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set'
-            : 'https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set'
-          return {
-            name,
-            tags: ['Official', isGeoip ? 'geoip' : 'geosite'],
-            sourceUrl: `${baseUrl}/${name}.json`,
-            binaryUrl: `${baseUrl}/${name}.srs`
-          }
-        }
-      )
+      const newRuleSets = buildHubRuleSets(data.tree)
       setHubRuleSets(newRuleSets.length > 0 ? newRuleSets : builtInHubRules)
     } catch (e) {
       console.error('Failed to fetch hub:', e)
@@ -503,8 +485,8 @@ export default function RuleSets() {
             toast.error(`规则集「${ruleSet.name}」下载失败`)
             // Don't enable if download failed
           }
-        } catch {
-          toast.error(`规则集「${ruleSet.name}」下载失败`)
+        } catch (e) {
+          toast.error(`规则集「${ruleSet.name}」下载失败: ${e instanceof Error ? e.message : String(e)}`)
         } finally {
           setDownloadingTags(prev => {
             const next = new Set(prev)
@@ -625,12 +607,17 @@ export default function RuleSets() {
   const confirmAddFromHub = async () => {
     if (!hubAddTarget) return
     const { hub, format } = hubAddTarget
+    const url = format === 'binary' ? hub.binaryUrl : hub.sourceUrl
+    if (!url || !isHubFormatAvailable(hub, format)) {
+      toast.error(`规则集「${hub.name}」没有可用的${format === 'binary' ? 'Binary' : 'Source'}文件`)
+      return
+    }
     
     const newRuleSet: RuleSetItem = {
       id: Date.now().toString(),
       tag: hub.name,
       name: hub.name,
-      url: format === 'binary' ? hub.binaryUrl : hub.sourceUrl,
+      url,
       type: 'remote',
       format,
       outboundMode: 'proxy',
@@ -660,10 +647,10 @@ export default function RuleSets() {
           toast.showRestartToast(`规则集「${hub.name}」下载成功`)
         }
       } else {
-        toast.error(`规则集「${hub.name}」下载失败: ${result.error}`)
+        toast.error(`规则集「${hub.name}」下载失败: ${result.error || '未知错误'}`)
       }
-    } catch {
-      toast.error(`规则集「${hub.name}」下载失败`)
+    } catch (e) {
+      toast.error(`规则集「${hub.name}」下载失败: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
       setDownloadingTags(prev => {
         const next = new Set(prev)
@@ -1176,20 +1163,20 @@ export default function RuleSets() {
                     ))}
                   </div>
                   <div className="flex items-center gap-2">
-                    <button
+                    {isHubFormatAvailable(hub, 'source') && <button
                       onClick={() => openHubAddConfirm(hub, 'source')}
                       className="text-xs px-2.5 py-1.5 rounded-lg text-[var(--accent-primary)] hover:bg-[var(--accent-primary)]/10 border border-[var(--accent-primary)]/30 transition-colors duration-150 flex items-center gap-1 active:scale-[0.97]"
                     >
                       <Plus className="w-3 h-3" />
                       Source
-                    </button>
-                    <button
+                    </button>}
+                    {isHubFormatAvailable(hub, 'binary') && <button
                       onClick={() => openHubAddConfirm(hub, 'binary')}
                       className="text-xs px-2.5 py-1.5 rounded-lg bg-[var(--accent-primary)] text-white hover:bg-[var(--accent-primary)]/90 transition-colors duration-150 flex items-center gap-1 active:scale-[0.97]"
                     >
                       <Plus className="w-3 h-3" />
                       Binary
-                    </button>
+                    </button>}
                   </div>
                 </div>
               ))
