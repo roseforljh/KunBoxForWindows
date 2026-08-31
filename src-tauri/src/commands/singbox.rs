@@ -245,6 +245,20 @@ async fn find_available_tcp_port() -> Result<u16, String> {
     find_available_tcp_port_avoiding("127.0.0.1", &[]).await
 }
 
+#[tauri::command]
+pub async fn singbox_random_available_ports(
+    state: State<'_, AppState>,
+) -> Result<[u16; 2], String> {
+    let settings = state.settings.lock().await.clone();
+    let listen_addr = inbound_listen_addr(&settings);
+    let (local_port, local_reservation) =
+        reserve_available_tcp_port_avoiding(listen_addr, &[]).await?;
+    let (socks_port, socks_reservation) =
+        reserve_available_tcp_port_avoiding(listen_addr, &[local_port]).await?;
+    drop((local_reservation, socks_reservation));
+    Ok([local_port, socks_port])
+}
+
 async fn resolve_available_inbound_ports(
     state: &AppState,
     settings: &mut AppSettings,

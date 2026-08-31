@@ -177,7 +177,8 @@ export const api = {
 
   settings: {
     get: (): Promise<AppSettings> => invoke('get_settings'),
-    set: (settings: Partial<AppSettings>): Promise<void> => invoke('set_settings', { settings })
+    set: (settings: Partial<AppSettings>): Promise<void> => invoke('set_settings', { settings }),
+    randomAvailablePorts: (): Promise<[number, number]> => invoke('singbox_random_available_ports')
   },
 
   kernel: {

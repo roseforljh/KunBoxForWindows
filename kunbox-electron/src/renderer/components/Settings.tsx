@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import * as Switch from '@radix-ui/react-switch'
-import { Globe, Shield, Wifi, Monitor, RefreshCw, Settings2, Cpu, RotateCcw } from 'lucide-react'
+import { Globe, Shield, Wifi, Monitor, RefreshCw, Settings2, Cpu, RotateCcw, Shuffle } from 'lucide-react'
 import type { AppSettings } from '../../shared/types'
 import { KernelSettings } from './KernelSettings'
 import { AppSelect } from './ui/Select'
@@ -82,6 +82,22 @@ export default function Settings() {
     }
   }
 
+  const randomizePorts = async () => {
+    if (!settings) return
+    const prevSettings = settings
+    setSaving(true)
+    try {
+      const [localPort, socksPort] = await window.api.settings.randomAvailablePorts()
+      await window.api.settings.set({ localPort, socksPort })
+      setSettings({ ...settings, localPort, socksPort })
+    } catch (e) {
+      setSettings(prevSettings)
+      console.error('Failed to randomize proxy ports:', e)
+    } finally {
+      setSaving(false)
+    }
+  }
+
   if (!settings) {
     return (
       <div className="h-full flex items-center justify-center">
@@ -149,6 +165,17 @@ export default function Settings() {
                   </SettingRow>
                   <SettingRow label="SOCKS 端口">
                     <NumberInput value={settings.socksPort} onChange={(v) => updateSetting('socksPort', v)} min={1} max={65535} />
+                  </SettingRow>
+                  <SettingRow label="端口分配">
+                    <button
+                      type="button"
+                      onClick={randomizePorts}
+                      disabled={saving}
+                      className="glass-input !py-2 px-4 rounded-xl text-sm font-medium flex items-center gap-2 disabled:opacity-50"
+                    >
+                      <Shuffle className="w-4 h-4" />
+                      随机
+                    </button>
                   </SettingRow>
                   <SettingRow label="允许局域网访问">
                     <Toggle checked={settings.allowLan} onChange={(v) => updateSetting('allowLan', v)} />
@@ -393,14 +420,31 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean
 }
 
 function NumberInput({ value, onChange, min, max, step = 1 }: { value: number; onChange: (v: number) => void; min?: number; max?: number; step?: number }) {
+  const [draft, setDraft] = useState(String(value))
+
+  useEffect(() => setDraft(String(value)), [value])
+
+  const commit = () => {
+    const next = Number(draft)
+    if (draft && Number.isInteger(next) && (min === undefined || next >= min) && (max === undefined || next <= max)) {
+      if (next !== value) onChange(next)
+    } else {
+      setDraft(String(value))
+    }
+  }
+
   return (
     <input
       type="number"
-      value={value}
+      value={draft}
       min={min}
       max={max}
       step={step}
-      onChange={(e) => onChange(Number(e.target.value))}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') e.currentTarget.blur()
+      }}
       className="glass-input w-28 !py-2 rounded-xl text-center"
     />
   )

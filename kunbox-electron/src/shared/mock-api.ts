@@ -182,6 +182,7 @@ export const mockApi = {
       mockSettings = { ...mockSettings, ..._settings }
       return Promise.resolve()
     },
+    randomAvailablePorts: (): Promise<[number, number]> => Promise.resolve([49152, 49153]),
   },
 
   kernel: {

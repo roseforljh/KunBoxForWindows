@@ -252,6 +252,7 @@ pub fn run() {
             // Settings
             commands::get_settings,
             commands::set_settings,
+            commands::singbox_random_available_ports,
             // Profiles
             commands::profile_list,
             commands::profile_add,
