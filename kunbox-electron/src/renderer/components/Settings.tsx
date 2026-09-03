@@ -161,10 +161,10 @@ export default function Settings() {
               <div className="space-y-4">
                 <SettingCard>
                   <SettingRow label="HTTP 端口">
-                    <NumberInput value={settings.localPort} onChange={(v) => updateSetting('localPort', v)} min={1} max={65535} />
+                    <NumberInput key={settings.localPort} value={settings.localPort} onChange={(v) => updateSetting('localPort', v)} min={1} max={65535} />
                   </SettingRow>
                   <SettingRow label="SOCKS 端口">
-                    <NumberInput value={settings.socksPort} onChange={(v) => updateSetting('socksPort', v)} min={1} max={65535} />
+                    <NumberInput key={settings.socksPort} value={settings.socksPort} onChange={(v) => updateSetting('socksPort', v)} min={1} max={65535} />
                   </SettingRow>
                   <SettingRow label="端口分配">
                     <button
@@ -300,7 +300,7 @@ export default function Settings() {
                     <TextInput value={settings.latencyTestUrl} onChange={(v) => updateSetting('latencyTestUrl', v)} placeholder="https://www.gstatic.com/generate_204" />
                   </SettingRow>
                   <SettingRow label="超时时间" isLast>
-                    <NumberInput value={settings.latencyTestTimeout} onChange={(v) => updateSetting('latencyTestTimeout', v)} min={1000} max={30000} step={1000} />
+                    <NumberInput key={settings.latencyTestTimeout} value={settings.latencyTestTimeout} onChange={(v) => updateSetting('latencyTestTimeout', v)} min={1000} max={30000} step={1000} />
                   </SettingRow>
                 </SettingCard>
               </div>
@@ -421,8 +421,6 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean
 
 function NumberInput({ value, onChange, min, max, step = 1 }: { value: number; onChange: (v: number) => void; min?: number; max?: number; step?: number }) {
   const [draft, setDraft] = useState(String(value))
-
-  useEffect(() => setDraft(String(value)), [value])
 
   const commit = () => {
     const next = Number(draft)
