@@ -644,7 +644,7 @@ fn generate_temp_config_removes_naive_unsupported_fields_and_uses_remote_dns() {
             .get("dns")
             .and_then(|value| value.get("independent_cache"))
             .and_then(|value| value.as_bool()),
-        Some(true)
+        None
     );
 }
 

@@ -327,7 +327,7 @@ fn parse_semver_triplet(version: &str) -> Option<(u64, u64, u64)> {
     Some((major, minor, patch))
 }
 
-fn version_gte(version: &str, min: (u64, u64, u64)) -> bool {
+pub(crate) fn version_gte(version: &str, min: (u64, u64, u64)) -> bool {
     parse_semver_triplet(version)
         .map(|v| v >= min)
         .unwrap_or(false)

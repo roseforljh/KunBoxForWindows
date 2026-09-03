@@ -87,6 +87,18 @@ const HEALTH_FAILED_BACKOFF_MAX_MS: i64 = 300_000;
 const HEALTH_SELECTOR_SWITCH_COOLDOWN_MS: i64 = 60_000;
 const HEALTH_BACKUP_PROBE_LIMIT: usize = 3;
 
+fn uses_singbox_1_14_dns_config(version: Option<&str>) -> bool {
+    version.is_some_and(|version| crate::commands::kernel::version_gte(version, (1, 14, 0)))
+}
+
+fn is_known_domain_ruleset(ruleset: &crate::types::RuleSet) -> bool {
+    // ponytail: 只让来源明确的官方 geosite 走查询前匹配，其余规则集按可能含 IP 处理。
+    ruleset
+        .url
+        .as_deref()
+        .is_some_and(|url| url.to_ascii_lowercase().contains("sagernet/sing-geosite"))
+}
+
 fn local_clash_api_client() -> reqwest::Client {
     reqwest::Client::builder()
         .no_proxy()
@@ -511,7 +523,21 @@ pub(crate) async fn singbox_start_impl(
         state,
         &format!("selected clash api port: {}", clash_api_port),
     );
-    let config_result = generate_config_with_settings(&state, &effective_settings).await?;
+    let kernel_version = crate::commands::kernel::kernel_get_local_version(app.clone())
+        .await
+        .ok()
+        .flatten()
+        .map(|info| info.version);
+    let use_singbox_1_14_dns = uses_singbox_1_14_dns_config(kernel_version.as_deref());
+    append_startup_diagnostic(
+        state,
+        &format!(
+            "generating config for sing-box version {}",
+            kernel_version.as_deref().unwrap_or("unknown")
+        ),
+    );
+    let config_result =
+        generate_config_with_settings(&state, &effective_settings, use_singbox_1_14_dns).await?;
     if !config_result.success {
         return Ok(config_result);
     }
@@ -2538,12 +2564,13 @@ fn load_all_profiles(
 #[cfg(test)]
 async fn generate_config(state: &AppState) -> Result<CommandResult, String> {
     let settings = state.settings.lock().await.clone();
-    generate_config_with_settings(state, &settings).await
+    generate_config_with_settings(state, &settings, false).await
 }
 
 async fn generate_config_with_settings(
     state: &AppState,
     settings: &crate::types::AppSettings,
+    use_singbox_1_14_dns: bool,
 ) -> Result<CommandResult, String> {
     // Always reload profiles data from file to ensure we have the latest
     let profiles_file = state.profiles_file();
@@ -2846,6 +2873,8 @@ async fn generate_config_with_settings(
     if routing_mode == "rule" {
         let mut direct_rulesets: Vec<String> = Vec::new();
         let mut proxy_rulesets: Vec<String> = Vec::new();
+        let mut direct_response_rulesets: Vec<String> = Vec::new();
+        let mut proxy_response_rulesets: Vec<String> = Vec::new();
 
         for rs in &enabled_rulesets {
             // 只为有本地缓存的规则集生成 DNS 规则
@@ -2857,9 +2886,14 @@ async fn generate_config_with_settings(
                 continue;
             }
 
-            match rs.outbound_mode.as_str() {
-                "direct" => direct_rulesets.push(rs.tag.clone()),
-                "proxy" | "node" | "节点" | "profile" | "配置" => {
+            let needs_response_match = use_singbox_1_14_dns && !is_known_domain_ruleset(rs);
+            match (rs.outbound_mode.as_str(), needs_response_match) {
+                ("direct", true) => direct_response_rulesets.push(rs.tag.clone()),
+                ("direct", false) => direct_rulesets.push(rs.tag.clone()),
+                ("proxy" | "node" | "节点" | "profile" | "配置", true) => {
+                    proxy_response_rulesets.push(rs.tag.clone())
+                }
+                ("proxy" | "node" | "节点" | "profile" | "配置", false) => {
                     proxy_rulesets.push(rs.tag.clone())
                 }
                 _ => {} // block 不需要 DNS 规则
@@ -2884,7 +2918,32 @@ async fn generate_config_with_settings(
             }));
             log::info!("Added DNS rule for {} proxy rulesets", proxy_rulesets.len());
         }
+
+        if !direct_response_rulesets.is_empty() || !proxy_response_rulesets.is_empty() {
+            dns_rules.push(serde_json::json!({
+                "action": "evaluate",
+                "server": "dns-remote"
+            }));
+            if !direct_response_rulesets.is_empty() {
+                dns_rules.push(serde_json::json!({
+                    "rule_set": direct_response_rulesets,
+                    "match_response": true,
+                    "server": "dns-local"
+                }));
+            }
+            if !proxy_response_rulesets.is_empty() {
+                dns_rules.push(serde_json::json!({
+                    "rule_set": proxy_response_rulesets,
+                    "match_response": true,
+                    "action": "respond"
+                }));
+            }
+        }
     }
+
+    let has_evaluated_dns_response = dns_rules
+        .iter()
+        .any(|rule| rule.get("action").and_then(serde_json::Value::as_str) == Some("evaluate"));
 
     // FakeDNS 规则（放在域名 DNS 规则之后，确保域名规则优先匹配）
     if settings.fake_dns {
@@ -2910,6 +2969,13 @@ async fn generate_config_with_settings(
             fake_dns_rule["inbound"] = serde_json::json!(["tun-in"]);
         }
         dns_rules.push(fake_dns_rule);
+    }
+
+    if has_evaluated_dns_response {
+        dns_rules.push(serde_json::json!({
+            "match_response": true,
+            "action": "respond"
+        }));
     }
 
     // 构建 inbounds
@@ -2953,7 +3019,6 @@ async fn generate_config_with_settings(
         "servers": dns_servers,
         "rules": dns_rules,
         "final": dns_final,
-        "independent_cache": true,
         "reverse_mapping": true
     });
     if settings.tun_enabled {
@@ -2973,6 +3038,19 @@ async fn generate_config_with_settings(
     };
 
     let clash_api_port = get_clash_api_port(state).await;
+    let cache_file = if use_singbox_1_14_dns {
+        serde_json::json!({
+            "enabled": true,
+            "path": "cache.db",
+            "store_dns": true
+        })
+    } else {
+        serde_json::json!({
+            "enabled": true,
+            "path": "cache.db",
+            "store_rdrc": true
+        })
+    };
     let mut config = serde_json::json!({
         "log": {
             "disabled": false,
@@ -2984,11 +3062,7 @@ async fn generate_config_with_settings(
                 "external_controller": format!("127.0.0.1:{}", clash_api_port),
                 "default_mode": "rule"
             },
-            "cache_file": {
-                "enabled": true,
-                "path": "cache.db",
-                "store_rdrc": true
-            }
+            "cache_file": cache_file
         },
         "dns": dns_config,
         "inbounds": inbounds,
@@ -3991,6 +4065,14 @@ mod tests {
         }
     }
 
+    #[test]
+    fn selects_singbox_1_14_dns_config_from_kernel_version() {
+        assert!(!uses_singbox_1_14_dns_config(Some("1.13.19")));
+        assert!(uses_singbox_1_14_dns_config(Some("1.14.0")));
+        assert!(uses_singbox_1_14_dns_config(Some("1.14.0-beta.1")));
+        assert!(!uses_singbox_1_14_dns_config(None));
+    }
+
     fn unique_test_dir(name: &str) -> PathBuf {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -4514,6 +4596,92 @@ mod tests {
         assert_eq!(
             config["experimental"]["cache_file"]["store_rdrc"].as_bool(),
             Some(true)
+        );
+        assert!(config["dns"].get("independent_cache").is_none());
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn generate_config_uses_singbox_1_14_dns_response_matching() {
+        let data_dir = unique_test_dir("singbox-1-14-dns");
+        let state = AppState::new(data_dir.clone());
+
+        let profiles_data = ProfilesData {
+            profiles: vec![make_profile("profile-a", "Profile A")],
+            active_profile_id: Some("profile-a".to_string()),
+            active_node_tag: Some("node-a".to_string()),
+            node_selections: HashMap::new(),
+        };
+        write_json_file(&state.profiles_file(), &profiles_data);
+        write_json_file(
+            &state.configs_dir().join("profile-a.json"),
+            &vec![make_node("node-a")],
+        );
+        fs::create_dir_all(state.rulesets_cache_dir()).unwrap();
+        fs::write(state.rulesets_cache_dir().join("geosite-cn.srs"), b"dummy").unwrap();
+        fs::write(state.rulesets_cache_dir().join("geoip-cn.srs"), b"dummy").unwrap();
+
+        let mut geosite = make_ruleset("geosite-cn", "direct", None);
+        geosite.url = Some(
+            "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs"
+                .to_string(),
+        );
+        let mut geoip = make_ruleset("geoip-cn", "direct", None);
+        geoip.url = Some(
+            "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs"
+                .to_string(),
+        );
+        *state.rulesets.lock().await = vec![geosite, geoip];
+
+        let settings = state.settings.lock().await.clone();
+        let result = generate_config_with_settings(&state, &settings, true)
+            .await
+            .unwrap();
+        assert!(result.success);
+
+        let config = read_generated_config(&state);
+        assert_eq!(
+            config["experimental"]["cache_file"]["store_dns"].as_bool(),
+            Some(true)
+        );
+        assert!(config["experimental"]["cache_file"]
+            .get("store_rdrc")
+            .is_none());
+        assert!(config["dns"].get("independent_cache").is_none());
+
+        let dns_rules = config["dns"]["rules"].as_array().unwrap();
+        let geosite_rule = dns_rules
+            .iter()
+            .find(|rule| {
+                rule["rule_set"]
+                    .as_array()
+                    .is_some_and(|tags| tags.iter().any(|tag| tag.as_str() == Some("geosite-cn")))
+            })
+            .unwrap();
+        assert!(geosite_rule.get("match_response").is_none());
+
+        let evaluate_index = dns_rules
+            .iter()
+            .position(|rule| rule["action"].as_str() == Some("evaluate"))
+            .unwrap();
+        let geoip_index = dns_rules
+            .iter()
+            .position(|rule| {
+                rule["rule_set"]
+                    .as_array()
+                    .is_some_and(|tags| tags.iter().any(|tag| tag.as_str() == Some("geoip-cn")))
+            })
+            .unwrap();
+        assert!(evaluate_index < geoip_index);
+        assert_eq!(
+            dns_rules[geoip_index]["match_response"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(dns_rules[geoip_index]["server"].as_str(), Some("dns-local"));
+        assert_eq!(
+            dns_rules.last().unwrap()["action"].as_str(),
+            Some("respond")
         );
 
         let _ = fs::remove_dir_all(data_dir);

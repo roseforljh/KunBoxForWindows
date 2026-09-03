@@ -281,8 +281,7 @@ pub(super) fn generate_temp_config_with_dependencies_raw(
                         remote_dns_domain_resolver,
                     )
                 ],
-                "strategy": "ipv4_only",
-                "independent_cache": true
+                "strategy": "ipv4_only"
             },
             "inbounds": inbounds,
             "outbounds": outbounds,
