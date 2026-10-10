@@ -815,6 +815,18 @@ pub(crate) async fn singbox_start_impl(
         return Ok(CommandResult::err(message));
     }
 
+    // The Clash API may restore the selector from cache.db and ignore the
+    // selector default generated from profiles.json. Reconcile it before
+    // declaring the connection ready so the persisted UI selection is also
+    // the node used by the running kernel.
+    if let Err(err) = reconcile_main_selector_selection(state, clash_api_port).await {
+        append_startup_diagnostic(
+            state,
+            &format!("main selector reconciliation failed: {}", err),
+        );
+        log::warn!("Main selector reconciliation failed: {}", err);
+    }
+
     *state.proxy_state.lock().await = ProxyState::Connected;
 
     let _ = app.emit("singbox:state", "connected");
@@ -7510,6 +7522,58 @@ async fn execute_health_action(
         let _ = app.emit("singbox:health", event);
     }
     true
+}
+
+async fn reconcile_main_selector_selection(
+    state: &AppState,
+    clash_api_port: u16,
+) -> Result<(), String> {
+    let profiles_data = load_profiles_data_from_file(state).await;
+    let Some(desired_node) = profiles_data.active_node_tag else {
+        return Ok(());
+    };
+
+    let client = local_clash_api_client();
+    let selector = fetch_selector_health(&client, clash_api_port, "PROXY")
+        .await
+        .ok_or_else(|| "无法读取 PROXY selector 状态".to_string())?;
+
+    if selector.current_node.as_deref() == Some(desired_node.as_str()) {
+        return Ok(());
+    }
+
+    let node_available = selector.current_node.as_deref() == Some(desired_node.as_str())
+        || selector
+            .backup_nodes
+            .iter()
+            .any(|node| node == &desired_node);
+    if !node_available {
+        return Err(format!(
+            "保存的节点 '{}' 不在运行中的 PROXY selector 列表中",
+            desired_node
+        ));
+    }
+
+    append_startup_diagnostic(
+        state,
+        &format!(
+            "reconciling main selector from {:?} to '{}'",
+            selector.current_node, desired_node
+        ),
+    );
+    switch_selector_to_node(&client, clash_api_port, "PROXY", &desired_node).await?;
+
+    let verified = fetch_selector_health(&client, clash_api_port, "PROXY")
+        .await
+        .ok_or_else(|| "切换后无法读取 PROXY selector 状态".to_string())?;
+    if verified.current_node.as_deref() != Some(desired_node.as_str()) {
+        return Err(format!(
+            "PROXY selector 切换后仍为 {:?}，目标是 '{}'",
+            verified.current_node, desired_node
+        ));
+    }
+
+    Ok(())
 }
 
 async fn switch_selector_to_node(
