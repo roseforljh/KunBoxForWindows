@@ -172,7 +172,7 @@ export const mockApi = {
       if (index >= 0) mockNodes[index] = { ...node }
       return Promise.resolve({ ...node })
     },
-    export: (_tag: string): Promise<string> => Promise.resolve('ss://mock-exported-link'),
+    export: (_tag: string, _node?: SingBoxOutbound): Promise<string> => Promise.resolve('ss://mock-exported-link'),
     listAll: (_includeDisabled?: boolean): Promise<NodeWithProfile[]> => Promise.resolve([...mockNodesWithProfile]),
   },
 
@@ -251,7 +251,7 @@ export const mockApi = {
   ruleset: {
     list: () => Promise.resolve([]),
     save: (_ruleSets: any[]) => Promise.resolve(),
-    download: (_ruleSet: any) => Promise.resolve({ success: true }),
+    download: (_ruleSet: any, _force = false) => Promise.resolve({ success: true }),
     isCached: (_tag: string) => Promise.resolve(false),
     fetchHub: () => Promise.resolve({ tree: [] }),
   },

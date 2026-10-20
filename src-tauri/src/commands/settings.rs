@@ -333,6 +333,35 @@ mod tests {
         assert!(ensure_u16_in_range(70000, "port").is_err());
     }
 
+    #[tokio::test]
+    async fn tun_and_system_proxy_settings_are_independent() {
+        let data_dir = unique_test_path("tun-proxy-coexist");
+        let state = AppState::new(data_dir.clone());
+        for tun in [false, true] {
+            for proxy in [false, true] {
+                set_settings_impl(
+                    &state,
+                    serde_json::json!({ "tunEnabled": tun, "systemProxy": proxy }),
+                    |_| Ok(()),
+                )
+                .await
+                .unwrap();
+                let saved: AppSettings =
+                    serde_json::from_str(&fs::read_to_string(state.settings_file()).unwrap())
+                        .unwrap();
+                assert_eq!(saved.tun_enabled, tun);
+                assert_eq!(saved.system_proxy, proxy);
+            }
+        }
+        set_settings_impl(&state, serde_json::json!({ "tunEnabled": false }), |_| {
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert!(state.settings.lock().await.system_proxy);
+        fs::remove_dir_all(data_dir).unwrap();
+    }
+
     #[test]
     fn validates_u32_range() {
         assert_eq!(

@@ -171,7 +171,7 @@ export const api = {
     delete: (tag: string): Promise<void> => invoke('node_delete', { tag }),
     update: (profileId: string, originalTag: string, node: SingBoxOutbound): Promise<SingBoxOutbound> =>
       invoke('node_update', { profileId, originalTag, node }),
-    export: (tag: string): Promise<string> => invoke('node_export', { tag }),
+    export: (tag: string, node?: SingBoxOutbound): Promise<string> => invoke('node_export', { tag, node }),
     listAll: (includeDisabled?: boolean): Promise<NodeWithProfile[]> => invoke('node_list_all', { includeDisabled })
   },
 
@@ -269,7 +269,7 @@ export const api = {
   ruleset: {
     list: () => invoke<any[]>('ruleset_list'),
     save: (ruleSets: any[]) => invoke('ruleset_save', { rulesets: ruleSets }),
-    download: (ruleSet: any) => invoke<{ success: boolean; cached?: boolean; error?: string }>('ruleset_download', { ruleset: ruleSet }),
+    download: (ruleSet: any, force = false) => invoke<{ success: boolean; cached?: boolean; error?: string }>('ruleset_download', { ruleset: ruleSet, force }),
     isCached: (tag: string) => invoke<boolean>('ruleset_is_cached', { tag }),
     fetchHub: () => invoke<{ tree: Array<{ type: string; path: string }> }>('ruleset_fetch_hub')
   },

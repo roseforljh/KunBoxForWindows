@@ -21,6 +21,7 @@ import { useNodesStore } from '../stores/nodesStore'
 import type { DomainRule, DomainRuleType, OutboundMode } from '@shared/types'
 import { useProfiles } from '../lib/useProfiles'
 import { useToast } from './ui/Toast'
+import { RoutingModeNotice } from './RoutingModeNotice'
 
 const DOMAIN_TYPE_OPTIONS = [
   { value: 'domain', label: '精确匹配' },
@@ -416,6 +417,7 @@ export default function DomainRules() {
         </div>
       </div>
 
+      <RoutingModeNotice />
       {/* Rules List */}
       <div className="glass-card p-4 rounded-2xl border border-[var(--glass-border)]">
         <div className="flex items-center gap-2 mb-4">

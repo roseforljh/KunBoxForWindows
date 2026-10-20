@@ -153,14 +153,11 @@ fn is_loopback_proxy(value: &str) -> bool {
 }
 
 fn git_proxy_plan(settings: &AppSettings, current: Option<&str>) -> GitProxyPlan {
-    if settings.tun_enabled && current.is_some_and(is_loopback_proxy) {
+    if settings.tun_enabled && !settings.system_proxy && current.is_some_and(is_loopback_proxy) {
         return GitProxyPlan::Replace(None);
     }
 
-    if !settings.tun_enabled
-        && settings.system_proxy
-        && current.map(is_loopback_proxy).unwrap_or(true)
-    {
+    if settings.system_proxy && current.map(is_loopback_proxy).unwrap_or(true) {
         let desired = format!("http://127.0.0.1:{}", settings.local_port);
         if current != Some(desired.as_str()) {
             return GitProxyPlan::Replace(Some(desired));
@@ -277,6 +274,22 @@ mod tests {
             git_proxy_plan(&settings, Some("http://127.0.0.1:2581")),
             GitProxyPlan::Replace(None)
         );
+    }
+
+    #[test]
+    fn tun_and_system_proxy_coexist_and_restore_original_git_proxy() {
+        let data_dir = unique_test_path("tun-system-proxy");
+        let state = AppState::new(data_dir.clone());
+        let backend = MemoryGitProxy::new(Some("http://127.0.0.1:2581"));
+        let mut settings = AppSettings::default();
+        settings.tun_enabled = true;
+        settings.system_proxy = true;
+        settings.local_port = 13_635;
+        sync_git_proxy_with_backend(&state, &settings, &backend).unwrap();
+        assert_eq!(backend.current().as_deref(), Some("http://127.0.0.1:13635"));
+        restore_git_proxy_with_backend(&state, &backend).unwrap();
+        assert_eq!(backend.current().as_deref(), Some("http://127.0.0.1:2581"));
+        fs::remove_dir_all(data_dir).unwrap();
     }
 
     #[test]

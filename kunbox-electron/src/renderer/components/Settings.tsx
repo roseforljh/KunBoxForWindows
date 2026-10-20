@@ -5,6 +5,7 @@ import { Globe, Shield, Wifi, Monitor, RefreshCw, Settings2, Cpu, RotateCcw, Shu
 import type { AppSettings } from '../../shared/types'
 import { KernelSettings } from './KernelSettings'
 import { AppSelect } from './ui/Select'
+import { useToast } from './ui/Toast'
 
 type SettingsTab = 'proxy' | 'tun' | 'dns' | 'kernel' | 'system'
 
@@ -24,6 +25,7 @@ export const HEALTH_SETTING_KEYS = {
 export const FIXED_NODE_HEALTH_NOTE = '固定节点分流失败时只提示，不会自动更换。'
 
 export default function Settings() {
+  const toast = useToast()
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [saving, setSaving] = useState(false)
   const [isAdmin, setIsAdmin] = useState(false)
@@ -56,6 +58,11 @@ export default function Settings() {
     try {
       await window.api.settings.set({ [key]: value })
 
+      if (['routingMode', 'tunEnabled', 'tunStack', 'tunStrictRoute', 'systemProxy',
+        'localPort', 'socksPort', 'allowLan', 'bypassLan', 'localDns', 'remoteDns', 'fakeDns'].includes(key)) {
+        toast.showRestartToast('网络设置已保存')
+      }
+
       if (key === 'theme') {
         localStorage.setItem('kunbox-theme', value as string)
         window.dispatchEvent(new CustomEvent('theme-change'))
@@ -77,6 +84,7 @@ export default function Settings() {
     } catch (e) {
       setSettings(prevSettings)
       console.error(`Failed to save setting ${key}:`, e)
+      toast.error(`保存设置失败: ${String(e)}`)
     } finally {
       setSaving(false)
     }
@@ -90,6 +98,7 @@ export default function Settings() {
       const [localPort, socksPort] = await window.api.settings.randomAvailablePorts()
       await window.api.settings.set({ localPort, socksPort })
       setSettings({ ...settings, localPort, socksPort })
+      toast.showRestartToast('代理端口已保存')
     } catch (e) {
       setSettings(prevSettings)
       console.error('Failed to randomize proxy ports:', e)
@@ -197,6 +206,11 @@ export default function Settings() {
                       onChange={(v) => updateSetting('routingMode', v as AppSettings['routingMode'])}
                     />
                   </SettingRow>
+                  {settings.routingMode !== 'rule' && (
+                    <p className="px-5 py-3 text-sm text-amber-500">
+                      全局模式会忽略域名分流和规则集的指定节点。需要按网站分流时，请选择规则模式；修改后重启 VPN 生效。
+                    </p>
+                  )}
                   <SettingRow label="绕过局域网" isLast>
                     <Toggle checked={settings.bypassLan} onChange={(v) => updateSetting('bypassLan', v)} />
                   </SettingRow>
@@ -269,10 +283,13 @@ export default function Settings() {
 
                 <div className="glass-card rounded-2xl p-5 space-y-2">
                   <p className="text-sm text-[var(--text-muted)]">
-                    TUN 模式可接管系统全部流量。建议使用 gVisor 或 Mixed 网络栈以获得更好的兼容性。
+                    TUN 模式可接管未使用系统代理的 IPv4 流量。建议使用 gVisor 或 Mixed 网络栈以获得更好的兼容性。
                   </p>
                   <p className="text-sm text-[var(--text-muted)]">
-                    开启 TUN 后会在本次连接中自动关闭系统代理，避免双路径叠加。严格路由默认关闭，兼容性优先。
+                    TUN 与系统代理可以同时开启：支持系统代理的应用走代理，其余 IPv4 流量由 TUN 接管，两者共用分流规则。严格路由默认关闭。
+                  </p>
+                  <p className="text-sm text-[var(--text-muted)]">
+                    TUN 与路由模式独立。按网站使用指定节点，需要在「代理」页选择「规则模式」，并重启 VPN 应用设置。
                   </p>
                   <p className="text-sm text-[var(--text-muted)]">
                     TUN 网卡仅 IPv4，DNS 优先 IPv4（prefer_ipv4，MTU 1500）。IPv6 不进隧道，由系统原生链路回退。
@@ -293,6 +310,9 @@ export default function Settings() {
                   <SettingRow label="启用 FakeDNS" isLast>
                     <Toggle checked={settings.fakeDns} onChange={(v) => updateSetting('fakeDns', v)} />
                   </SettingRow>
+                  <p className="px-5 py-3 text-sm text-[var(--text-muted)]">
+                    FakeDNS 仅用于 TUN 流量。纯系统代理模式使用真实 DNS 解析。
+                  </p>
                 </SettingCard>
 
                 <SettingCard>
@@ -449,12 +469,19 @@ function NumberInput({ value, onChange, min, max, step = 1 }: { value: number; o
 }
 
 function TextInput({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
+  const [draft, setDraft] = useState<string | null>(null)
+  const commit = () => {
+    if (draft !== null && draft !== value) onChange(draft)
+    setDraft(null)
+  }
   return (
     <input
       type="text"
-      value={value}
+      value={draft ?? value}
       placeholder={placeholder}
-      onChange={(e) => onChange(e.target.value)}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
       className="glass-input w-64 !py-2 rounded-xl"
     />
   )

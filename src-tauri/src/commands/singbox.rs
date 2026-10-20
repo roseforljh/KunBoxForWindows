@@ -99,6 +99,31 @@ fn is_known_domain_ruleset(ruleset: &crate::types::RuleSet) -> bool {
         .is_some_and(|url| url.to_ascii_lowercase().contains("sagernet/sing-geosite"))
 }
 
+fn push_domain_dns_rule(
+    rules: &mut Vec<serde_json::Value>,
+    mut rule: serde_json::Value,
+    outbound_mode: &str,
+    settings: &AppSettings,
+) {
+    let server = match outbound_mode {
+        "direct" => "dns-local",
+        "proxy" | "node" | "节点" | "profile" | "配置" => "dns-remote",
+        _ => return,
+    };
+    // TUN 代理域名必须先返回 FakeIP，不能被后面的真实 DNS 规则提前终止。
+    // 内核内部解析和其它入站仍使用真实 DNS；直连域名保持本地解析。
+    if server == "dns-remote" && settings.fake_dns && settings.tun_enabled {
+        let mut fake_rule = rule.clone();
+        fake_rule["inbound"] = serde_json::json!(["tun-in"]);
+        fake_rule["query_type"] = serde_json::json!(["A"]);
+        fake_rule["server"] = serde_json::json!("dns-fakeip");
+        fake_rule["rewrite_ttl"] = serde_json::json!(1);
+        rules.push(fake_rule);
+    }
+    rule["server"] = serde_json::json!(server);
+    rules.push(rule);
+}
+
 fn local_clash_api_client() -> reqwest::Client {
     reqwest::Client::builder()
         .no_proxy()
@@ -454,28 +479,8 @@ pub(crate) async fn singbox_start_impl(
         }
     }
 
-    // TUN 已接管系统流量时再挂系统代理容易双路径冲突，启动时强制只保留 TUN。
-    if effective_settings.tun_enabled && effective_settings.system_proxy {
-        effective_settings.system_proxy = false;
-        append_startup_diagnostic(
-            state,
-            "TUN mode active: auto-disabling system proxy for this session",
-        );
-        let message =
-            "已启用 TUN 模式，本次连接自动关闭系统代理，避免双代理叠加导致证书或连接异常。";
-        if startup_warning.is_none() {
-            startup_warning = Some(message.to_string());
-        }
-        let _ = app.emit(
-            "singbox:log",
-            serde_json::json!({
-                "timestamp": chrono::Utc::now().timestamp_millis(),
-                "level": "warn",
-                "tag": "sing-box",
-                "message": message,
-            }),
-        );
-    }
+    // 系统代理和 TUN 可以同时启用：代理应用接入 mixed-in，其余流量接入 tun-in。
+    // 两个入口共用路由；内核出站通过 auto_detect_interface 避免再次进入 TUN。
 
     if let Some(mut child) = state.singbox_process.lock().await.take() {
         let _ = child.kill().await;
@@ -540,6 +545,13 @@ pub(crate) async fn singbox_start_impl(
         generate_config_with_settings(&state, &effective_settings, use_singbox_1_14_dns).await?;
     if !config_result.success {
         return Ok(config_result);
+    }
+    if let Some(warning) = config_result.warning {
+        append_startup_diagnostic(state, &warning);
+        startup_warning = Some(match startup_warning {
+            Some(existing) => format!("{}\n{}", existing, warning),
+            None => warning,
+        });
     }
 
     if let Err(err) = start_plugin_bridges(&app, state).await {
@@ -886,7 +898,15 @@ pub(crate) async fn singbox_start_impl(
                 effective_settings.local_port
             ),
         );
-        let _ = enable_system_proxy_for_state(state, effective_settings.local_port).await;
+        if let Err(err) = enable_system_proxy_for_state(state, effective_settings.local_port).await
+        {
+            let warning = format!("内核已启动，但设置系统代理失败：{}", err);
+            append_startup_diagnostic(state, &warning);
+            startup_warning = Some(match startup_warning {
+                Some(existing) => format!("{}\n{}", existing, warning),
+                None => warning,
+            });
+        }
     } else {
         append_startup_diagnostic(
             state,
@@ -2496,14 +2516,6 @@ fn is_valid_profile_id(profile_id: &str) -> bool {
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
 }
 
-fn is_valid_ruleset_tag(tag: &str) -> bool {
-    !tag.is_empty()
-        && tag.len() <= 128
-        && tag
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
-}
-
 fn profile_nodes_path(state: &AppState, profile_id: &str) -> Result<PathBuf, String> {
     if !is_valid_profile_id(profile_id) {
         return Err("Invalid profile id".to_string());
@@ -2513,7 +2525,7 @@ fn profile_nodes_path(state: &AppState, profile_id: &str) -> Result<PathBuf, Str
 }
 
 fn ruleset_cache_path(state: &AppState, tag: &str) -> Result<PathBuf, String> {
-    if !is_valid_ruleset_tag(tag) {
+    if !super::rulesets::is_valid_ruleset_tag(tag) {
         return Err("Invalid ruleset tag".to_string());
     }
 
@@ -2777,119 +2789,25 @@ async fn generate_config_with_settings(
     // 构建 DNS 规则
     let mut dns_rules: Vec<serde_json::Value> = Vec::new();
 
-    // ========== 根据域名分流规则生成对应的 DNS 规则 ==========
-    // 核心原理：sing-box 中 DNS 查询和路由是分开处理的。
-    // 如果一个域名的路由规则设为 "direct"，但 DNS 查询走的是远程代理 DNS，
-    // 就会导致 DNS 解析失败或返回错误的 IP，直连规则就不会生效。
-    // 因此必须为每个域名路由规则生成对应的 DNS 规则：
-    //   - direct 出站 → 使用 dns-local（本地 DNS 解析）
-    //   - proxy/其他出站 → 使用 dns-remote（远程代理 DNS 解析）
-    //   - block 出站 → 不需要 DNS 规则（直接拒绝）
+    // DNS 的域名规则和路由规则使用相同顺序，不能把所有 direct 提到 proxy 前面。
     if routing_mode == "rule" {
-        // 收集 direct 域名和 proxy 域名，按类型分组后批量添加 DNS 规则
-        let mut direct_domains: Vec<String> = Vec::new();
-        let mut direct_domain_suffixes: Vec<String> = Vec::new();
-        let mut direct_domain_keywords: Vec<String> = Vec::new();
-        let mut proxy_domains: Vec<String> = Vec::new();
-        let mut proxy_domain_suffixes: Vec<String> = Vec::new();
-        let mut proxy_domain_keywords: Vec<String> = Vec::new();
-
         for rule in custom_rules.domain_rules.iter().filter(|r| r.enabled) {
-            let is_direct = rule.outbound_mode == "direct";
-            let is_proxy = matches!(rule.outbound_mode.as_str(), "proxy" | "node" | "profile");
-            // block 规则不需要 DNS 规则
-
-            if is_direct {
-                match rule.rule_type.as_str() {
-                    "domain" => direct_domains.push(rule.value.clone()),
-                    "domain_suffix" => direct_domain_suffixes.push(rule.value.clone()),
-                    "domain_keyword" => direct_domain_keywords.push(rule.value.clone()),
-                    _ => direct_domain_suffixes.push(rule.value.clone()),
-                }
-            } else if is_proxy {
-                match rule.rule_type.as_str() {
-                    "domain" => proxy_domains.push(rule.value.clone()),
-                    "domain_suffix" => proxy_domain_suffixes.push(rule.value.clone()),
-                    "domain_keyword" => proxy_domain_keywords.push(rule.value.clone()),
-                    _ => proxy_domain_suffixes.push(rule.value.clone()),
-                }
-            }
-        }
-
-        // 生成 direct 域名的 DNS 规则 → dns-local
-        if !direct_domains.is_empty()
-            || !direct_domain_suffixes.is_empty()
-            || !direct_domain_keywords.is_empty()
-        {
-            let mut dns_rule = serde_json::Map::new();
-            if !direct_domains.is_empty() {
-                dns_rule.insert("domain".to_string(), serde_json::json!(direct_domains));
-            }
-            if !direct_domain_suffixes.is_empty() {
-                dns_rule.insert(
-                    "domain_suffix".to_string(),
-                    serde_json::json!(direct_domain_suffixes),
-                );
-            }
-            if !direct_domain_keywords.is_empty() {
-                dns_rule.insert(
-                    "domain_keyword".to_string(),
-                    serde_json::json!(direct_domain_keywords),
-                );
-            }
-            dns_rule.insert("server".to_string(), serde_json::json!("dns-local"));
-            dns_rules.push(serde_json::Value::Object(dns_rule));
-            log::info!(
-                "Added DNS rule for direct domains: {} domain, {} suffix, {} keyword",
-                direct_domains.len(),
-                direct_domain_suffixes.len(),
-                direct_domain_keywords.len()
+            let key = match rule.rule_type.as_str() {
+                "domain" => "domain",
+                "domain_keyword" => "domain_keyword",
+                _ => "domain_suffix",
+            };
+            push_domain_dns_rule(
+                &mut dns_rules,
+                serde_json::json!({ (key): [&rule.value] }),
+                &rule.outbound_mode,
+                settings,
             );
         }
 
-        // 生成 proxy 域名的 DNS 规则 → dns-remote
-        if !proxy_domains.is_empty()
-            || !proxy_domain_suffixes.is_empty()
-            || !proxy_domain_keywords.is_empty()
-        {
-            let mut dns_rule = serde_json::Map::new();
-            if !proxy_domains.is_empty() {
-                dns_rule.insert("domain".to_string(), serde_json::json!(proxy_domains));
-            }
-            if !proxy_domain_suffixes.is_empty() {
-                dns_rule.insert(
-                    "domain_suffix".to_string(),
-                    serde_json::json!(proxy_domain_suffixes),
-                );
-            }
-            if !proxy_domain_keywords.is_empty() {
-                dns_rule.insert(
-                    "domain_keyword".to_string(),
-                    serde_json::json!(proxy_domain_keywords),
-                );
-            }
-            dns_rule.insert("server".to_string(), serde_json::json!("dns-remote"));
-            dns_rules.push(serde_json::Value::Object(dns_rule));
-            log::info!(
-                "Added DNS rule for proxy domains: {} domain, {} suffix, {} keyword",
-                proxy_domains.len(),
-                proxy_domain_suffixes.len(),
-                proxy_domain_keywords.len()
-            );
-        }
-    }
-
-    // ========== 根据规则集(ruleset)生成对应的 DNS 规则 ==========
-    // 必须位于域名分流规则之后，保证域名分流优先匹配。
-    // 与域名规则同理：规则集中设为 direct 的域名类规则集也需要用 dns-local 解析
-    if routing_mode == "rule" {
-        let mut direct_rulesets: Vec<String> = Vec::new();
-        let mut proxy_rulesets: Vec<String> = Vec::new();
-        let mut direct_response_rulesets: Vec<String> = Vec::new();
-        let mut proxy_response_rulesets: Vec<String> = Vec::new();
-
+        // 纯域名规则集在解析前匹配；可能含 IP 的规则集在得到真实应答后匹配。
+        let mut response_rules = Vec::new();
         for rs in &enabled_rulesets {
-            // 只为有本地缓存的规则集生成 DNS 规则
             let local_path = match ruleset_cache_path(state, &rs.tag) {
                 Ok(path) => path,
                 Err(_) => continue,
@@ -2897,59 +2815,31 @@ async fn generate_config_with_settings(
             if !local_path.exists() {
                 continue;
             }
-
-            let needs_response_match = use_singbox_1_14_dns && !is_known_domain_ruleset(rs);
-            match (rs.outbound_mode.as_str(), needs_response_match) {
-                ("direct", true) => direct_response_rulesets.push(rs.tag.clone()),
-                ("direct", false) => direct_rulesets.push(rs.tag.clone()),
-                ("proxy" | "node" | "节点" | "profile" | "配置", true) => {
-                    proxy_response_rulesets.push(rs.tag.clone())
-                }
-                ("proxy" | "node" | "节点" | "profile" | "配置", false) => {
-                    proxy_rulesets.push(rs.tag.clone())
-                }
-                _ => {} // block 不需要 DNS 规则
+            if use_singbox_1_14_dns && !is_known_domain_ruleset(rs) {
+                let response_rule = match rs.outbound_mode.as_str() {
+                    "direct" => serde_json::json!({
+                        "rule_set": [&rs.tag], "match_response": true, "server": "dns-local"
+                    }),
+                    "proxy" | "node" | "节点" | "profile" | "配置" => serde_json::json!({
+                        "rule_set": [&rs.tag], "match_response": true, "action": "respond"
+                    }),
+                    _ => continue,
+                };
+                response_rules.push(response_rule);
+            } else {
+                push_domain_dns_rule(
+                    &mut dns_rules,
+                    serde_json::json!({ "rule_set": [&rs.tag] }),
+                    &rs.outbound_mode,
+                    settings,
+                );
             }
         }
-
-        if !direct_rulesets.is_empty() {
+        if !response_rules.is_empty() {
             dns_rules.push(serde_json::json!({
-                "rule_set": direct_rulesets,
-                "server": "dns-local"
+                "action": "evaluate", "server": "dns-remote"
             }));
-            log::info!(
-                "Added DNS rule for {} direct rulesets",
-                direct_rulesets.len()
-            );
-        }
-
-        if !proxy_rulesets.is_empty() {
-            dns_rules.push(serde_json::json!({
-                "rule_set": proxy_rulesets,
-                "server": "dns-remote"
-            }));
-            log::info!("Added DNS rule for {} proxy rulesets", proxy_rulesets.len());
-        }
-
-        if !direct_response_rulesets.is_empty() || !proxy_response_rulesets.is_empty() {
-            dns_rules.push(serde_json::json!({
-                "action": "evaluate",
-                "server": "dns-remote"
-            }));
-            if !direct_response_rulesets.is_empty() {
-                dns_rules.push(serde_json::json!({
-                    "rule_set": direct_response_rulesets,
-                    "match_response": true,
-                    "server": "dns-local"
-                }));
-            }
-            if !proxy_response_rulesets.is_empty() {
-                dns_rules.push(serde_json::json!({
-                    "rule_set": proxy_response_rulesets,
-                    "match_response": true,
-                    "action": "respond"
-                }));
-            }
+            dns_rules.extend(response_rules);
         }
     }
 
@@ -2957,29 +2847,23 @@ async fn generate_config_with_settings(
         .iter()
         .any(|rule| rule.get("action").and_then(serde_json::Value::as_str) == Some("evaluate"));
 
-    // FakeDNS 规则（放在域名 DNS 规则之后，确保域名规则优先匹配）
-    if settings.fake_dns {
-        // TUN 网卡仅 IPv4：FakeIP 不分配 IPv6 段，AAAA 走系统原生解析/链路。
-        let mut fakeip_server = serde_json::json!({
+    // 未命中显式域名规则的查询使用 FakeDNS 兜底，保留直连和 IP 应答规则的优先级。
+    let use_fake_dns = settings.fake_dns && settings.tun_enabled;
+    if use_fake_dns {
+        // 只有 TUN 能接管返回给应用的虚拟地址；纯代理和内核内部解析必须返回真实 IP。
+        let fakeip_server = serde_json::json!({
             "tag": "dns-fakeip",
             "type": "fakeip",
             "inet4_range": "198.18.0.0/15"
         });
-        if !settings.tun_enabled {
-            fakeip_server["inet6_range"] = serde_json::json!("fc00::/18");
-        }
         dns_servers.push(fakeip_server);
-        let mut fake_dns_rule = serde_json::json!({
-            "query_type": if settings.tun_enabled {
-                serde_json::json!(["A"])
-            } else {
-                serde_json::json!(["A", "AAAA"])
-            },
-            "server": "dns-fakeip"
+        let fake_dns_rule = serde_json::json!({
+            "inbound": ["tun-in"],
+            "query_type": ["A"],
+            "server": "dns-fakeip",
+            // Windows 强制结束内核时可能来不及保存映射，避免客户端长期保留旧 FakeIP。
+            "rewrite_ttl": 1
         });
-        if settings.tun_enabled {
-            fake_dns_rule["inbound"] = serde_json::json!(["tun-in"]);
-        }
         dns_rules.push(fake_dns_rule);
     }
 
@@ -3054,13 +2938,15 @@ async fn generate_config_with_settings(
         serde_json::json!({
             "enabled": true,
             "path": "cache.db",
-            "store_dns": true
+            "store_dns": true,
+            "store_fakeip": use_fake_dns
         })
     } else {
         serde_json::json!({
             "enabled": true,
             "path": "cache.db",
-            "store_rdrc": true
+            "store_rdrc": true,
+            "store_fakeip": use_fake_dns
         })
     };
     let mut config = serde_json::json!({
@@ -3470,6 +3356,7 @@ async fn generate_config_with_settings(
     }
 
     // 添加规则集路由规则，必须位于域名分流规则之后，保证域名分流优先匹配。
+    let mut unavailable_rulesets = Vec::new();
 
     if routing_mode == "rule" {
         for rs in &enabled_rulesets {
@@ -3478,12 +3365,14 @@ async fn generate_config_with_settings(
                 Ok(path) => path,
                 Err(_) => {
                     log::warn!("Invalid ruleset tag '{}', skipping", rs.tag);
+                    unavailable_rulesets.push(format!("{}（标签无效）", rs.tag));
                     continue;
                 }
             };
 
             if !local_path.exists() {
                 log::warn!("Ruleset cache not found, skipping: {}", rs.tag);
+                unavailable_rulesets.push(rs.tag.clone());
                 continue;
             }
 
@@ -3575,7 +3464,14 @@ async fn generate_config_with_settings(
         serde_json::to_string_pretty(&plugin_bridge_specs).map_err(|e| e.to_string())?;
     fs::write(plugin_bridge_path(state), plugin_bridge_str).map_err(|e| e.to_string())?;
 
-    Ok(CommandResult::ok())
+    if unavailable_rulesets.is_empty() {
+        Ok(CommandResult::ok())
+    } else {
+        Ok(CommandResult::ok_with_warning(format!(
+            "以下已启用规则集未加载，相关流量会继续匹配后续规则或默认出站：{}。请在【规则集】更新或修正后点击【立即应用】。",
+            unavailable_rulesets.join("、")
+        )))
+    }
 }
 
 fn get_singbox_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -3620,6 +3516,46 @@ static SYSTEM_PROXY_SNAPSHOT: once_cell::sync::Lazy<std::sync::Mutex<Option<Syst
     once_cell::sync::Lazy::new(|| std::sync::Mutex::new(None));
 
 #[cfg(windows)]
+fn parse_registry_value(output: &str, name: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        let rest = line.trim_start().strip_prefix(name)?;
+        if !rest.starts_with(char::is_whitespace) {
+            return None;
+        }
+        let (value_type, value) = rest.trim_start().split_once(char::is_whitespace)?;
+        value_type
+            .starts_with("REG_")
+            .then(|| value.trim().to_string())
+    })
+}
+
+#[cfg(windows)]
+fn notify_system_proxy_changed() -> Result<(), String> {
+    use windows::Win32::Networking::WinInet::{
+        InternetSetOptionW, INTERNET_OPTION_REFRESH, INTERNET_OPTION_SETTINGS_CHANGED,
+    };
+    // 修改注册表后通知 WinINet，使已运行的浏览器重新读取代理设置。
+    unsafe {
+        InternetSetOptionW(None, INTERNET_OPTION_SETTINGS_CHANGED, None, 0)
+            .map_err(|e| format!("通知代理设置变更失败：{}", e))?;
+        InternetSetOptionW(None, INTERNET_OPTION_REFRESH, None, 0)
+            .map_err(|e| format!("刷新代理设置失败：{}", e))?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+async fn apply_system_proxy(port: u16) -> Result<(), String> {
+    let proxy = format!("127.0.0.1:{}", port);
+    set_registry_value("ProxyServer", "REG_SZ", &proxy).await?;
+    // 旧 PAC 和绕过列表会让部分网站跳过手动代理；断开时由快照恢复。
+    set_registry_value("ProxyOverride", "REG_SZ", "localhost;127.*;[::1]").await?;
+    delete_registry_value("AutoConfigURL").await?;
+    set_registry_value("ProxyEnable", "REG_DWORD", "1").await?;
+    notify_system_proxy_changed()
+}
+
+#[cfg(windows)]
 async fn query_registry_value(name: &str) -> Result<Option<String>, String> {
     let output = Command::new("reg")
         .args([
@@ -3638,13 +3574,7 @@ async fn query_registry_value(name: &str) -> Result<Option<String>, String> {
     }
 
     let stdout = decode_windows_output(&output.stdout);
-    let value = stdout
-        .lines()
-        .find(|line| line.contains(name))
-        .and_then(|line| line.split_whitespace().last())
-        .map(|s| s.to_string());
-
-    Ok(value)
+    Ok(parse_registry_value(&stdout, name))
 }
 
 #[cfg(windows)]
@@ -3840,6 +3770,10 @@ fn clear_persisted_proxy_snapshot(state: &AppState) -> Result<(), String> {
     if path.exists() {
         fs::remove_file(path).map_err(|e| e.to_string())?;
     }
+    // 与磁盘快照同时清空，下一次连接才能重新保存系统原有配置。
+    *SYSTEM_PROXY_SNAPSHOT
+        .lock()
+        .map_err(|_| "系统代理快照锁失败".to_string())? = None;
     Ok(())
 }
 
@@ -3858,7 +3792,7 @@ async fn force_clear_system_proxy() -> Result<(), String> {
     delete_registry_value("ProxyServer").await?;
     delete_registry_value("ProxyOverride").await?;
     delete_registry_value("AutoConfigURL").await?;
-    Ok(())
+    notify_system_proxy_changed()
 }
 
 #[cfg(windows)]
@@ -3897,7 +3831,7 @@ async fn restore_system_proxy_snapshot(mode: ProxyCleanupMode) -> Result<(), Str
         force_clear_system_proxy().await?;
     }
 
-    Ok(())
+    notify_system_proxy_changed()
 }
 
 #[cfg(windows)]
@@ -3928,26 +3862,25 @@ async fn restore_persisted_or_clear(state: &AppState) -> Result<(), String> {
             delete_registry_value("AutoConfigURL").await?;
         }
 
+        notify_system_proxy_changed()?;
         clear_persisted_proxy_snapshot(state)?;
         return Ok(());
     }
 
-    force_clear_system_proxy().await
+    force_clear_system_proxy().await?;
+    clear_persisted_proxy_snapshot(state)
 }
 
 async fn enable_system_proxy_internal(port: u16) -> Result<(), String> {
-    let proxy = format!("127.0.0.1:{}", port);
-
     #[cfg(windows)]
     {
         snapshot_system_proxy_if_needed().await?;
-        set_registry_value("ProxyEnable", "REG_DWORD", "1").await?;
-        set_registry_value("ProxyServer", "REG_SZ", &proxy).await?;
+        apply_system_proxy(port).await?;
     }
 
     #[cfg(not(windows))]
     {
-        let _ = proxy;
+        let _ = port;
     }
 
     Ok(())
@@ -3955,11 +3888,8 @@ async fn enable_system_proxy_internal(port: u16) -> Result<(), String> {
 
 #[cfg(windows)]
 async fn enable_system_proxy_for_state(state: &AppState, port: u16) -> Result<(), String> {
-    let proxy = format!("127.0.0.1:{}", port);
     snapshot_system_proxy_if_needed_for_state(state).await?;
-    set_registry_value("ProxyEnable", "REG_DWORD", "1").await?;
-    set_registry_value("ProxyServer", "REG_SZ", &proxy).await?;
-    Ok(())
+    apply_system_proxy(port).await
 }
 
 #[cfg(not(windows))]
@@ -3975,9 +3905,9 @@ async fn disable_system_proxy_for_state(
     match mode {
         ProxyCleanupMode::RestoreSnapshot => restore_persisted_or_clear(state).await,
         ProxyCleanupMode::ForceClear => {
-            let result = force_clear_system_proxy().await;
+            force_clear_system_proxy().await?;
             clear_persisted_proxy_snapshot(state)?;
-            result
+            Ok(())
         }
     }
 }
@@ -4208,6 +4138,41 @@ mod tests {
             "http=127.0.0.1:7890;https=127.0.0.1:7890"
         ));
         assert!(!looks_like_local_proxy_server("10.0.0.1:7890"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn proxy_snapshot_preserves_registry_values_with_spaces_and_clears_both_copies() {
+        assert_eq!(
+            parse_registry_value(
+                "    ProxyOverride    REG_SZ    <local>; example.com\n",
+                "ProxyOverride"
+            ),
+            Some("<local>; example.com".into())
+        );
+        assert_eq!(
+            parse_registry_value("    ProxyEnable    REG_DWORD    0x1\n", "ProxyEnable"),
+            Some("0x1".into())
+        );
+        assert_eq!(
+            parse_registry_value("    ProxyServerOther    REG_SZ    wrong\n", "ProxyServer"),
+            None
+        );
+        let data_dir = unique_test_dir("proxy-snapshot-clear");
+        fs::create_dir_all(&data_dir).unwrap();
+        let state = AppState::new(data_dir.clone());
+        let snapshot = SystemProxySnapshot {
+            proxy_enable: Some("0x1".into()),
+            proxy_server: Some("old.proxy:8080".into()),
+            proxy_override: Some("<local>; example.com".into()),
+            auto_config_url: Some("https://example.com/proxy.pac".into()),
+        };
+        save_persisted_proxy_snapshot(&state, &snapshot).unwrap();
+        *SYSTEM_PROXY_SNAPSHOT.lock().unwrap() = Some(snapshot);
+        clear_persisted_proxy_snapshot(&state).unwrap();
+        assert!(!persisted_proxy_snapshot_path(&state).exists());
+        assert!(SYSTEM_PROXY_SNAPSHOT.lock().unwrap().is_none());
+        fs::remove_dir_all(data_dir).unwrap();
     }
 
     #[test]
@@ -5806,6 +5771,134 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn generate_config_tun_preserves_fixed_node_rules_only_in_rule_mode() {
+        let data_dir = unique_test_dir("tun-routing-mode");
+        let state = AppState::new(data_dir.clone());
+        let profiles = ProfilesData {
+            profiles: vec![make_profile("default", "Default"), make_profile("us", "US")],
+            active_profile_id: Some("default".to_string()),
+            active_node_tag: Some("default-node".to_string()),
+            node_selections: HashMap::new(),
+        };
+        write_json_file(&state.profiles_file(), &profiles);
+        write_json_file(
+            &state.configs_dir().join("default.json"),
+            &vec![make_node("default-node")],
+        );
+        write_json_file(
+            &state.configs_dir().join("us.json"),
+            &vec![make_node("us-node")],
+        );
+        fs::create_dir_all(state.rulesets_cache_dir()).unwrap();
+        write_json_file(
+            &state.rulesets_cache_dir().join("geosite-google.srs"),
+            &serde_json::json!({ "version": 1, "rules": [{ "domain_suffix": ["google.com"] }] }),
+        );
+        let mut google = make_ruleset("geosite-google", "node", Some("us::us-node"));
+        google.format = "source".into();
+        google.url = Some(
+            "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-google.srs"
+                .into(),
+        );
+        *state.rulesets.lock().await = vec![google];
+        *state.custom_rules.lock().await = CustomRules {
+            domain_rules: vec![make_domain_rule("openai.com", "us::us-node")],
+        };
+
+        for tun_enabled in [false, true] {
+            for mode in ["rule", "global-proxy", "global-direct"] {
+                for modern_dns in [false, true] {
+                    let mut settings = state.settings.lock().await.clone();
+                    settings.tun_enabled = tun_enabled;
+                    settings.system_proxy = true;
+                    settings.fake_dns = true;
+                    settings.routing_mode = mode.to_string();
+                    let result = generate_config_with_settings(&state, &settings, modern_dns)
+                        .await
+                        .unwrap();
+                    assert!(result.success);
+                    let config = read_generated_config(&state);
+                    let rules = config["route"]["rules"].as_array().unwrap();
+                    let fixed_routes: Vec<_> = rules
+                        .iter()
+                        .filter(|rule| rule["outbound"] == "us::us-node")
+                        .collect();
+                    assert_eq!(
+                        fixed_routes.len(),
+                        if mode == "rule" { 2 } else { 0 },
+                        "TUN={tun_enabled}, mode={mode}, modern DNS={modern_dns}"
+                    );
+                    if mode == "rule" {
+                        assert!(fixed_routes
+                            .iter()
+                            .any(|rule| rule["rule_set"] == serde_json::json!(["geosite-google"])));
+                        assert!(fixed_routes
+                            .iter()
+                            .any(|rule| rule["domain"] == serde_json::json!(["openai.com"])));
+                    }
+                    assert_eq!(
+                        config["route"]["final"],
+                        if mode == "global-direct" {
+                            "direct"
+                        } else {
+                            "PROXY"
+                        }
+                    );
+                    assert_eq!(
+                        config["inbounds"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|inbound| inbound["tag"] == "tun-in"),
+                        tun_enabled
+                    );
+                    for tag in ["mixed-in", "socks-in"] {
+                        assert!(config["inbounds"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|inbound| inbound["tag"] == tag));
+                        assert!(has_sniff_rule_for_inbound(rules, tag));
+                    }
+                    assert_eq!(config["route"]["auto_detect_interface"], true);
+                    assert_eq!(
+                        config["experimental"]["cache_file"]["store_fakeip"],
+                        tun_enabled
+                    );
+                    for rule in config["dns"]["rules"].as_array().unwrap() {
+                        if rule["server"] == "dns-fakeip" {
+                            assert!(tun_enabled, "pure proxy must not return unroutable FakeIP");
+                            assert_eq!(rule["inbound"], serde_json::json!(["tun-in"]));
+                        }
+                    }
+                    if !tun_enabled {
+                        assert!(config["dns"]["servers"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .all(|server| server["type"] != "fakeip"));
+                    }
+                    if let Some(kernel) = std::env::var_os("KUNBOX_TEST_SINGBOX") {
+                        let mut command = Command::new(kernel);
+                        command
+                            .args(["check", "-c"])
+                            .arg(state.config_dir.join("config.json"));
+                        #[cfg(windows)]
+                        command.creation_flags(CREATE_NO_WINDOW);
+                        let output = command.output().await.unwrap();
+                        assert!(
+                            output.status.success(),
+                            "{}",
+                            String::from_utf8_lossy(&output.stderr)
+                        );
+                    }
+                }
+            }
+        }
+        fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn generate_config_supports_profile_scoped_and_bare_ruleset_node_routes() {
         let data_dir = unique_test_dir("ruleset-profile-scoped-node-routing");
         let state = AppState::new(data_dir.clone());
@@ -6290,6 +6383,125 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn generate_config_tun_dns_preserves_proxy_priority_and_fakeip() {
+        let data_dir = unique_test_dir("tun-dns-priority");
+        let state = AppState::new(data_dir.clone());
+        write_json_file(
+            &state.profiles_file(),
+            &ProfilesData {
+                profiles: vec![make_profile("profile-a", "Profile A")],
+                active_profile_id: Some("profile-a".into()),
+                active_node_tag: Some("node-a".into()),
+                node_selections: HashMap::new(),
+            },
+        );
+        write_json_file(
+            &state.configs_dir().join("profile-a.json"),
+            &vec![make_node("node-a")],
+        );
+        let proxy = make_domain_rule("proxy.example.com", "node-a");
+        let mut direct = make_domain_rule("example.com", "node-a");
+        direct.rule_type = "domain_suffix".into();
+        direct.outbound_mode = "direct".into();
+        *state.custom_rules.lock().await = CustomRules {
+            domain_rules: vec![proxy, direct],
+        };
+        let mut sets = Vec::new();
+        for (tag, mode, domain) in [
+            ("geosite-openai", "node", "chatgpt.com"),
+            ("geosite-cn", "direct", "chatgpt.com"),
+            ("geosite-alibaba@ads", "block", "ads.example.com"),
+        ] {
+            let mut rs = make_ruleset(tag, mode, Some("node-a"));
+            rs.format = "source".into();
+            rs.url = Some(format!(
+                "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/{tag}.srs"
+            ));
+            write_json_file(
+                &state.rulesets_cache_dir().join(format!("{tag}.srs")),
+                &serde_json::json!({ "version": 1, "rules": [{ "domain_suffix": [domain] }] }),
+            );
+            sets.push(rs);
+        }
+        *state.rulesets.lock().await = sets;
+        for modern in [false, true] {
+            for fake_dns in [false, true] {
+                let mut settings = AppSettings::default();
+                settings.tun_enabled = true;
+                settings.fake_dns = fake_dns;
+                settings.routing_mode = "rule".into();
+                let result = generate_config_with_settings(&state, &settings, modern)
+                    .await
+                    .unwrap();
+                assert!(result.success);
+                assert!(result.warning.is_none());
+                let config = read_generated_config(&state);
+                let rules = config["dns"]["rules"].as_array().unwrap();
+                let proxy = rules
+                    .iter()
+                    .position(|r| r["domain"][0] == "proxy.example.com")
+                    .unwrap();
+                let direct = rules
+                    .iter()
+                    .position(|r| r["domain_suffix"][0] == "example.com")
+                    .unwrap();
+                assert!(
+                    proxy < direct,
+                    "DNS must preserve the earlier proxy exception"
+                );
+                let openai = rules
+                    .iter()
+                    .position(|r| r["rule_set"][0] == "geosite-openai")
+                    .unwrap();
+                let cn = rules
+                    .iter()
+                    .position(|r| r["rule_set"][0] == "geosite-cn")
+                    .unwrap();
+                assert!(direct < openai && openai < cn);
+                assert_eq!(rules[direct]["server"], "dns-local");
+                assert_eq!(rules[cn]["server"], "dns-local");
+                for index in [proxy, openai] {
+                    if fake_dns {
+                        assert_eq!(rules[index]["server"], "dns-fakeip");
+                        assert_eq!(rules[index]["inbound"], serde_json::json!(["tun-in"]));
+                        assert_eq!(rules[index]["query_type"], serde_json::json!(["A"]));
+                        assert_eq!(rules[index]["rewrite_ttl"], 1);
+                        assert_eq!(rules[index + 1]["server"], "dns-remote");
+                        assert!(rules[index + 1].get("inbound").is_none());
+                    } else {
+                        assert_eq!(rules[index]["server"], "dns-remote");
+                    }
+                }
+                assert_eq!(
+                    config["experimental"]["cache_file"]["store_fakeip"],
+                    fake_dns
+                );
+                assert!(config["route"]["rule_set"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|r| r["tag"] == "geosite-alibaba@ads"));
+                // 可选的真实内核检查：普通单测不依赖已安装的 sing-box。
+                if let Some(kernel) = std::env::var_os("KUNBOX_TEST_SINGBOX") {
+                    let mut command = Command::new(kernel);
+                    command
+                        .args(["check", "-c"])
+                        .arg(state.config_dir.join("config.json"));
+                    #[cfg(windows)]
+                    command.creation_flags(CREATE_NO_WINDOW);
+                    let output = command.output().await.unwrap();
+                    assert!(
+                        output.status.success(),
+                        "{}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                }
+            }
+        }
+        fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn generate_config_scopes_fakedns_to_tun_inbound_when_tun_is_enabled() {
         let data_dir = unique_test_dir("tun-fakedns-scope");
         let state = AppState::new(data_dir.clone());
@@ -6396,6 +6608,49 @@ mod tests {
         }));
 
         let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn generate_config_warns_about_missing_enabled_rulesets_until_downloaded() {
+        let data_dir = unique_test_dir("missing-ruleset-warning");
+        let state = AppState::new(data_dir.clone());
+        let profiles_data = ProfilesData {
+            profiles: vec![make_profile("profile-a", "Profile A")],
+            active_profile_id: Some("profile-a".to_string()),
+            active_node_tag: Some("node-a".to_string()),
+            node_selections: HashMap::new(),
+        };
+        write_json_file(&state.profiles_file(), &profiles_data);
+        write_json_file(
+            &state.configs_dir().join("profile-a.json"),
+            &vec![make_node("node-a")],
+        );
+        let mut disabled = make_ruleset("disabled-missing", "direct", None);
+        disabled.enabled = false;
+        *state.rulesets.lock().await = vec![make_ruleset("missing-cn", "direct", None), disabled];
+
+        let result = generate_config(&state).await.unwrap();
+        assert!(result.success);
+        let warning = result.warning.unwrap();
+        assert!(warning.contains("missing-cn"));
+        assert!(!warning.contains("disabled-missing"));
+        assert!(read_generated_config(&state)["route"]
+            .get("rule_set")
+            .is_none());
+
+        fs::create_dir_all(state.rulesets_cache_dir()).unwrap();
+        fs::write(state.rulesets_cache_dir().join("missing-cn.srs"), b"dummy").unwrap();
+        let result = generate_config(&state).await.unwrap();
+        assert!(result.success);
+        assert!(result.warning.is_none());
+        let config = read_generated_config(&state);
+        assert_eq!(config["route"]["rule_set"][0]["tag"], "missing-cn");
+        assert!(config["route"]["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|rule| rule["rule_set"] == serde_json::json!(["missing-cn"])));
+        fs::remove_dir_all(data_dir).unwrap();
     }
 
     #[tokio::test]

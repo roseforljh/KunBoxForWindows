@@ -25,6 +25,7 @@ import {
 import { Modal, ModalButton } from './ui/Modal'
 import { AppSelect } from './ui/Select'
 import { useNodesStore } from '../stores/nodesStore'
+import { useConnectionStore } from '../stores/connectionStore'
 import {
   buildHubRuleSets,
   isHubFormatAvailable,
@@ -34,6 +35,7 @@ import {
 } from './rulesets-model'
 import { useToast } from './ui/Toast'
 import { useProfiles } from '../lib/useProfiles'
+import { RoutingModeNotice } from './RoutingModeNotice'
 
 const fastTransition = { duration: 0.15, ease: [0.4, 0, 0.2, 1] as const }
 
@@ -322,6 +324,7 @@ export default function RuleSets() {
   } | null>(null)
 
   const toast = useToast()
+  const { error: showError } = toast
 
   // Track which rulesets are currently downloading
   const [downloadingTags, setDownloadingTags] = useState<Set<string>>(new Set())
@@ -341,57 +344,59 @@ export default function RuleSets() {
   })
 
 
-  // Load rulesets from main process on mount
+  const [isSaving, setIsSaving] = useState(false)
+  const [isApplying, setIsApplying] = useState(false)
+  const [updateResult, setUpdateResult] = useState<string | null>(null)
+  const operationRef = useRef(false)
+  const savedRuleSetsRef = useRef<RuleSetItem[]>([])
+  const needsRestart = useConnectionStore(s => s.needsRestart)
+  const vpnState = useConnectionStore(s => s.state)
+  const busy = isSaving || isApplying || downloadingTags.size > 0
+
   useEffect(() => {
     window.api.ruleset.list().then((data) => {
-      if (data) {
-        setRuleSets(data)
-      } else {
-        setRuleSets(defaultRuleSets)
-      }
+      const loaded = data ?? defaultRuleSets
+      savedRuleSetsRef.current = loaded
+      setRuleSets(loaded)
       setIsRuleSetsLoaded(true)
-    })
-  }, [])
+    }).catch(error => showError(`读取规则集失败: ${String(error)}`))
+  }, [showError])
 
-  const ruleSetsRef = useRef(ruleSets)
-  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
-
-  useEffect(() => {
-    ruleSetsRef.current = ruleSets
-  }, [ruleSets])
-
-  const flushSave = useCallback(async () => {
-    if (saveTimeoutRef.current) {
-      clearTimeout(saveTimeoutRef.current)
-      saveTimeoutRef.current = null
-    }
+  // Complete persistence before offering restart; never save merely by visiting this page.
+  const persistRuleSets = async (next: RuleSetItem[], message: string) => {
+    setIsSaving(true)
     try {
-      await window.api.ruleset.save(ruleSetsRef.current)
+      await window.api.ruleset.save(next)
+      savedRuleSetsRef.current = next
+      setRuleSets(next)
+      toast.showRestartToast(message)
+      return true
     } catch (error) {
-      console.error('Failed to save rulesets:', error)
-      toast.error('保存规则集失败')
+      setRuleSets(savedRuleSetsRef.current)
+      toast.error(`保存规则集失败: ${String(error)}`)
+      return false
+    } finally {
+      setIsSaving(false)
     }
-  }, [toast])
+  }
 
-  // Save rulesets to main process when changed (only after initial load)
-  useEffect(() => {
-    if (isRuleSetsLoaded) {
-      if (saveTimeoutRef.current) {
-        clearTimeout(saveTimeoutRef.current)
-      }
-      saveTimeoutRef.current = setTimeout(() => {
-        flushSave()
-      }, 500)
+  const applyRules = async () => {
+    if (operationRef.current || busy) return
+    operationRef.current = true
+    setIsApplying(true)
+    try {
+      const result = await window.api.singbox.restart()
+      if (!result.success) throw new Error(result.error || '未知错误')
+      useConnectionStore.getState().setNeedsRestart(false)
+      if (result.warning) toast.warning(result.warning)
+      else toast.success('分流配置已应用')
+    } catch (error) {
+      toast.error(`应用失败: ${String(error)}`)
+    } finally {
+      operationRef.current = false
+      setIsApplying(false)
     }
-  }, [ruleSets, isRuleSetsLoaded, flushSave])
-
-  useEffect(() => {
-    return () => {
-      if (saveTimeoutRef.current) {
-        flushSave()
-      }
-    }
-  }, [flushSave])
+  }
 
   const loadProfilesSafe = useCallback(async () => {
     try {
@@ -462,49 +467,53 @@ export default function RuleSets() {
 
   const toggleRuleSet = async (id: string) => {
     const ruleSet = ruleSets.find(rs => rs.id === id)
-    if (!ruleSet) return
-    
-    const newEnabled = !ruleSet.enabled
-    
-    // If enabling a remote ruleset, check if it needs download
-    if (newEnabled && ruleSet.type === 'remote') {
-      const isCached = await window.api.ruleset.isCached(ruleSet.tag)
-      
-      if (!isCached) {
-        // Start download
-        setDownloadingTags(prev => new Set(prev).add(ruleSet.tag))
-        toast.info(`正在下载规则集「${ruleSet.name}」...`)
-        
-        try {
-          const result = await window.api.ruleset.download(ruleSet)
-          if (result.success) {
-            toast.showRestartToast(`规则集「${ruleSet.name}」下载成功`)
-            // Now enable it
-            setRuleSets(prev => prev.map(rs => rs.id === id ? { ...rs, enabled: true } : rs))
-          } else {
-            toast.error(`规则集「${ruleSet.name}」下载失败`)
-            // Don't enable if download failed
-          }
-        } catch (e) {
-          toast.error(`规则集「${ruleSet.name}」下载失败: ${e instanceof Error ? e.message : String(e)}`)
-        } finally {
-          setDownloadingTags(prev => {
-            const next = new Set(prev)
-            next.delete(ruleSet.tag)
-            return next
-          })
-        }
-        return
-      } else {
-        // Already cached, show toast
-        toast.showRestartToast(`规则集「${ruleSet.name}」已启用（本地缓存）`)
+    if (!ruleSet || operationRef.current) return
+    operationRef.current = true
+    setIsSaving(true)
+    try {
+      if (!ruleSet.enabled && ruleSet.type === 'remote') {
+        setDownloadingTags(new Set([ruleSet.tag]))
+        const result = await window.api.ruleset.download(ruleSet)
+        if (!result.success) throw new Error(result.error || '下载失败')
       }
-    } else if (!newEnabled) {
-      toast.showRestartToast(`规则集「${ruleSet.name}」已禁用`)
+      await persistRuleSets(
+        ruleSets.map(rs => rs.id === id ? { ...rs, enabled: !rs.enabled } : rs),
+        `规则集「${ruleSet.name}」已${ruleSet.enabled ? '禁用' : '启用'}`
+      )
+    } catch (error) {
+      toast.error(`启用规则集失败: ${String(error)}`)
+    } finally {
+      setDownloadingTags(new Set())
+      setIsSaving(false)
+      operationRef.current = false
     }
-    
-    // Toggle enabled state
-    setRuleSets(prev => prev.map(rs => rs.id === id ? { ...rs, enabled: newEnabled } : rs))
+  }
+
+  const updateRuleSets = async (targets: RuleSetItem[]) => {
+    if (operationRef.current || targets.length === 0) return
+    operationRef.current = true
+    setDownloadingTags(new Set(targets.map(rs => rs.tag)))
+    setUpdateResult(null)
+    let updated = 0
+    const failures: string[] = []
+    try {
+      for (const ruleSet of targets) {
+        try {
+          const result = await window.api.ruleset.download(ruleSet, true)
+          if (!result.success) throw new Error(result.error || '下载失败')
+          updated++
+        } catch (error) {
+          failures.push(`${ruleSet.name}: ${String(error)}`)
+        }
+      }
+      const summary = `已更新 ${updated} 个规则集${failures.length ? `，失败 ${failures.length} 个，已有缓存保留` : ''}`
+      setUpdateResult([summary, ...failures].join('\n'))
+      if (updated > 0) toast.showRestartToast(summary)
+      else toast.error(summary)
+    } finally {
+      setDownloadingTags(new Set())
+      operationRef.current = false
+    }
   }
 
   const confirmDelete = (id: string) => {
@@ -512,14 +521,18 @@ export default function RuleSets() {
     setShowDeleteConfirm(true)
   }
 
-  const deleteRuleSet = () => {
-    if (deleteTargetId) {
-      const target = ruleSets.find((rs) => rs.id === deleteTargetId)
-      setRuleSets((prev) => prev.filter((rs) => rs.id !== deleteTargetId))
-      toast.showRestartToast(`已删除规则集「${target?.name || target?.tag}」`)
-      setDeleteTargetId(null)
+  const deleteRuleSet = async () => {
+    if (!deleteTargetId || operationRef.current) return
+    operationRef.current = true
+    try {
+      const target = ruleSets.find(rs => rs.id === deleteTargetId)
+      if (await persistRuleSets(ruleSets.filter(rs => rs.id !== deleteTargetId), `已删除规则集「${target?.name || target?.tag}」`)) {
+        setDeleteTargetId(null)
+        setShowDeleteConfirm(false)
+      }
+    } finally {
+      operationRef.current = false
     }
-    setShowDeleteConfirm(false)
   }
 
   const openEditDialog = (rs: RuleSetItem) => {
@@ -550,53 +563,57 @@ export default function RuleSets() {
     setShowAddDialog(true)
   }
 
-  const saveRuleSet = () => {
-    if (!dialogData.tag.trim()) return
-
-    // Validate node/profile selection
-    if (
-      (dialogData.outboundMode === 'node' || dialogData.outboundMode === 'profile') &&
-      !dialogData.outboundValue
-    ) {
+  const saveRuleSet = async () => {
+    const tag = dialogData.tag.trim()
+    if (operationRef.current) return
+    if (!/^[a-zA-Z0-9._@-]{1,128}$/.test(tag)) {
+      toast.error('标签只能包含字母、数字、点、下划线、@ 或连字符，最多 128 个字符')
+      return
+    }
+    if (ruleSets.some(rs => rs.tag === tag && rs.id !== editingRuleSet?.id)) {
+      toast.error('规则集标签已存在')
+      return
+    }
+    if (dialogData.type === 'remote' && !dialogData.url.trim()) {
+      toast.error('请输入规则集下载地址')
+      return
+    }
+    if ((dialogData.outboundMode === 'node' || dialogData.outboundMode === 'profile') && !dialogData.outboundValue) {
       toast.error(dialogData.outboundMode === 'node' ? '请选择节点' : '请选择配置')
       return
     }
-
-    if (editingRuleSet) {
-      setRuleSets((prev) =>
-        prev.map((rs) =>
-          rs.id === editingRuleSet.id
-            ? {
-                ...rs,
-                tag: dialogData.tag,
-                name: dialogData.name || dialogData.tag,
-                url: dialogData.url,
-                type: dialogData.type,
-                format: dialogData.format,
-                outboundMode: dialogData.outboundMode,
-                outboundValue: dialogData.outboundValue || undefined
-              }
-            : rs
-        )
-      )
-      toast.showRestartToast(`规则集「${dialogData.name || dialogData.tag}」已更新`)
-    } else {
-      const newRuleSet: RuleSetItem = {
-        id: Date.now().toString(),
-        tag: dialogData.tag,
-        name: dialogData.name || dialogData.tag,
-        url: dialogData.url,
-        type: dialogData.type,
-        format: dialogData.format,
-        outboundMode: dialogData.outboundMode,
-        outboundValue: dialogData.outboundValue || undefined,
-        enabled: true,
-        isBuiltIn: false
-      }
-      setRuleSets((prev) => [...prev, newRuleSet])
-      toast.showRestartToast(`规则集「${dialogData.name || dialogData.tag}」已添加`)
+    const nextRule: RuleSetItem = {
+      ...dialogData,
+      tag,
+      url: dialogData.url.trim(),
+      name: dialogData.name.trim() || tag,
+      id: editingRuleSet?.id ?? Date.now().toString(),
+      outboundValue: dialogData.outboundValue || undefined,
+      enabled: editingRuleSet?.enabled ?? true,
+      isBuiltIn: editingRuleSet?.isBuiltIn ?? false
     }
-    setShowAddDialog(false)
+    operationRef.current = true
+    setIsSaving(true)
+    try {
+      const sourceChanged = !!editingRuleSet && (
+        editingRuleSet.url !== nextRule.url || editingRuleSet.format !== nextRule.format || editingRuleSet.tag !== tag
+      )
+      if (nextRule.type === 'remote' && (nextRule.enabled || sourceChanged)) {
+        setDownloadingTags(new Set([tag]))
+        const result = await window.api.ruleset.download(nextRule, sourceChanged || !editingRuleSet)
+        if (!result.success) throw new Error(result.error || '下载失败')
+      }
+      const next = editingRuleSet
+        ? ruleSets.map(rs => rs.id === nextRule.id ? nextRule : rs)
+        : [...ruleSets, nextRule]
+      if (await persistRuleSets(next, `规则集「${nextRule.name}」已保存`)) setShowAddDialog(false)
+    } catch (error) {
+      toast.error(`保存规则集失败: ${String(error)}`)
+    } finally {
+      setDownloadingTags(new Set())
+      setIsSaving(false)
+      operationRef.current = false
+    }
   }
 
   const openHubAddConfirm = (hub: HubRuleSet, format: 'binary' | 'source') => {
@@ -605,64 +622,50 @@ export default function RuleSets() {
   }
 
   const confirmAddFromHub = async () => {
-    if (!hubAddTarget) return
+    if (!hubAddTarget || operationRef.current) return
     const { hub, format } = hubAddTarget
     const url = format === 'binary' ? hub.binaryUrl : hub.sourceUrl
     if (!url || !isHubFormatAvailable(hub, format)) {
       toast.error(`规则集「${hub.name}」没有可用的${format === 'binary' ? 'Binary' : 'Source'}文件`)
       return
     }
-    
     const newRuleSet: RuleSetItem = {
-      id: Date.now().toString(),
-      tag: hub.name,
-      name: hub.name,
-      url,
-      type: 'remote',
-      format,
-      outboundMode: 'proxy',
-      enabled: false, // Start disabled, enable after download
-      isBuiltIn: false
+      id: Date.now().toString(), tag: hub.name, name: hub.name, url,
+      type: 'remote', format, outboundMode: 'proxy', enabled: true, isBuiltIn: false
     }
-    
-    // Add to list first (disabled)
-    setRuleSets((prev) => [...prev, newRuleSet])
-    setShowHubAddConfirm(false)
-    setHubAddTarget(null)
-    
-    // Start download with loading indicator
-    setDownloadingTags(prev => new Set(prev).add(hub.name))
-    toast.info(`正在下载规则集「${hub.name}」...`)
-    
+    operationRef.current = true
+    setDownloadingTags(new Set([hub.name]))
     try {
-      const result = await window.api.ruleset.download(newRuleSet)
-      if (result.success) {
-        // Enable the ruleset after successful download
-        setRuleSets(prev => prev.map(rs => 
-          rs.tag === hub.name ? { ...rs, enabled: true } : rs
-        ))
-        if (result.cached) {
-          toast.showRestartToast(`规则集「${hub.name}」已缓存`)
-        } else {
-          toast.showRestartToast(`规则集「${hub.name}」下载成功`)
-        }
-      } else {
-        toast.error(`规则集「${hub.name}」下载失败: ${result.error || '未知错误'}`)
+      const result = await window.api.ruleset.download(newRuleSet, true)
+      if (!result.success) throw new Error(result.error || '下载失败')
+      if (await persistRuleSets([...ruleSets, newRuleSet], `规则集「${hub.name}」已添加`)) {
+        setShowHubAddConfirm(false)
+        setHubAddTarget(null)
       }
-    } catch (e) {
-      toast.error(`规则集「${hub.name}」下载失败: ${e instanceof Error ? e.message : String(e)}`)
+    } catch (error) {
+      toast.error(`规则集「${hub.name}」下载失败: ${String(error)}`)
     } finally {
-      setDownloadingTags(prev => {
-        const next = new Set(prev)
-        next.delete(hub.name)
-        return next
-      })
+      setDownloadingTags(new Set())
+      operationRef.current = false
     }
   }
 
-  const resetToDefaults = () => {
-    setRuleSets(defaultRuleSets)
-    toast.showRestartToast('已重置为默认规则集')
+  const resetToDefaults = async () => {
+    if (operationRef.current) return
+    operationRef.current = true
+    setIsSaving(true)
+    try {
+      for (const ruleSet of defaultRuleSets.filter(rs => rs.enabled)) {
+        const result = await window.api.ruleset.download(ruleSet)
+        if (!result.success) throw new Error(result.error || '下载失败')
+      }
+      await persistRuleSets(defaultRuleSets, '已重置为默认规则集')
+    } catch (error) {
+      toast.error(`重置规则集失败: ${String(error)}`)
+    } finally {
+      setIsSaving(false)
+      operationRef.current = false
+    }
   }
 
   const getModeIcon = (mode: RuleSetItem['outboundMode']) => {
@@ -733,7 +736,7 @@ export default function RuleSets() {
   }
 
   return (
-    <div className="h-full flex flex-col px-6 pb-6 overflow-y-auto">
+    <fieldset disabled={busy || !isRuleSetsLoaded} className="min-w-0 h-full flex flex-col px-6 pb-6 overflow-y-auto">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-4">
@@ -750,6 +753,14 @@ export default function RuleSets() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => updateRuleSets(ruleSets.filter(rs => rs.type === 'remote'))}
+            disabled={!ruleSets.some(rs => rs.type === 'remote')}
+            className="h-10 px-4 rounded-xl text-sm font-medium flex items-center gap-2 bg-[var(--bg-secondary)] text-[var(--text-primary)] border border-[var(--glass-border)] disabled:opacity-50"
+          >
+            <RefreshCw className={`w-4 h-4 ${downloadingTags.size > 0 ? 'animate-spin' : ''}`} />
+            {downloadingTags.size > 0 ? '下载中…' : '更新全部'}
+          </button>
           <button
             onClick={() => {
               setShowHubDialog(true)
@@ -777,6 +788,19 @@ export default function RuleSets() {
         </div>
       </div>
 
+      <RoutingModeNotice />
+      {needsRestart && vpnState === 'connected' && (
+        <div className="mb-4 p-3 rounded-xl bg-amber-500/15 text-amber-500 flex items-center justify-between gap-3">
+          <span className="text-sm">配置已保存，重启 VPN 后完整应用分流规则（会短暂断线）</span>
+          <button onClick={applyRules} className="shrink-0 px-3 py-1.5 rounded-lg bg-amber-500/20 text-sm">
+            {isApplying ? '应用中…' : '立即应用'}
+          </button>
+        </div>
+      )}
+      {updateResult && (
+        <p role="status" className="mb-4 text-sm text-[var(--text-muted)] whitespace-pre-wrap break-words">{updateResult}</p>
+      )}
+
       {/* Rule Sets List with Drag & Drop */}
       <div className="glass-card p-4 rounded-2xl border border-[var(--glass-border)]">
         <div className="flex items-center gap-2 mb-4">
@@ -801,6 +825,13 @@ export default function RuleSets() {
             <Reorder.Item
               key={ruleSet.id}
               value={ruleSet}
+              dragListener={!busy}
+              onDragEnd={() => {
+                if (!operationRef.current && ruleSets !== savedRuleSetsRef.current) {
+                  operationRef.current = true
+                  void persistRuleSets(ruleSets, '规则集优先级已保存').finally(() => { operationRef.current = false })
+                }
+              }}
               transition={fastTransition}
               whileDrag={{
                 scale: 1.01,
@@ -867,6 +898,16 @@ export default function RuleSets() {
                 </div>
 
                 <div className="flex items-center gap-1">
+                  {ruleSet.type === 'remote' && (
+                    <button
+                      onClick={() => updateRuleSets([ruleSet])}
+                      className="p-2 rounded-lg hover:bg-[var(--bg-hover)] transition-colors duration-150"
+                      title="更新规则集（重新下载）"
+                      aria-label={`更新规则集 ${ruleSet.name}`}
+                    >
+                      <RefreshCw className={`w-4 h-4 text-[var(--text-muted)] ${downloadingTags.has(ruleSet.tag) ? 'animate-spin' : ''}`} />
+                    </button>
+                  )}
                   <button
                     onClick={() => openEditDialog(ruleSet)}
                     className="p-2 rounded-lg hover:bg-[var(--bg-hover)] transition-colors duration-150"
@@ -894,7 +935,7 @@ export default function RuleSets() {
         )}
 
         <p className="text-xs text-[var(--text-faint)] mt-4">
-          拖拽规则集可调整优先级，启用规则集后匹配的流量将按指定的出站模式处理
+          拖拽可调整优先级。更新会重新下载远程规则集，失败时保留已有缓存；修改分流配置后请点击「立即应用」。
         </p>
       </div>
 
@@ -921,16 +962,16 @@ export default function RuleSets() {
       {/* Add/Edit Modal */}
       <Modal
         isOpen={showAddDialog}
-        onClose={() => setShowAddDialog(false)}
+        onClose={() => { if (!busy) setShowAddDialog(false) }}
         title={editingRuleSet ? '编辑规则集' : '添加规则集'}
         maxWidth="max-w-md"
         footer={
           <>
-            <ModalButton variant="ghost" onClick={() => setShowAddDialog(false)}>
+            <ModalButton variant="ghost" disabled={busy} onClick={() => setShowAddDialog(false)}>
               取消
             </ModalButton>
-            <ModalButton onClick={saveRuleSet} disabled={!dialogData.tag.trim()}>
-              保存
+            <ModalButton onClick={saveRuleSet} disabled={busy || !dialogData.tag.trim()}>
+              {busy ? '保存中…' : '保存'}
             </ModalButton>
           </>
         }
@@ -1207,7 +1248,7 @@ export default function RuleSets() {
       {/* Delete Confirm Modal */}
       <Modal
         isOpen={showDeleteConfirm}
-        onClose={() => setShowDeleteConfirm(false)}
+        onClose={() => { if (!busy) setShowDeleteConfirm(false) }}
         title="确认删除"
         maxWidth="max-w-sm"
         footer={
@@ -1218,7 +1259,7 @@ export default function RuleSets() {
             >
               取消
             </ModalButton>
-            <ModalButton variant="danger" onClick={deleteRuleSet}>
+            <ModalButton variant="danger" disabled={busy} onClick={deleteRuleSet}>
               删除
             </ModalButton>
           </>
@@ -1233,6 +1274,7 @@ export default function RuleSets() {
       <Modal
         isOpen={showHubAddConfirm}
         onClose={() => {
+          if (busy) return
           setShowHubAddConfirm(false)
           setHubAddTarget(null)
         }}
@@ -1242,6 +1284,7 @@ export default function RuleSets() {
           <>
             <ModalButton
               variant="ghost"
+              disabled={busy}
               onClick={() => {
                 setShowHubAddConfirm(false)
                 setHubAddTarget(null)
@@ -1249,7 +1292,7 @@ export default function RuleSets() {
             >
               取消
             </ModalButton>
-            <ModalButton onClick={confirmAddFromHub}>
+            <ModalButton disabled={busy} onClick={confirmAddFromHub}>
               <Check className="w-4 h-4" />
               确认添加
             </ModalButton>
@@ -1280,6 +1323,6 @@ export default function RuleSets() {
         )}
       </Modal>
 
-    </div>
+    </fieldset>
   )
 }

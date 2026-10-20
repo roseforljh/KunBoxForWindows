@@ -169,15 +169,16 @@ function ToastProviderInner({
   }, [isRestarting, setIsRestarting, setNeedsRestart, showToast])
 
   const showRestartToast = useCallback((message: string) => {
-    if (vpnState === 'connected') {
-      showToast(message, 'info', {
-        label: '重启',
+    if (vpnState === 'connected' || vpnState === 'connecting') {
+      setNeedsRestart(true)
+      showToast(`${message}，重启 VPN 后完整应用`, 'info', {
+        label: '应用',
         onClick: restartVpn
       })
     } else {
       showToast(message, 'success')
     }
-  }, [vpnState, showToast, restartVpn])
+  }, [vpnState, setNeedsRestart, showToast, restartVpn])
 
   const success = useCallback((message: string) => showToast(message, 'success'), [showToast])
   const error = useCallback((message: string) => showToast(message, 'error'), [showToast])

@@ -81,8 +81,9 @@ fn save_rulesets(state: &AppState, rulesets: &[RuleSet]) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn ruleset_list(state: State<'_, AppState>) -> Result<Vec<RuleSet>, String> {
+    let mut current = state.rulesets.lock().await;
     let rulesets = load_rulesets(&state);
-    *state.rulesets.lock().await = rulesets.clone();
+    *current = rulesets.clone();
     Ok(rulesets)
 }
 
@@ -91,17 +92,18 @@ pub async fn ruleset_save(
     state: State<'_, AppState>,
     rulesets: Vec<RuleSet>,
 ) -> Result<(), String> {
+    let mut current = state.rulesets.lock().await;
     save_rulesets(&state, &rulesets)?;
-    *state.rulesets.lock().await = rulesets;
+    *current = rulesets;
     Ok(())
 }
 
-fn is_valid_ruleset_tag(tag: &str) -> bool {
+pub(super) fn is_valid_ruleset_tag(tag: &str) -> bool {
     !tag.is_empty()
         && tag.len() <= 128
         && tag
             .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | '@'))
 }
 
 fn ruleset_cache_path(state: &AppState, tag: &str) -> Result<std::path::PathBuf, String> {
@@ -160,8 +162,11 @@ fn github_download_urls(url: &str) -> Vec<String> {
 }
 
 fn write_cache_atomically(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
-    let temp_path = path.with_extension("srs.tmp");
-    fs::write(&temp_path, bytes).map_err(|e| e.to_string())?;
+    let temp_path = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+    if let Err(err) = fs::write(&temp_path, bytes) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(err.to_string());
+    }
     if let Err(err) = fs::rename(&temp_path, path) {
         let _ = fs::remove_file(&temp_path);
         return Err(err.to_string());
@@ -173,6 +178,15 @@ fn write_cache_atomically(path: &std::path::Path, bytes: &[u8]) -> Result<(), St
 pub async fn ruleset_download(
     state: State<'_, AppState>,
     ruleset: RuleSet,
+    force: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    download_ruleset(&state, ruleset, force.unwrap_or(false)).await
+}
+
+async fn download_ruleset(
+    state: &AppState,
+    ruleset: RuleSet,
+    force: bool,
 ) -> Result<serde_json::Value, String> {
     if ruleset.rule_type != "remote" {
         return Ok(serde_json::json!({ "success": true, "cached": true }));
@@ -183,7 +197,7 @@ pub async fn ruleset_download(
 
     let cache_file = ruleset_cache_path(&state, &ruleset.tag)?;
 
-    if cache_file.exists() {
+    if cache_file.exists() && !force {
         return Ok(serde_json::json!({ "success": true, "cached": true }));
     }
 
@@ -197,7 +211,14 @@ pub async fn ruleset_download(
     let github_path = extract_github_path(&original_url);
 
     // 创建代理客户端（使用本地 VPN 代理）
-    let proxy_client = build_local_proxy_client(&state, 30).await;
+    let proxy_client = if matches!(
+        *state.proxy_state.lock().await,
+        crate::types::ProxyState::Connected
+    ) {
+        build_local_proxy_client(state, 30).await
+    } else {
+        None
+    };
 
     // 创建直连客户端
     let direct_client = build_direct_client(30)?;
@@ -324,10 +345,20 @@ async fn download_and_verify(
     }
 
     if format == "source" {
-        serde_json::from_slice::<serde_json::Value>(&bytes)
+        let source = serde_json::from_slice::<serde_json::Value>(&bytes)
             .map_err(|e| format!("Source JSON 格式无效: {}", e))?;
+        if source
+            .get("version")
+            .and_then(|value| value.as_u64())
+            .is_none()
+            || !source.get("rules").is_some_and(|value| value.is_array())
+        {
+            return Err("Source 必须包含 version 和 rules 数组".to_string());
+        }
     } else if header.trim().starts_with('{') {
         return Err("收到 JSON 错误响应，而不是 Binary 规则集".to_string());
+    } else if !bytes.starts_with(b"SRS") {
+        return Err("Binary 规则集缺少 SRS 文件头".to_string());
     }
 
     Ok(bytes)
@@ -345,6 +376,10 @@ mod tests {
 
     #[test]
     fn rejects_invalid_ruleset_tags() {
+        assert!(is_valid_ruleset_tag("geosite-alibaba@ads"));
+        for tag in ["../evil", "..\\evil", "x:y", "", "x/y"] {
+            assert!(!is_valid_ruleset_tag(tag), "accepted {tag}");
+        }
         assert!(ruleset_cache_path(
             &AppState::new(std::path::PathBuf::from("/tmp/test")),
             "geosite-cn"
@@ -408,10 +443,73 @@ mod tests {
         ));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("demo.srs");
+        fs::write(&path, b"old cached ruleset").unwrap();
         write_cache_atomically(&path, b"valid ruleset bytes").unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"valid ruleset bytes");
-        assert!(!dir.join("demo.srs.tmp").exists());
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn forced_update_replaces_cache_and_failures_preserve_last_good_copy() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let dir =
+            std::env::temp_dir().join(format!("kunbox-ruleset-update-{}", uuid::Uuid::new_v4()));
+        let state = AppState::new(dir.clone());
+        fs::create_dir_all(state.rulesets_cache_dir()).unwrap();
+        let path = state.rulesets_cache_dir().join("demo.srs");
+        let old = br#"{"version":1,"rules":[]}"#;
+        let new = br#"{"version":1,"rules":[{"domain_suffix":["example.com"]}]}"#;
+        fs::write(&path, old).unwrap();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for (body, extra_length) in [
+                (new.as_slice(), 0),
+                (b"{\"error\":true}".as_slice(), 0),
+                (new.as_slice(), 100),
+            ] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 4096];
+                socket.read(&mut request).await.unwrap();
+                let headers = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len() + extra_length
+                );
+                socket.write_all(headers.as_bytes()).await.unwrap();
+                socket.write_all(body).await.unwrap();
+                socket.shutdown().await.unwrap();
+            }
+        });
+        let mut ruleset = get_default_rulesets().remove(0);
+        ruleset.tag = "demo".to_string();
+        ruleset.format = "source".to_string();
+        ruleset.url = Some(format!("http://{}/rules.json", address));
+
+        let cached = download_ruleset(&state, ruleset.clone(), false)
+            .await
+            .unwrap();
+        assert_eq!(cached["cached"], true);
+        assert_eq!(fs::read(&path).unwrap(), old);
+        let updated = download_ruleset(&state, ruleset.clone(), true)
+            .await
+            .unwrap();
+        assert_eq!(updated["cached"], false);
+        assert_eq!(fs::read(&path).unwrap(), new);
+        for _ in 0..2 {
+            assert!(download_ruleset(&state, ruleset.clone(), true)
+                .await
+                .is_err());
+            assert_eq!(fs::read(&path).unwrap(), new);
+            assert_eq!(fs::read_dir(state.rulesets_cache_dir()).unwrap().count(), 1);
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(5), server)
+            .await
+            .unwrap()
+            .unwrap();
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
@@ -419,7 +517,12 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
-            for body in [b"{\"rules\":[]}".as_slice(), b"{\"error\":true}".as_slice()] {
+            for body in [
+                b"{\"version\":1,\"rules\":[]}".as_slice(),
+                b"{\"error\":true}".as_slice(),
+                b"invalid binary ruleset".as_slice(),
+                b"SRS\x01binary payload".as_slice(),
+            ] {
                 let (socket, _) = listener.accept().await.unwrap();
                 let mut request = [0_u8; 512];
                 let _ = socket.readable().await;
@@ -438,11 +541,20 @@ mod tests {
         let source = download_and_verify(&client, &format!("http://{}/source", address), "source")
             .await
             .unwrap();
-        assert_eq!(source, b"{\"rules\":[]}");
+        assert_eq!(source, b"{\"version\":1,\"rules\":[]}");
         let binary = download_and_verify(&client, &format!("http://{}/binary", address), "binary")
             .await
             .unwrap_err();
         assert!(binary.contains("JSON"));
+        let invalid =
+            download_and_verify(&client, &format!("http://{}/invalid", address), "binary")
+                .await
+                .unwrap_err();
+        assert!(invalid.contains("SRS"));
+        let binary = download_and_verify(&client, &format!("http://{}/valid", address), "binary")
+            .await
+            .unwrap();
+        assert!(binary.starts_with(b"SRS"));
         server.await.unwrap();
     }
 
