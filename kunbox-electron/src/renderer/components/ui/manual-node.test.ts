@@ -1,5 +1,5 @@
-import { buildManualNodeLink, createManualNodeDraft } from './manual-node'
-import type { ManualNodeProtocol } from './manual-node'
+import { buildManualNodeLink, createManualNodeDraft, validateManualNodeDraft } from './manual-node.ts'
+import type { ManualNodeProtocol } from './manual-node.ts'
 
 function assertEqual(actual: string, expected: string, message: string) {
   if (actual !== expected) throw new Error(`${message}: ${actual}`)
@@ -77,3 +77,14 @@ allProtocols.forEach((protocol) => {
   const link = buildManualNodeLink(draft)
   if (!link) throw new Error(`${protocol} 未生成节点链接`)
 })
+
+const hopping = createManualNodeDraft('hysteria2')
+hopping.name = 'HY2 hopping'
+hopping.server = 'node.example.com'
+hopping.password = 'test'
+if (new URL(buildManualNodeLink(hopping)).searchParams.has('mport')) throw new Error('未填写范围时不应启用跳跃')
+hopping.serverPorts = '20000-30000, 443, 40000:41000'
+assertEqual(new URL(buildManualNodeLink(hopping)).searchParams.get('mport') ?? '', '20000-30000,443-443,40000-41000', '手动节点丢失跳跃端口')
+for (const ports of ['30000-20000', '0', '65536', '443,', 'abc', '1-2-3']) {
+  if (!validateManualNodeDraft({ ...hopping, serverPorts: ports })) throw new Error(`非法跳跃范围未拒绝: ${ports}`)
+}

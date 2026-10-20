@@ -11,8 +11,11 @@ import { Modal, ModalButton } from './Modal'
 import { useManagedTimeouts } from '../../lib/useManagedTimeouts'
 import {
   applyNodePolicies,
+  DEFAULT_MULTIPLEX,
+  enableMultiplex,
   makeNodeReference,
   nodePolicyState,
+  setMultiplexPolicy,
   toEditableNode,
   validateNodeForSave,
 } from './node-editor'
@@ -249,7 +252,11 @@ function ProtocolFields({ node, onChange, disabled }: {
     return <div className="space-y-3">
       <div className={twoColumns}>
         <Field label="密码" type="password" value={node.password ?? ''} disabled={disabled} onChange={(value) => set('password', value)} />
-        <Field label="端口跳跃" value={node.server_ports?.[0] ?? ''} placeholder="20000:30000" disabled={disabled} onChange={(value) => set('server_ports', value ? [value] : undefined)} />
+        <Field label="跳跃端口（留空关闭）" value={node.server_ports?.join(', ') ?? ''} placeholder="20000:30000, 443" disabled={disabled} onChange={(value) => set('server_ports', stringList(value.replace(/-/g, ':')))} />
+        {!!node.server_ports?.length && <>
+          <Field label="跳跃间隔" value={node.hop_interval ?? ''} placeholder="30s（默认）" disabled={disabled} onChange={(value) => set('hop_interval', value.trim() || undefined)} />
+          <Field label="随机间隔上限（1.14+，可选）" value={node.hop_interval_max ?? ''} placeholder="留空使用固定间隔，例如 60s" disabled={disabled} onChange={(value) => set('hop_interval_max', value.trim() || undefined)} />
+        </>}
         <SelectField label="混淆方式" value={obfs.type ?? ''} disabled={disabled} onChange={(value) => set('obfs', value ? { ...obfs, type: value } : undefined)} options={[
           { value: '', label: '不使用' }, { value: 'salamander', label: 'Salamander' },
         ]} />
@@ -257,6 +264,20 @@ function ProtocolFields({ node, onChange, disabled }: {
         <Field label="上传带宽 Mbps" type="number" value={String(node.up_mbps ?? '')} disabled={disabled} onChange={(value) => set('up_mbps', optionalNumber(value))} />
         <Field label="下载带宽 Mbps" type="number" value={String(node.down_mbps ?? '')} disabled={disabled} onChange={(value) => set('down_mbps', optionalNumber(value))} />
       </div>
+      <p className="text-xs leading-5 text-[var(--text-faint)]">跳跃端口必须来自服务商，服务端须已配置相应 UDP 端口或转发。默认每 30 秒切换；设置上限后，在间隔与上限之间随机切换。清空跳跃端口后，请填写基本信息中的固定端口。</p>
+      <p className="text-xs leading-5 text-[var(--text-faint)]">带宽留空时使用自适应 BBR，通常无需手动填写。保留服务商提供的带宽参数，不要随意填大。</p>
+      <SelectField label="BBR 策略（sing-box 1.14+）" value={node.bbr_profile ?? ''} disabled={disabled} onChange={(value) => set('bbr_profile', (value || undefined) as SingBoxOutbound['bbr_profile'])} options={[
+        { value: '', label: '内核默认：标准（推荐）' }, { value: 'standard', label: '标准' },
+        { value: 'conservative', label: '保守' }, { value: 'aggressive', label: '激进' },
+      ]} />
+      <p className="text-xs leading-5 text-[var(--text-faint)]">BBR 策略在使用 BBR 时生效；填写上传和下载带宽后可能使用 Hysteria 拥塞控制。标准策略兼顾吞吐与公平性。</p>
+      <ToggleField
+        label="Chrome QUIC 指纹模拟"
+        description="sing-box 1.14+ 默认开启，无需安装 Chrome。服务端使用 Ed25519 证书而握手失败时可关闭；普通 RSA/ECDSA 证书建议保持开启。旧内核需先升级。"
+        checked={node.disable_chrome_parrot !== true}
+        disabled={disabled}
+        onChange={(checked) => set('disable_chrome_parrot', checked ? undefined : true)}
+      />
       <ToggleField label="禁用 SNI" checked={node.tls?.disable_sni === true} disabled={disabled} onChange={(checked) => set('tls', { ...(node.tls ?? { enabled: true }), enabled: true, disable_sni: checked || undefined })} />
     </div>
   }
@@ -435,7 +456,7 @@ function TlsFields({ node, onChange, disabled }: { node: SingBoxOutbound; onChan
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <Field label="服务器名称 SNI" value={tls.server_name ?? ''} disabled={disabled} onChange={(value) => update({ server_name: value || undefined })} />
         {node.type !== 'naive' && <Field label="ALPN" value={tls.alpn?.join(', ') ?? ''} disabled={disabled} onChange={(value) => update({ alpn: stringList(value) })} />}
-        {node.type !== 'naive' && <SelectField label="uTLS 指纹" value={tls.utls?.fingerprint ?? ''} disabled={disabled} onChange={(value) => update({ utls: value ? { enabled: true, fingerprint: value } : undefined })} options={[
+        {!['naive', 'hysteria2', 'hysteria', 'tuic'].includes(node.type ?? '') && <SelectField label="uTLS 指纹" value={tls.utls?.fingerprint ?? ''} disabled={disabled} onChange={(value) => update({ utls: value ? { enabled: true, fingerprint: value } : undefined })} options={[
           { value: '', label: '不使用' }, { value: 'chrome', label: 'Chrome' }, { value: 'firefox', label: 'Firefox' },
           { value: 'safari', label: 'Safari' }, { value: 'ios', label: 'iOS' }, { value: 'android', label: 'Android' },
           { value: 'edge', label: 'Edge' }, { value: '360', label: '360' }, { value: 'qq', label: 'QQ' },
@@ -461,18 +482,37 @@ function TlsFields({ node, onChange, disabled }: { node: SingBoxOutbound; onChan
 function MultiplexFields({ node, onChange, disabled }: { node: SingBoxOutbound; onChange: (node: SingBoxOutbound) => void; disabled: boolean }) {
   if (!['vmess', 'vless', 'trojan', 'shadowsocks'].includes(node.type ?? '')) return null
   const multiplex = node.multiplex ?? { enabled: false }
+  const byStreams = multiplex.max_streams !== undefined
+  const xhttp = node.type === 'vless' && node.transport?.type === 'xhttp'
   const update = (patch: Partial<OutboundMultiplex>) => onChange({ ...node, multiplex: { ...multiplex, ...patch } })
   return <Section title="多路复用" code="MUX">
-    <ToggleField label="启用多路复用" checked={multiplex.enabled === true} disabled={disabled} onChange={(checked) => update({ enabled: checked })} />
-    {multiplex.enabled && <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+    <ToggleField
+      label="启用多路复用"
+      description={xhttp ? 'XHTTP 使用 Xray 自身的连接管理，此开关不适用。' : '让多个请求共用少量连接。服务器必须支持 sing-box 多路复用；不确定时保持关闭，开启并非总能提速。'}
+      checked={multiplex.enabled === true}
+      disabled={disabled || (xhttp && !multiplex.enabled)}
+      onChange={(checked) => onChange({ ...node, multiplex: checked ? enableMultiplex(multiplex) : { ...multiplex, enabled: false } })}
+    />
+    {multiplex.enabled && <>
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs leading-5 text-[var(--text-faint)]">均衡默认：h2mux、最多 4 条连接、每条至少 4 个流后再新建连接，不启用填充。</p>
+        <button type="button" className="shrink-0 text-xs text-[var(--accent-primary)] disabled:opacity-50" disabled={disabled || xhttp} onClick={() => onChange({ ...node, multiplex: { ...DEFAULT_MULTIPLEX } })}>恢复均衡默认</button>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
       <SelectField label="协议" value={multiplex.protocol ?? 'h2mux'} disabled={disabled} onChange={(value) => update({ protocol: value })} options={[
-        { value: 'h2mux', label: 'h2mux' }, { value: 'smux', label: 'smux' }, { value: 'yamux', label: 'yamux' },
+        { value: 'h2mux', label: 'h2mux（内核默认）' }, { value: 'smux', label: 'smux' }, { value: 'yamux', label: 'yamux' },
       ]} />
-      <Field label="最大连接数" type="number" value={String(multiplex.max_connections ?? 5)} disabled={disabled} onChange={(value) => update({ max_connections: optionalNumber(value) })} />
-      <Field label="最小流数" type="number" value={String(multiplex.min_streams ?? '')} disabled={disabled} onChange={(value) => update({ min_streams: optionalNumber(value) })} />
-      <Field label="最大流数" type="number" value={String(multiplex.max_streams ?? '')} disabled={disabled} onChange={(value) => update({ max_streams: optionalNumber(value) })} />
-    </div>}
-    {multiplex.enabled && <ToggleField label="启用填充" checked={multiplex.padding === true} disabled={disabled} onChange={(checked) => update({ padding: checked })} />}
+      <SelectField label="连接管理" value={byStreams ? 'streams' : 'connections'} disabled={disabled} onChange={(value) => onChange({ ...node, multiplex: setMultiplexPolicy(multiplex, value === 'streams') })} options={[
+        { value: 'connections', label: '限制连接数（推荐）' }, { value: 'streams', label: '限制每条连接流数（高级）' },
+      ]} />
+      {byStreams ? <Field label="每条连接最大流数（0 使用内核默认）" type="number" value={String(multiplex.max_streams ?? '')} disabled={disabled} onChange={(value) => update({ max_streams: optionalNumber(value) ?? 0 })} /> : <>
+        <Field label="最大连接数" type="number" value={String(multiplex.max_connections ?? '')} placeholder="留空使用内核默认" disabled={disabled} onChange={(value) => update({ max_connections: optionalNumber(value) })} />
+        <Field label="新建连接前最小流数" type="number" value={String(multiplex.min_streams ?? '')} placeholder="留空使用内核默认" disabled={disabled} onChange={(value) => update({ min_streams: optionalNumber(value) })} />
+      </>}
+      </div>
+      <p className="text-xs leading-5 text-[var(--text-faint)]">两种连接管理方式互斥，切换时会清除另一种限制。高级模式不限制总连接数。</p>
+      <ToggleField label="启用填充" description="增加流量开销，需服务端支持；服务商要求时再开启。" checked={multiplex.padding === true} disabled={disabled} onChange={(checked) => update({ padding: checked })} />
+    </>}
   </Section>
 }
 

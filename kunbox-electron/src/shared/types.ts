@@ -114,10 +114,13 @@ export interface SingBoxOutbound {
   plugin_opts?: string
   version?: string | number
   auth_str?: string
-  server_ports?: string[]
+  server_ports?: Array<string | number>
   obfs?: string | { type?: string; password?: string }
   up_mbps?: number
   down_mbps?: number
+  // Hysteria2, sing-box >= 1.14.0. Omit to use the kernel defaults.
+  disable_chrome_parrot?: boolean
+  bbr_profile?: 'conservative' | 'standard' | 'aggressive'
   congestion_control?: string
   udp_relay_mode?: string
   heartbeat?: string
@@ -146,6 +149,7 @@ export interface SingBoxOutbound {
     reserved?: number[]
   }>
   hop_interval?: string
+  hop_interval_max?: string
   detour?: string
   tcp_fast_open?: boolean
   tls?: OutboundTls

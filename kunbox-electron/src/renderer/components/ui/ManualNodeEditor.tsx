@@ -256,6 +256,9 @@ export function ManualNodeEditor({ disabled, onCancel, onSave }: ManualNodeEdito
 
       {protocol === 'hysteria2' && (
         <section className="space-y-3">
+          <p className="text-xs font-semibold tracking-wide text-[var(--text-faint)]">端口跳跃</p>
+          <Field label="跳跃端口（可选）" value={draft.serverPorts} onChange={(value) => update('serverPorts', value)} placeholder="20000-30000, 443" disabled={disabled} />
+          <p className="text-xs leading-5 text-[var(--text-faint)]">留空使用固定端口。填写服务商提供的端口范围后，默认每 30 秒切换端口；添加后可在编辑节点中调整间隔。服务端须已配置对应 UDP 端口或转发。</p>
           <p className="text-xs font-semibold tracking-wide text-[var(--text-faint)]">混淆</p>
           <SelectField label="混淆方式" value={draft.obfs} onChange={(value) => update('obfs', value)} disabled={disabled} options={[
             { value: 'none', label: '不使用' },

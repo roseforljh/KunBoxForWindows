@@ -46,6 +46,7 @@ export interface ManualNodeDraft {
   alpn: string
   obfs: string
   obfsPassword: string
+  serverPorts: string
 }
 
 export interface ManualNodeDefinition {
@@ -92,6 +93,7 @@ export function createManualNodeDraft(protocol: ManualNodeProtocol): ManualNodeD
     alpn: 'h3',
     obfs: 'none',
     obfsPassword: '',
+    serverPorts: '',
   }
 }
 
@@ -100,10 +102,21 @@ function isValidPort(value: string): boolean {
   return Number.isInteger(port) && port >= 1 && port <= 65535
 }
 
+export function parseHysteria2Ports(value: string): string[] | null {
+  const items = value.split(',').map((item) => item.trim())
+  if (!items.every((item) => /^\d+(?:[:-]\d+)?$/.test(item))) return null
+  const ranges = items.map((item) => item.split(/[:-]/).map(Number))
+  if (!ranges.every(([start, end = start]) => isValidPort(String(start)) && isValidPort(String(end)) && start <= end)) return null
+  return ranges.map(([start, end = start]) => `${start}:${end}`)
+}
+
 export function validateManualNodeDraft(draft: ManualNodeDraft): string | null {
   if (!draft.name.trim()) return '请输入节点名称'
   if (!draft.server.trim()) return '请输入服务器地址'
   if (!isValidPort(draft.port)) return '端口必须在 1 到 65535 之间'
+  if (draft.protocol === 'hysteria2' && draft.serverPorts.trim() && !parseHysteria2Ports(draft.serverPorts)) {
+    return '跳跃端口无效，请填写 20000-30000, 443，端口须在 1 到 65535 之间'
+  }
 
   switch (draft.protocol) {
     case 'shadowsocks':
@@ -243,6 +256,7 @@ export function buildManualNodeLink(draft: ManualNodeDraft): string {
     }
     case 'hysteria2': {
       const query = makeQuery([
+        ['mport', draft.serverPorts.trim() ? parseHysteria2Ports(draft.serverPorts)!.map((range) => range.replace(':', '-')).join(',') : undefined],
         ['sni', sni],
         ['insecure', draft.allowInsecure ? '1' : undefined],
         ['obfs', draft.obfs === 'none' ? undefined : draft.obfs],
