@@ -145,18 +145,45 @@ fn github_download_urls(url: &str) -> Vec<String> {
     let Some(path) = extract_github_path(url) else {
         return vec![url.to_string()];
     };
+
+    // Preserve the URL configured by the user. A mirror may be the only route
+    // available when TUN rules send raw.githubusercontent.com direct.
+    let mut urls = Vec::new();
+    let mut add_unique = |candidate: String| {
+        if !urls.iter().any(|existing| existing == &candidate) {
+            urls.push(candidate);
+        }
+    };
+    add_unique(url.to_string());
+
     let canonical = format!("https://raw.githubusercontent.com/{}", path);
-    let mut urls = vec![canonical.clone()];
+    add_unique(canonical.clone());
     let parts: Vec<&str> = path.split('/').collect();
     if parts.len() >= 4 {
         let owner = parts[0];
         let repo = parts[1];
         let branch = parts[2];
         let rest = parts[3..].join("/");
-        urls.push(format!(
+        add_unique(format!(
             "{}{}/{}@{}/{}",
             RULESET_CDN_PREFIX, owner, repo, branch, rest
         ));
+
+        // Keep several mirrors because availability differs by network and by
+        // whether TUN rules route the original GitHub host directly.
+        add_unique(format!(
+            "https://ghfast.top/https://raw.githubusercontent.com/{path}"
+        ));
+        add_unique(format!(
+            "https://gh.llkk.cc/https://raw.githubusercontent.com/{path}"
+        ));
+        add_unique(format!(
+            "https://ghp.ci/https://raw.githubusercontent.com/{path}"
+        ));
+        add_unique(format!(
+            "https://cf.ghproxy.cc/https://raw.githubusercontent.com/{path}"
+        ));
+        add_unique(format!("https://raw.gitmirror.com/{path}"));
     }
     urls
 }
@@ -411,15 +438,44 @@ mod tests {
 
     #[test]
     fn github_download_urls_use_official_then_cdn() {
-        assert_eq!(
-            github_download_urls(
-                "https://ghp.ci/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs"
-            ),
-            vec![
-                "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
-                "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-cn.srs",
-            ]
+        let urls = github_download_urls(
+            "https://ghp.ci/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
         );
+        assert_eq!(urls[0], "https://ghp.ci/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs");
+        assert_eq!(
+            urls[1],
+            "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs"
+        );
+        assert!(urls.contains(
+            &"https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-cn.srs"
+                .to_string()
+        ));
+        assert!(urls.contains(&"https://ghfast.top/https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs".to_string()));
+        assert!(urls.contains(
+            &"https://raw.gitmirror.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs".to_string()
+        ));
+        assert_eq!(urls.len(), 7);
+    }
+
+    #[test]
+    fn github_download_urls_do_not_duplicate_canonical_urls() {
+        let urls = github_download_urls(
+            "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
+        );
+        assert_eq!(
+            urls[0],
+            "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs"
+        );
+        assert_eq!(
+            urls.iter()
+                .filter(|url| {
+                    url.as_str()
+                        == "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs"
+                })
+                .count(),
+            1
+        );
+        assert_eq!(urls.len(), 7);
     }
 
     #[test]
