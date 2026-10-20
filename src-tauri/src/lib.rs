@@ -11,6 +11,44 @@ mod types;
 use state::AppState;
 use types::AppSettings;
 
+#[cfg(windows)]
+fn configure_desktop_webview(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2Settings3, ICoreWebView2Settings5, ICoreWebView2Settings6,
+    };
+    use windows_core::Interface;
+
+    window.with_webview(|webview| {
+        // Runs on the WebView UI thread. Disable browser commands at the native layer;
+        // WebView2 keeps editing shortcuts such as Ctrl+C/V/A/Z working.
+        let result = (|| -> windows_core::Result<()> {
+            unsafe {
+                let settings = webview.controller().CoreWebView2()?.Settings()?;
+                settings.SetAreDevToolsEnabled(false)?;
+                settings.SetAreDefaultContextMenusEnabled(false)?;
+                settings.SetIsStatusBarEnabled(false)?;
+                settings.SetIsZoomControlEnabled(false)?;
+                settings
+                    .cast::<ICoreWebView2Settings3>()?
+                    .SetAreBrowserAcceleratorKeysEnabled(false)?;
+                settings
+                    .cast::<ICoreWebView2Settings5>()?
+                    .SetIsPinchZoomEnabled(false)?;
+                settings
+                    .cast::<ICoreWebView2Settings6>()?
+                    .SetIsSwipeNavigationEnabled(false)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            append_startup_diagnostic(
+                &get_data_dir(),
+                &format!("desktop WebView settings failed: {error}"),
+            );
+        }
+    })
+}
+
 fn append_startup_diagnostic(data_dir: &PathBuf, message: &str) {
     let _ = std::fs::create_dir_all(data_dir);
     let path = data_dir.join("startup-diagnostics.log");
@@ -216,6 +254,8 @@ pub fn run() {
 
             // Show window after setup (silent start: tray only)
             if let Some(window) = app.get_webview_window("main") {
+                #[cfg(windows)]
+                configure_desktop_webview(&window)?;
                 let settings = read_settings_sync(&data_dir);
                 if settings.silent_start {
                     let _ = window.hide();
