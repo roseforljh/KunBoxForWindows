@@ -24,7 +24,7 @@ interface NodeDetailModalProps {
   node: SingBoxOutbound | null
   profileId: string | null
   onSave: (originalTag: string, node: SingBoxOutbound) => Promise<void>
-  onExport?: (tag: string) => Promise<void>
+  onExport?: (node: SingBoxOutbound) => Promise<void>
 }
 
 const PROTOCOL_LABELS: Record<string, string> = {
@@ -555,10 +555,13 @@ export function NodeDetailModal({ isOpen, onClose, node, profileId, onSave, onEx
   const handleExport = async () => {
     if (!originalTag || !onExport) return
     setIsExporting(true)
+    setError('')
     try {
-      await onExport(originalTag)
+      await onExport(draft)
       setCopied(true)
       setManagedTimeout(() => setCopied(false), 2000)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setIsExporting(false)
     }

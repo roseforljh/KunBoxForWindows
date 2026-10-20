@@ -4,6 +4,32 @@ use super::quic::{parse_hysteria2_link, parse_hysteria_link, parse_tuic_link};
 use super::vless::parse_vless_link;
 use super::{decode_base64_compat, parse_bool_param, parse_host_port, parse_port_value};
 
+fn apply_tls_params(
+    tls: &mut serde_json::Value,
+    params: &std::collections::HashMap<String, String>,
+) {
+    if let Some(value) = params.get("alpn") {
+        tls["alpn"] = serde_json::json!(value.split(',').collect::<Vec<_>>());
+    }
+    if let Some(value) = params.get("fp").filter(|v| !v.is_empty()) {
+        tls["utls"] = serde_json::json!({ "enabled": true, "fingerprint": value });
+    }
+    if let Some(value) = params
+        .get("insecure")
+        .or_else(|| params.get("allowInsecure"))
+    {
+        tls["insecure"] = serde_json::json!(parse_bool_param(value));
+    }
+    if params.get("security").is_some_and(|v| v == "reality") {
+        tls["reality"] = serde_json::json!({ "enabled": true });
+        for (key, field) in [("pbk", "public_key"), ("sid", "short_id")] {
+            if let Some(value) = params.get(key) {
+                tls["reality"][field] = serde_json::json!(value);
+            }
+        }
+    }
+}
+
 pub(crate) fn parse_node_link(link: &str) -> Option<SingBoxOutbound> {
     if link.starts_with("ss://") {
         parse_ss_link(link)
@@ -62,7 +88,11 @@ pub(super) fn parse_socks_link(link: &str) -> Option<SingBoxOutbound> {
         return None;
     }
 
-    let server = url.host_str()?.to_string();
+    let server = url
+        .host_str()?
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_string();
     let port = url.port().filter(|port| *port > 0)?;
     let tag = decode_link_fragment(&url, "SOCKS5")?;
     let mut extra = std::collections::HashMap::new();
@@ -83,7 +113,11 @@ pub(super) fn parse_http_proxy_link(link: &str) -> Option<SingBoxOutbound> {
         return None;
     }
 
-    let server = url.host_str()?.to_string();
+    let server = url
+        .host_str()?
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_string();
     let port = url.port_or_known_default().filter(|port| *port > 0)?;
     let tag = decode_link_fragment(&url, "HTTP")?;
     let mut extra = std::collections::HashMap::new();
@@ -109,6 +143,7 @@ pub(super) fn parse_http_proxy_link(link: &str) -> Option<SingBoxOutbound> {
                     .is_some_and(|value| parse_bool_param(value))
             }),
         );
+        apply_tls_params(extra.get_mut("tls")?, &params);
     }
 
     Some(SingBoxOutbound {
@@ -153,6 +188,18 @@ pub(super) fn parse_ss_link(link: &str) -> Option<SingBoxOutbound> {
         "password".to_string(),
         serde_json::Value::String(password.to_string()),
     );
+
+    if let Some((_, query)) = host_port.split_once('?') {
+        for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+            if key == "plugin" {
+                let (plugin, opts) = value.split_once(';').unwrap_or((&value, ""));
+                extra.insert("plugin".into(), serde_json::json!(plugin));
+                if !opts.is_empty() {
+                    extra.insert("plugin_opts".into(), serde_json::json!(opts));
+                }
+            }
+        }
+    }
 
     Some(SingBoxOutbound {
         tag: Some(tag),
@@ -229,6 +276,15 @@ pub(super) fn parse_vmess_link(link: &str) -> Option<SingBoxOutbound> {
             tls_obj.insert("insecure".to_string(), serde_json::Value::Bool(true));
         }
         extra.insert("tls".to_string(), serde_json::Value::Object(tls_obj));
+        let params = ["alpn", "fp"]
+            .into_iter()
+            .filter_map(|key| {
+                json.get(key)
+                    .and_then(|v| v.as_str())
+                    .map(|v| (key.to_string(), v.to_string()))
+            })
+            .collect();
+        apply_tls_params(extra.get_mut("tls")?, &params);
     }
 
     // Transport
@@ -242,10 +298,7 @@ pub(super) fn parse_vmess_link(link: &str) -> Option<SingBoxOutbound> {
                     serde_json::Value::String("ws".to_string()),
                 );
                 if let Some(path) = json.get("path").and_then(|v| v.as_str()) {
-                    transport.insert(
-                        "path".to_string(),
-                        serde_json::Value::String(path.to_string()),
-                    );
+                    super::parse_websocket_path(&mut transport, path);
                 }
                 if let Some(host) = json.get("host").and_then(|v| v.as_str()) {
                     transport.insert("headers".to_string(), serde_json::json!({ "Host": host }));
@@ -263,7 +316,7 @@ pub(super) fn parse_vmess_link(link: &str) -> Option<SingBoxOutbound> {
                     );
                 }
             }
-            "h2" => {
+            "h2" | "http" => {
                 transport.insert(
                     "type".to_string(),
                     serde_json::Value::String("http".to_string()),
@@ -272,6 +325,12 @@ pub(super) fn parse_vmess_link(link: &str) -> Option<SingBoxOutbound> {
                     transport.insert(
                         "path".to_string(),
                         serde_json::Value::String(path.to_string()),
+                    );
+                }
+                if let Some(host) = json.get("host").and_then(|v| v.as_str()) {
+                    transport.insert(
+                        "host".to_string(),
+                        serde_json::json!(host.split(',').collect::<Vec<_>>()),
                     );
                 }
             }
@@ -344,6 +403,7 @@ pub(super) fn parse_trojan_link(link: &str) -> Option<SingBoxOutbound> {
         tls.insert("insecure".to_string(), serde_json::Value::Bool(true));
     }
     extra.insert("tls".to_string(), serde_json::Value::Object(tls));
+    apply_tls_params(extra.get_mut("tls")?, &params);
 
     // Transport
     let transport_type = params.get("type").map(|s| s.as_str()).unwrap_or("tcp");
@@ -356,7 +416,7 @@ pub(super) fn parse_trojan_link(link: &str) -> Option<SingBoxOutbound> {
 
         if transport_type == "ws" {
             if let Some(path) = params.get("path") {
-                transport.insert("path".to_string(), serde_json::Value::String(path.clone()));
+                super::parse_websocket_path(&mut transport, path);
             }
             if let Some(host) = params.get("host") {
                 transport.insert("headers".to_string(), serde_json::json!({ "Host": host }));
@@ -366,6 +426,17 @@ pub(super) fn parse_trojan_link(link: &str) -> Option<SingBoxOutbound> {
                 transport.insert(
                     "service_name".to_string(),
                     serde_json::Value::String(sn.clone()),
+                );
+            }
+        } else if matches!(transport_type, "http" | "h2") {
+            transport.insert("type".into(), serde_json::json!("http"));
+            if let Some(path) = params.get("path") {
+                transport.insert("path".into(), serde_json::json!(path));
+            }
+            if let Some(host) = params.get("host") {
+                transport.insert(
+                    "host".into(),
+                    serde_json::json!(host.split(',').collect::<Vec<_>>()),
                 );
             }
         }
@@ -396,7 +467,11 @@ fn parse_anytls_link(link: &str) -> Option<SingBoxOutbound> {
                 .map(|value| value.to_string())
         })
         .unwrap_or_else(|| "AnyTLS".to_string());
-    let server = url.host_str()?.to_string();
+    let server = url
+        .host_str()?
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_string();
     let port = url.port_or_known_default().unwrap_or(443);
     let password = urlencoding::decode(url.username()).ok()?.to_string();
     if password.is_empty() {
@@ -436,6 +511,7 @@ fn parse_anytls_link(link: &str) -> Option<SingBoxOutbound> {
     let mut extra = std::collections::HashMap::new();
     extra.insert("password".to_string(), serde_json::Value::String(password));
     extra.insert("tls".to_string(), serde_json::Value::Object(tls));
+    apply_tls_params(extra.get_mut("tls")?, &params);
 
     Some(SingBoxOutbound {
         tag: Some(tag),
@@ -466,254 +542,14 @@ pub(super) fn map_clash_type(t: &str) -> String {
 
 fn parse_naive_link(link: &str) -> Option<SingBoxOutbound> {
     let rest = link.strip_prefix("naive+")?;
-    let (main_part, tag_part) = rest.split_once('#').unwrap_or((rest, "Naive"));
-    let tag = urlencoding::decode(tag_part).ok()?.to_string();
-
-    let url = url::Url::parse(main_part).ok()?;
-    let host = url.host_str()?.to_string();
-    let port = url.port_or_known_default().unwrap_or(443) as u16;
-    let username = urlencoding::decode(url.username()).ok()?.to_string();
-    let password = url
-        .password()
-        .and_then(|p| urlencoding::decode(p).ok().map(|s| s.to_string()))
-        .unwrap_or_default();
-
-    let mut extra = std::collections::HashMap::new();
-    extra.insert("username".to_string(), serde_json::Value::String(username));
-    extra.insert("password".to_string(), serde_json::Value::String(password));
-
-    if let Some(q) = url.query() {
-        for (k, v) in url::form_urlencoded::parse(q.as_bytes()) {
-            match k.as_ref() {
-                "sni" => {
-                    extra.insert(
-                        "tls".to_string(),
-                        serde_json::json!({
-                            "enabled": true,
-                            "server_name": v.to_string(),
-                            "insecure": false
-                        }),
-                    );
-                }
-                "insecure" => {
-                    let insecure = v == "1" || v.eq_ignore_ascii_case("true");
-                    let tls_value = extra
-                        .remove("tls")
-                        .unwrap_or_else(|| serde_json::json!({ "enabled": true }));
-                    let mut tls_obj = tls_value.as_object().cloned().unwrap_or_default();
-                    tls_obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
-                    tls_obj.insert("insecure".to_string(), serde_json::Value::Bool(insecure));
-                    if !tls_obj.contains_key("server_name") {
-                        tls_obj.insert(
-                            "server_name".to_string(),
-                            serde_json::Value::String(host.clone()),
-                        );
-                    }
-                    extra.insert("tls".to_string(), serde_json::Value::Object(tls_obj));
-                }
-                _ => {}
-            }
-        }
+    let mut node = parse_http_proxy_link(rest)?;
+    // Naive uses HTTP/2 over TLS, and its URI convention is naive+https.
+    if !rest.starts_with("https://") {
+        return None;
     }
-
-    if !extra.contains_key("tls") {
-        extra.insert(
-            "tls".to_string(),
-            serde_json::json!({
-                "enabled": true,
-                "server_name": host,
-                "insecure": false
-            }),
-        );
+    node.outbound_type = Some("naive".to_string());
+    if !rest.contains('#') {
+        node.tag = Some("Naive".to_string());
     }
-
-    Some(SingBoxOutbound {
-        tag: Some(tag),
-        outbound_type: Some("naive".to_string()),
-        server: Some(url.host_str()?.to_string()),
-        server_port: Some(port),
-        extra,
-    })
-}
-
-pub(crate) fn export_node_to_link(node: &SingBoxOutbound) -> Result<String, String> {
-    let default_tag = "Node".to_string();
-    let default_server = String::new();
-
-    let tag = urlencoding::encode(node.tag.as_ref().unwrap_or(&default_tag));
-    let node_type = node
-        .outbound_type
-        .as_ref()
-        .map(|s| s.as_str())
-        .unwrap_or("");
-    let server = node.server.as_ref().unwrap_or(&default_server);
-    let port = node.server_port.unwrap_or(0);
-
-    match node_type.to_lowercase().as_str() {
-        "socks" | "http" => {
-            let username = node
-                .extra
-                .get("username")
-                .and_then(|value| value.as_str())
-                .unwrap_or("");
-            let password = node
-                .extra
-                .get("password")
-                .and_then(|value| value.as_str())
-                .unwrap_or("");
-            let credentials = if username.is_empty() && password.is_empty() {
-                String::new()
-            } else {
-                format!(
-                    "{}:{}@",
-                    urlencoding::encode(username),
-                    urlencoding::encode(password)
-                )
-            };
-            let host =
-                if server.contains(':') && !(server.starts_with('[') && server.ends_with(']')) {
-                    format!("[{}]", server)
-                } else {
-                    server.to_string()
-                };
-            let scheme = if node_type == "socks" {
-                "socks5"
-            } else if node
-                .extra
-                .get("tls")
-                .and_then(|value| value.get("enabled"))
-                .and_then(|value| value.as_bool())
-                == Some(true)
-            {
-                "https"
-            } else {
-                "http"
-            };
-            Ok(format!(
-                "{}://{}{}:{}#{}",
-                scheme, credentials, host, port, tag
-            ))
-        }
-        "shadowsocks" => {
-            let method = node
-                .extra
-                .get("method")
-                .and_then(|v| v.as_str())
-                .unwrap_or("aes-256-gcm");
-            let password = node
-                .extra
-                .get("password")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-
-            let user_info = base64::Engine::encode(
-                &base64::engine::general_purpose::STANDARD,
-                format!("{}:{}", method, password),
-            );
-            Ok(format!("ss://{}@{}:{}#{}", user_info, server, port, tag))
-        }
-        "vmess" => {
-            let uuid = node
-                .extra
-                .get("uuid")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-
-            let config = serde_json::json!({
-                "v": "2",
-                "ps": node.tag,
-                "add": server,
-                "port": port,
-                "id": uuid,
-                "aid": 0,
-                "net": "tcp",
-                "type": "none",
-                "tls": ""
-            });
-
-            let encoded = base64::Engine::encode(
-                &base64::engine::general_purpose::STANDARD,
-                config.to_string(),
-            );
-            Ok(format!("vmess://{}", encoded))
-        }
-        "vless" => {
-            let uuid = node
-                .extra
-                .get("uuid")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let flow = node
-                .extra
-                .get("flow")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let transport = node.extra.get("transport").and_then(|v| v.as_object());
-            let net_type = transport
-                .and_then(|t| t.get("type").and_then(|v| v.as_str()))
-                .unwrap_or("tcp");
-
-            let mut query = format!("flow={}&type={}", flow, net_type);
-
-            if let Some(t) = transport {
-                if let Some(path) = t.get("path").and_then(|v| v.as_str()) {
-                    query.push_str(&format!("&path={}", urlencoding::encode(path)));
-                }
-                if net_type == "xhttp" {
-                    if let Some(mode) = t.get("mode").and_then(|v| v.as_str()) {
-                        query.push_str(&format!("&mode={}", urlencoding::encode(mode)));
-                    }
-                    if let Some(extra) = t.get("extra") {
-                        let extra_str = if let Some(s) = extra.as_str() {
-                            s.to_string()
-                        } else {
-                            serde_json::to_string(extra).unwrap_or_default()
-                        };
-                        if !extra_str.is_empty() {
-                            query.push_str(&format!("&extra={}", urlencoding::encode(&extra_str)));
-                        }
-                    }
-                }
-                if let Some(headers) = t.get("headers").and_then(|v| v.as_object()) {
-                    if let Some(host) = headers.get("Host").and_then(|v| v.as_str()) {
-                        query.push_str(&format!("&host={}", urlencoding::encode(host)));
-                    }
-                }
-            }
-
-            // Add SNI/server_name from TLS if present
-            if let Some(tls) = node.extra.get("tls").and_then(|v| v.as_object()) {
-                if let Some(sni) = tls.get("server_name").and_then(|v| v.as_str()) {
-                    query.push_str(&format!("&sni={}", urlencoding::encode(sni)));
-                }
-            }
-
-            Ok(format!(
-                "vless://{}@{}:{}?{}#{}",
-                uuid, server, port, query, tag
-            ))
-        }
-        "trojan" => {
-            let password = node
-                .extra
-                .get("password")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-
-            Ok(format!("trojan://{}@{}:{}#{}", password, server, port, tag))
-        }
-        "hysteria2" => {
-            let password = node
-                .extra
-                .get("password")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-
-            Ok(format!(
-                "hysteria2://{}@{}:{}#{}",
-                password, server, port, tag
-            ))
-        }
-        _ => Ok(serde_json::to_string_pretty(node).map_err(|e| e.to_string())?),
-    }
+    Some(node)
 }

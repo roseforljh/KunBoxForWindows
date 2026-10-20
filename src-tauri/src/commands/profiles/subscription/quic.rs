@@ -217,7 +217,11 @@ pub(super) fn parse_tuic_link(link: &str) -> Option<SingBoxOutbound> {
                 .map(|value| value.to_string())
         })
         .unwrap_or_else(|| "TUIC".to_string());
-    let server = url.host_str()?.to_string();
+    let server = url
+        .host_str()?
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_string();
     let port = url.port_or_known_default().unwrap_or(443);
     let uuid = urlencoding::decode(url.username()).ok()?.to_string();
     let password = url

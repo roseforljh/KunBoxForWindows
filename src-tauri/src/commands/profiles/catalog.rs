@@ -970,7 +970,15 @@ pub async fn node_add(
 }
 
 #[tauri::command]
-pub async fn node_export(state: State<'_, AppState>, tag: String) -> Result<String, String> {
+pub async fn node_export(
+    state: State<'_, AppState>,
+    tag: String,
+    node: Option<SingBoxOutbound>,
+) -> Result<String, String> {
+    // Export the displayed snapshot/draft, even if the active profile changes meanwhile.
+    if let Some(node) = node {
+        return export_node_to_link(&node);
+    }
     let data = load_profiles_data(&state);
     let profile_id = data.active_profile_id.ok_or("No active profile")?;
 

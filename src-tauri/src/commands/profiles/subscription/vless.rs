@@ -66,7 +66,7 @@ pub(super) fn parse_vless_link(link: &str) -> Option<SingBoxOutbound> {
     let mut extra = std::collections::HashMap::new();
     extra.insert(
         "uuid".to_string(),
-        serde_json::Value::String(uuid.to_string()),
+        serde_json::Value::String(urlencoding::decode(uuid).ok()?.to_string()),
     );
     extra.insert(
         "packet_encoding".to_string(),
@@ -213,7 +213,7 @@ pub(super) fn parse_vless_link(link: &str) -> Option<SingBoxOutbound> {
         match transport_type {
             "ws" => {
                 if let Some(path) = params.get("path") {
-                    transport.insert("path".to_string(), serde_json::Value::String(path.clone()));
+                    super::parse_websocket_path(&mut transport, path);
                 }
                 if let Some(host) = params.get("host") {
                     transport.insert("headers".to_string(), serde_json::json!({ "Host": host }));
@@ -236,7 +236,10 @@ pub(super) fn parse_vless_link(link: &str) -> Option<SingBoxOutbound> {
                     transport.insert("path".to_string(), serde_json::Value::String(path.clone()));
                 }
                 if let Some(host) = params.get("host") {
-                    transport.insert("host".to_string(), serde_json::json!([host]));
+                    transport.insert(
+                        "host".to_string(),
+                        serde_json::json!(host.split(',').collect::<Vec<_>>()),
+                    );
                 }
             }
             "xhttp" => {

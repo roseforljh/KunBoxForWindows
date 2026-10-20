@@ -351,7 +351,310 @@ fn manual_node_links_for_all_supported_protocols_are_parseable() {
         let node = parse_node_link(link)
             .unwrap_or_else(|| panic!("手工节点链接无法解析: {expected_type}"));
         assert_eq!(node.outbound_type.as_deref(), Some(expected_type));
+        let exported =
+            export_node_to_link(&node).unwrap_or_else(|err| panic!("{expected_type}: {err}"));
+        let decoded = parse_node_link(&exported).unwrap();
+        assert_eq!(decoded.outbound_type, node.outbound_type);
+        assert_eq!(decoded.server, node.server);
+        assert_eq!(decoded.server_port, node.server_port);
+        assert_eq!(decoded.tag, node.tag);
     }
+}
+
+fn export_fixture(value: serde_json::Value) -> (String, SingBoxOutbound) {
+    let node: SingBoxOutbound = serde_json::from_value(value).unwrap();
+    let link = export_node_to_link(&node).unwrap();
+    let decoded = parse_node_link(&link).unwrap();
+    (link, decoded)
+}
+
+fn link_query(link: &str) -> std::collections::HashMap<String, String> {
+    url::Url::parse(link)
+        .unwrap()
+        .query_pairs()
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect()
+}
+
+#[test]
+fn exports_vless_reality_public_key_and_transport_in_standard_fields() {
+    let (link, decoded) = export_fixture(serde_json::json!({
+        "type": "vless", "tag": "美国 # 1", "server": "2001:db8::1", "server_port": 443,
+        "uuid": "11111111-1111-1111-1111-111111111111", "flow": "xtls-rprx-vision",
+        "tls": {"enabled": true, "server_name": "front.example.com", "alpn": ["h2", "http/1.1"],
+            "utls": {"enabled": true, "fingerprint": "chrome"},
+            "reality": {"enabled": true, "public_key": "dummy-public-key", "short_id": "ab12"}},
+        "transport": {"type": "grpc", "service_name": "service/a?b=c"}
+    }));
+    assert!(link.contains("@[2001:db8::1]:443?"));
+    assert_eq!(decoded.server.as_deref(), Some("2001:db8::1"));
+    let params = link_query(&link);
+    for (key, expected) in [
+        ("security", "reality"),
+        ("pbk", "dummy-public-key"),
+        ("sid", "ab12"),
+        ("fp", "chrome"),
+        ("alpn", "h2,http/1.1"),
+        ("serviceName", "service/a?b=c"),
+        ("flow", "xtls-rprx-vision"),
+    ] {
+        assert_eq!(params.get(key).map(String::as_str), Some(expected));
+    }
+    assert_eq!(decoded.tag.as_deref(), Some("美国 # 1"));
+}
+
+#[test]
+fn exports_vmess_actual_cipher_alter_id_tls_and_websocket() {
+    let (link, decoded) = export_fixture(serde_json::json!({
+        "type": "vmess", "tag": "VMess WS", "server": "node.example.com", "server_port": 8443,
+        "uuid": "11111111-1111-1111-1111-111111111111", "alter_id": 64, "security": "aes-128-gcm",
+        "tls": {"enabled": true, "server_name": "sni.example.com", "insecure": true, "alpn": ["http/1.1"],
+            "utls": {"enabled": true, "fingerprint": "firefox"}},
+        "transport": {"type": "ws", "path": "/ws?a=b&c=d", "headers": {"Host": "cdn.example.com"}}
+    }));
+    let payload: serde_json::Value = serde_json::from_slice(
+        &decode_base64_compat(link.strip_prefix("vmess://").unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(payload["aid"], 64);
+    assert_eq!(payload["scy"], "aes-128-gcm");
+    assert_eq!(payload["tls"], "tls");
+    assert_eq!(payload["net"], "ws");
+    assert_eq!(payload["host"], "cdn.example.com");
+    assert_eq!(payload["path"], "/ws?a=b&c=d");
+    assert_eq!(payload["sni"], "sni.example.com");
+    assert_eq!(payload["allowInsecure"], true);
+    assert_eq!(decoded.extra["tls"]["utls"]["fingerprint"], "firefox");
+}
+
+#[test]
+fn exports_http_transport_host_lists_and_grpc_service_names() {
+    for kind in ["vmess", "vless", "trojan"] {
+        for transport in [
+            serde_json::json!({"type":"http","host":["a.example.com","b.example.com"],"path":"/h2"}),
+            serde_json::json!({"type":"grpc","service_name":"name/with spaces"}),
+        ] {
+            let mut node = serde_json::json!({"type":kind,"tag":"transport","server":"node.example.com","server_port":443,
+                "tls":{"enabled":true}, "transport":transport});
+            node[if kind == "trojan" { "password" } else { "uuid" }] =
+                serde_json::json!("test-credential");
+            let (_, decoded) = export_fixture(node);
+            assert_eq!(decoded.extra["transport"], transport);
+        }
+    }
+}
+
+#[test]
+fn exports_vless_xhttp_encryption_ech_and_extra_without_loss() {
+    let (link, decoded) = export_fixture(serde_json::json!({
+        "type":"vless", "tag":"XHTTP", "server":"node.example.com", "server_port":443, "uuid":"test-uuid",
+        "encryption":"mlkem768x25519plus.native.1rtt.test",
+        "tls":{"enabled":true,"server_name":"sni.example.com","ech":{"enabled":true,"query_server_name":"public.example.com"}},
+        "x_kunbox_ech_dns_server":"https://dns.example.com/dns-query",
+        "transport":{"type":"xhttp","path":"/x?q=a+b","mode":"packet-up","host":"cdn.example.com","extra":{"scMaxEachPostBytes":1000000}}
+    }));
+    let params = link_query(&link);
+    assert_eq!(
+        params["ech"],
+        "public.example.com+https://dns.example.com/dns-query"
+    );
+    assert_eq!(params["mode"], "packet-up");
+    assert_eq!(params["path"], "/x?q=a+b");
+    assert_eq!(params["encryption"], "mlkem768x25519plus.native.1rtt.test");
+    assert_eq!(
+        decoded.extra["transport"]["extra"]["scMaxEachPostBytes"],
+        1000000
+    );
+}
+
+#[test]
+fn exports_trojan_password_sni_and_ws_with_reserved_characters() {
+    let (link, decoded) = export_fixture(serde_json::json!({
+        "type":"trojan","tag":"密码节点","server":"2001:db8::2","server_port":443,
+        "password":"p@ss:/?#%+中文","tls":{"enabled":true,"server_name":"sni.example.com","insecure":true,"alpn":["h2"]},
+        "transport":{"type":"ws","path":"/ws?x=1&y=2","headers":{"Host":"cdn.example.com"}}
+    }));
+    assert!(link.contains("%40"));
+    assert_eq!(decoded.extra["password"], "p@ss:/?#%+中文");
+    assert_eq!(link_query(&link)["allowInsecure"], "1");
+    assert_eq!(decoded.extra["tls"]["server_name"], "sni.example.com");
+}
+
+#[test]
+fn exports_hysteria2_port_hopping_without_emitting_port_zero() {
+    let (link, decoded) = export_fixture(serde_json::json!({
+        "type":"hysteria2","tag":"Hy2","server":"node.example.com","server_ports":[443,"2000:3000"],
+        "password":"p@ss:#?","tls":{"enabled":true,"server_name":"sni.example.com","insecure":true,"alpn":["h3"]},
+        "obfs":{"type":"salamander","password":"obfs&+/#"}
+    }));
+    let params = link_query(&link);
+    assert_eq!(params["mport"], "443,2000-3000");
+    assert_eq!(params["obfs-password"], "obfs&+/#");
+    assert!(link.contains(":443?"));
+    assert_eq!(decoded.server_port, None);
+    assert_eq!(
+        decoded.extra["server_ports"],
+        serde_json::json!([443, "2000:3000"])
+    );
+}
+
+#[test]
+fn exports_ss_sip002_plugin_and_aead2022_password() {
+    for method in ["aes-128-gcm", "2022-blake3-aes-128-gcm"] {
+        let (link, decoded) = export_fixture(serde_json::json!({
+            "type":"shadowsocks","tag":"SS","server":"2001:db8::3","server_port":8388,
+            "method":method,"password":"key+/=:second@key","plugin":"v2ray-plugin","plugin_opts":"tls;host=cdn.example.com;path=/ws"
+        }));
+        assert_eq!(
+            link_query(&link)["plugin"],
+            "v2ray-plugin;tls;host=cdn.example.com;path=/ws"
+        );
+        assert_eq!(decoded.extra["password"], "key+/=:second@key");
+        assert_eq!(decoded.extra["method"], method);
+        if method.starts_with("2022-") {
+            assert!(link.starts_with("ss://2022-blake3-aes-128-gcm:"));
+        }
+    }
+}
+
+#[test]
+fn exports_quic_tls_and_https_family_extended_options() {
+    for link in [
+        "tuic://test-uuid:p%40ss%3Aword@node.example.com:443?congestion_control=bbr&udp_relay_mode=quic&udp_over_stream=true&zero_rtt_handshake=true&sni=sni.example.com&alpn=h3&allow_insecure=1#TUIC",
+        "hysteria://node.example.com:443?auth=secret%26%23&upmbps=50&downmbps=100&obfs=xplus&sni=sni.example.com&alpn=h3&insecure=1#HY",
+        "anytls://p%40ss%3Aword@node.example.com:443?sni=sni.example.com&alpn=h2&fp=chrome&insecure=1#ANY",
+        "https://user:p%40ss%3Aword@node.example.com:443?sni=sni.example.com&alpn=h2&insecure=1#HTTPS",
+        "naive+https://user:p%40ss%3Aword@node.example.com:443?insecure=1&sni=sni.example.com&alpn=h2#Naive",
+    ] {
+        let node = parse_node_link(link).unwrap();
+        let exported = export_node_to_link(&node).unwrap();
+        let decoded = parse_node_link(&exported).unwrap();
+        assert_eq!(decoded.extra, node.extra);
+        assert_eq!(decoded.extra["tls"]["insecure"], true);
+    }
+}
+
+#[test]
+fn refuses_incomplete_links_and_unrepresentable_dependencies() {
+    let base = serde_json::json!({"type":"vless","tag":"Test","server":"node.example.com","server_port":443,"uuid":"test-uuid"});
+    for (field, value, error_field) in [
+        (
+            "detour",
+            serde_json::json!("another-profile::node"),
+            "detour",
+        ),
+        (
+            "tls",
+            serde_json::json!({"enabled":true,"certificate_path":"C:/private/cert.pem"}),
+            "certificate_path",
+        ),
+        (
+            "transport",
+            serde_json::json!({"type":"ws","headers":{"X-Secret":"not-shareable"}}),
+            "X-Secret",
+        ),
+    ] {
+        let mut value_node = base.clone();
+        value_node[field] = value;
+        let node: SingBoxOutbound = serde_json::from_value(value_node).unwrap();
+        let error = export_node_to_link(&node).unwrap_err();
+        assert!(error.contains(error_field), "{error}");
+        assert!(!error.contains("not-shareable") && !error.contains("C:/private"));
+    }
+    for field in ["uuid", "server", "server_port"] {
+        let mut value_node = base.clone();
+        value_node.as_object_mut().unwrap().remove(field);
+        assert!(export_node_to_link(&serde_json::from_value(value_node).unwrap()).is_err());
+    }
+    let mut unsupported = base;
+    unsupported["type"] = serde_json::json!("wireguard");
+    assert!(export_node_to_link(&serde_json::from_value(unsupported).unwrap()).is_err());
+}
+
+#[test]
+fn websocket_early_data_uses_xray_compatible_path_for_all_three_protocols() {
+    for kind in ["vless", "vmess", "trojan"] {
+        let mut value = serde_json::json!({"type":kind,"tag":"WS ED","server":"node.example.com","server_port":443,
+            "tls":{"enabled":true},"transport":{"type":"ws","path":"/ws?token=a%2Bb&flag=yes", "max_early_data":2560,"early_data_header_name":"Sec-WebSocket-Protocol"}});
+        value[if kind == "trojan" { "password" } else { "uuid" }] =
+            serde_json::json!("test-credential");
+        let (link, decoded) = export_fixture(value.clone());
+        let path = if kind == "vmess" {
+            let payload: serde_json::Value = serde_json::from_slice(
+                &decode_base64_compat(link.strip_prefix("vmess://").unwrap()).unwrap(),
+            )
+            .unwrap();
+            payload["path"].as_str().unwrap().to_owned()
+        } else {
+            link_query(&link)["path"].clone()
+        };
+        assert_eq!(path, "/ws?token=a%2Bb&flag=yes&ed=2560");
+        assert_eq!(decoded.extra["transport"], value["transport"]);
+    }
+}
+
+#[test]
+fn export_rejects_invalid_hosts_and_does_not_enable_tls_implicitly() {
+    for server in [
+        "example.com/path",
+        "example.com#fragment",
+        "example.com?query",
+    ] {
+        let node = serde_json::from_value(
+            serde_json::json!({"type":"vless","server":server,"server_port":443,"uuid":"test"}),
+        )
+        .unwrap();
+        assert!(export_node_to_link(&node).is_err());
+    }
+    let node = serde_json::from_value(serde_json::json!({"type":"trojan","server":"example.com","server_port":443,"password":"test"})).unwrap();
+    assert!(export_node_to_link(&node).unwrap_err().contains("TLS"));
+}
+
+#[test]
+fn ipv6_proxy_and_quic_exports_reimport_without_brackets_in_server() {
+    for link in [
+        "socks5://user:password@[2001:db8::1]:1080#IPv6",
+        "https://user:password@[2001:db8::1]:443?sni=sni.example.com#IPv6",
+        "tuic://uuid:password@[2001:db8::1]:443?sni=sni.example.com#IPv6",
+        "anytls://password@[2001:db8::1]:443?sni=sni.example.com#IPv6",
+        "hysteria2://password@[2001:db8::1]:443?sni=sni.example.com#IPv6",
+    ] {
+        let node = parse_node_link(link).unwrap();
+        assert_eq!(node.server.as_deref(), Some("2001:db8::1"));
+        let exported = export_node_to_link(&node).unwrap();
+        assert!(exported.contains("@[2001:db8::1]:"));
+        assert_eq!(parse_node_link(&exported).unwrap().server, node.server);
+    }
+}
+
+#[test]
+#[ignore = "read-only check of local node fixtures, requires KUNBOX_TEST_NODE_EXPORT_DIR"]
+fn exports_local_node_fixtures() {
+    let root = std::env::var_os("KUNBOX_TEST_NODE_EXPORT_DIR").expect("set fixture directory");
+    let mut count = 0;
+    let mut failures = std::collections::BTreeMap::new();
+    for entry in std::fs::read_dir(root).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|v| v.to_str()) != Some("json") {
+            continue;
+        }
+        let content = std::fs::read_to_string(path).unwrap();
+        let nodes: Vec<SingBoxOutbound> =
+            serde_json::from_str(&content).expect("node fixture array");
+        for node in nodes {
+            count += 1;
+            if let Err(error) = export_node_to_link(&node) {
+                *failures.entry(error).or_insert(0) += 1;
+            }
+        }
+    }
+    // Do not print names, credentials, addresses, or exported URIs.
+    assert!(count > 0);
+    assert!(
+        failures.is_empty(),
+        "unsupported field counts: {failures:?}"
+    );
+    println!("Successfully exported and re-imported {count} local nodes; no credentials logged");
 }
 
 #[test]

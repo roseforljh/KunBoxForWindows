@@ -2,14 +2,16 @@ use crate::types::SingBoxOutbound;
 
 pub(crate) const ECH_DNS_SERVER_META_KEY: &str = "x_kunbox_ech_dns_server";
 
+mod export;
 mod links;
 mod quic;
 #[cfg(test)]
 mod tests;
 mod vless;
 
+pub(super) use export::export_node_to_link;
 use links::map_clash_type;
-pub(super) use links::{export_node_to_link, parse_node_link};
+pub(super) use links::parse_node_link;
 
 pub(super) fn normalize_duplicate_node_tags(nodes: Vec<SingBoxOutbound>) -> Vec<SingBoxOutbound> {
     let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
@@ -131,11 +133,57 @@ pub(super) fn parse_host_port(host_port: &str) -> Option<(String, u16)> {
         .map(|(value, _)| value)
         .unwrap_or(host_port);
     let url = url::Url::parse(&format!("tcp://{}", host_port)).ok()?;
-    Some((url.host_str()?.to_string(), url.port()?))
+    Some((
+        url.host_str()?
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_string(),
+        url.port()?,
+    ))
 }
 
 pub(super) fn parse_bool_param(value: &str) -> bool {
     value == "1" || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes")
+}
+
+// Xray-compatible WS links encode early data in path's ?ed= query, using
+// Sec-WebSocket-Protocol. sing-box stores those as separate transport fields.
+pub(super) fn parse_websocket_path(
+    transport: &mut serde_json::Map<String, serde_json::Value>,
+    path: &str,
+) {
+    transport.insert("path".into(), serde_json::json!(path));
+    let Some((base, query)) = path.split_once('?') else {
+        return;
+    };
+    let early_data = url::form_urlencoded::parse(query.as_bytes())
+        .find(|(k, _)| k == "ed")
+        .and_then(|(_, v)| v.parse::<u32>().ok())
+        .filter(|v| *v > 0);
+    if let Some(early_data) = early_data {
+        let remaining = query
+            .split('&')
+            .filter(|part| {
+                url::form_urlencoded::parse(part.as_bytes())
+                    .next()
+                    .is_none_or(|(k, _)| k != "ed")
+            })
+            .collect::<Vec<_>>()
+            .join("&");
+        transport.insert(
+            "path".into(),
+            serde_json::json!(if remaining.is_empty() {
+                base.to_string()
+            } else {
+                format!("{base}?{remaining}")
+            }),
+        );
+        transport.insert("max_early_data".into(), serde_json::json!(early_data));
+        transport.insert(
+            "early_data_header_name".into(),
+            serde_json::json!("Sec-WebSocket-Protocol"),
+        );
+    }
 }
 
 fn parse_clash_proxies(proxies: &[serde_json::Value]) -> Result<Vec<SingBoxOutbound>, String> {

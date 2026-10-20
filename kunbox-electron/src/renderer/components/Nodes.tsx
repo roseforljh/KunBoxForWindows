@@ -208,11 +208,11 @@ export default function Nodes() {
     if (!node.tag) return
     
     try {
-      const link = await window.api.node.export(node.tag)
+      const link = await window.api.node.export(node.tag, node)
       await navigator.clipboard.writeText(link)
       toast.success(`已复制「${node.tag}」的分享链接`)
-    } catch {
-      toast.error('导出失败')
+    } catch (error) {
+      toast.error(`导出失败：${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
@@ -492,8 +492,8 @@ export default function Nodes() {
         node={detailTarget}
         profileId={activeProfileId}
         onSave={handleSaveNode}
-        onExport={async (tag) => {
-          const link = await window.api.node.export(tag)
+        onExport={async (node) => {
+          const link = await window.api.node.export(node.tag ?? '', node)
           await navigator.clipboard.writeText(link)
           toast.success('已复制分享链接')
         }}
