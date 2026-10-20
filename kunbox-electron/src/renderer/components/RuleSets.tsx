@@ -345,13 +345,12 @@ export default function RuleSets() {
 
 
   const [isSaving, setIsSaving] = useState(false)
-  const [isApplying, setIsApplying] = useState(false)
   const [updateResult, setUpdateResult] = useState<string | null>(null)
   const operationRef = useRef(false)
   const savedRuleSetsRef = useRef<RuleSetItem[]>([])
   const needsRestart = useConnectionStore(s => s.needsRestart)
   const vpnState = useConnectionStore(s => s.state)
-  const busy = isSaving || isApplying || downloadingTags.size > 0
+  const busy = isSaving || downloadingTags.size > 0
 
   useEffect(() => {
     window.api.ruleset.list().then((data) => {
@@ -377,24 +376,6 @@ export default function RuleSets() {
       return false
     } finally {
       setIsSaving(false)
-    }
-  }
-
-  const applyRules = async () => {
-    if (operationRef.current || busy) return
-    operationRef.current = true
-    setIsApplying(true)
-    try {
-      const result = await window.api.singbox.restart()
-      if (!result.success) throw new Error(result.error || '未知错误')
-      useConnectionStore.getState().setNeedsRestart(false)
-      if (result.warning) toast.warning(result.warning)
-      else toast.success('分流配置已应用')
-    } catch (error) {
-      toast.error(`应用失败: ${String(error)}`)
-    } finally {
-      operationRef.current = false
-      setIsApplying(false)
     }
   }
 
@@ -790,11 +771,8 @@ export default function RuleSets() {
 
       <RoutingModeNotice />
       {needsRestart && vpnState === 'connected' && (
-        <div className="mb-4 p-3 rounded-xl bg-amber-500/15 text-amber-500 flex items-center justify-between gap-3">
-          <span className="text-sm">配置已保存，重启 VPN 后完整应用分流规则（会短暂断线）</span>
-          <button onClick={applyRules} className="shrink-0 px-3 py-1.5 rounded-lg bg-amber-500/20 text-sm">
-            {isApplying ? '应用中…' : '立即应用'}
-          </button>
+        <div role="status" className="mb-4 p-3 rounded-xl bg-amber-500/15 text-amber-500">
+          <p className="text-sm">分流配置已保存，重启内核后生效。如需立即生效，请在首页重启内核（会短暂断线）。</p>
         </div>
       )}
       {updateResult && (
@@ -935,7 +913,7 @@ export default function RuleSets() {
         )}
 
         <p className="text-xs text-[var(--text-faint)] mt-4">
-          拖拽可调整优先级。更新会重新下载远程规则集，失败时保留已有缓存；修改分流配置后请点击「立即应用」。
+          拖拽可调整优先级。更新会重新下载远程规则集，失败时保留已有缓存；修改分流配置后，重启内核即可生效。
         </p>
       </div>
 

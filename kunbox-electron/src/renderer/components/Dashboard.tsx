@@ -298,13 +298,13 @@ export default function Dashboard() {
           >
             <div className="flex items-center gap-3">
               <AlertTriangle className="w-5 h-5 text-amber-500" />
-              <span className="text-sm text-amber-500">配置已修改，需要重启 VPN 才能生效</span>
+              <span className="text-sm text-amber-500">配置已保存，重启内核后生效</span>
             </div>
             <button
               onClick={handleRestart}
-              className="px-3 py-1.5 text-xs font-medium rounded-lg bg-amber-500/20 text-amber-500 hover:bg-amber-500/30 transition-colors"
+              className="shrink-0 whitespace-nowrap px-3 py-1.5 text-xs font-medium rounded-lg bg-amber-500/20 text-amber-500 hover:bg-amber-500/30 transition-colors"
             >
-              立即重启
+              重启内核
             </button>
           </motion.div>
         )}

@@ -40,7 +40,6 @@ export function useToast() {
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<ToastMessage[]>([])
-  const [isRestarting, setIsRestarting] = useState(false)
   const { setManagedTimeout } = useManagedTimeouts()
 
   const showToast = useCallback((message: string, type: ToastType = 'info', action?: ToastAction) => {
@@ -49,7 +48,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     setToasts([{ id, message, type, action }])
     setManagedTimeout(() => {
       setToasts(prev => prev.filter(t => t.id !== id))
-    }, action ? 8000 : 3000)
+    }, action ? 8000 : type === 'info' ? 6000 : 3000)
   }, [setManagedTimeout])
 
   const removeToast = useCallback((id: number) => {
@@ -90,11 +89,9 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     <ToastProviderInner
       showToast={showToast}
       clearToasts={clearToasts}
-      isRestarting={isRestarting}
-      setIsRestarting={setIsRestarting}
     >
       {children}
-      <div className="fixed bottom-6 left-[calc(50%+var(--sidebar-width,160px)/2)] -translate-x-1/2 z-[9999] flex flex-col-reverse gap-2 pointer-events-none">
+      <div className="fixed bottom-6 left-[calc(50%+var(--sidebar-width,160px)/2)] -translate-x-1/2 z-[9999] w-max max-w-[calc(100%-var(--sidebar-width,160px)-2rem)] flex flex-col-reverse gap-2 pointer-events-none">
         <AnimatePresence>
           {toasts.map((toast) => (
             <motion.div
@@ -105,10 +102,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               transition={{ type: 'spring', damping: 25, stiffness: 400 }}
               className="px-4 py-3 glass-card rounded-xl border border-[var(--glass-border)] shadow-xl flex items-center gap-3 pointer-events-auto"
             >
-              <div className={`w-7 h-7 rounded-full ${getBgColor(toast.type)} flex items-center justify-center`}>
+              <div className={`w-7 h-7 shrink-0 rounded-full ${getBgColor(toast.type)} flex items-center justify-center`}>
                 {getIcon(toast.type)}
               </div>
-              <p className="text-sm font-medium text-[var(--text-primary)] whitespace-nowrap">
+              <p className="min-w-0 flex-1 text-sm font-medium text-[var(--text-primary)] break-words">
                 {toast.message}
               </p>
               {toast.action && (
@@ -117,9 +114,9 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                     toast.action?.onClick()
                     removeToast(toast.id)
                   }}
-                  className="ml-2 px-3 py-1.5 text-xs font-medium rounded-lg bg-[var(--accent-primary)] text-white hover:bg-[var(--accent-primary)]/90 transition-colors flex items-center gap-1"
+                  className="ml-2 shrink-0 whitespace-nowrap px-3 py-1.5 text-xs font-medium rounded-lg bg-[var(--accent-primary)] text-white hover:bg-[var(--accent-primary)]/90 transition-colors inline-flex items-center gap-1"
                 >
-                  <RefreshCw className="w-3 h-3" />
+                  <RefreshCw className="w-3 h-3 shrink-0" />
                   {toast.action.label}
                 </button>
               )}
@@ -135,50 +132,21 @@ function ToastProviderInner({
   children, 
   showToast,
   clearToasts,
-  isRestarting,
-  setIsRestarting
 }: { 
   children: ReactNode
   showToast: (message: string, type?: ToastType, action?: ToastAction) => void
   clearToasts: () => void
-  isRestarting: boolean
-  setIsRestarting: (v: boolean) => void
 }) {
   const { state: vpnState, setNeedsRestart } = useConnectionStore()
-
-  const restartVpn = useCallback(async () => {
-    if (isRestarting) return
-    setIsRestarting(true)
-    try {
-      const result = await window.api.singbox.restart()
-      if (result.success) {
-        setNeedsRestart(false)
-        if (result.warning) {
-          showToast(result.warning, 'warning')
-        } else {
-          showToast('VPN 已重启', 'success')
-        }
-      } else {
-        showToast(`重启失败: ${result.error}`, 'error')
-      }
-    } catch {
-      showToast('重启失败', 'error')
-    } finally {
-      setIsRestarting(false)
-    }
-  }, [isRestarting, setIsRestarting, setNeedsRestart, showToast])
 
   const showRestartToast = useCallback((message: string) => {
     if (vpnState === 'connected' || vpnState === 'connecting') {
       setNeedsRestart(true)
-      showToast(`${message}，重启 VPN 后完整应用`, 'info', {
-        label: '应用',
-        onClick: restartVpn
-      })
+      showToast(`${message}，重启内核后生效；如需立即生效，请在首页重启内核`, 'info')
     } else {
       showToast(message, 'success')
     }
-  }, [vpnState, setNeedsRestart, showToast, restartVpn])
+  }, [vpnState, setNeedsRestart, showToast])
 
   const success = useCallback((message: string) => showToast(message, 'success'), [showToast])
   const error = useCallback((message: string) => showToast(message, 'error'), [showToast])
