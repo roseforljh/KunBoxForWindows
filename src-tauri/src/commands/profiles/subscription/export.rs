@@ -169,6 +169,18 @@ fn check_preserved(path: &str, original: &Value, decoded: Option<&Value>) -> Res
     if decoded == Some(original) {
         return Ok(());
     }
+    // Numeric single ports and the editor shorthand represent the same range.
+    if path == "server_ports" {
+        if let Some(decoded) = decoded {
+            let mut normalized = original.clone();
+            let mut decoded = decoded.clone();
+            crate::types::normalize_hysteria2_server_ports(&mut normalized);
+            crate::types::normalize_hysteria2_server_ports(&mut decoded);
+            if decoded == normalized {
+                return Ok(());
+            }
+        }
+    }
     if decoded.is_none() {
         let is_default = match path {
             "packet_encoding" => original == "xudp",

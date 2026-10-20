@@ -240,6 +240,22 @@ impl SingBoxOutbound {
     }
 }
 
+/// sing-box requires a range even for a single hopping port ("443:443").
+/// Accept older KunBox numeric entries and the editor's single-port shorthand.
+pub fn normalize_hysteria2_server_ports(value: &mut serde_json::Value) {
+    if let Some(ports) = value.as_array_mut() {
+        for port in ports {
+            let single = port
+                .as_str()
+                .and_then(|text| text.parse::<u16>().ok())
+                .or_else(|| port.as_u64().and_then(|number| u16::try_from(number).ok()));
+            if let Some(single) = single.filter(|port| *port > 0) {
+                *port = serde_json::Value::String(format!("{single}:{single}"));
+            }
+        }
+    }
+}
+
 pub fn node_is_metered_protected(node: &serde_json::Value) -> bool {
     node.get(NODE_METERED_PROTECTED_META_KEY)
         .and_then(serde_json::Value::as_bool)

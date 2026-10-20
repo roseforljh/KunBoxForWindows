@@ -58,6 +58,41 @@ fn parse_hysteria2_link_preserves_port_hopping_and_pin_compatibility() {
 }
 
 #[test]
+fn hysteria2_hopping_imports_ranges_and_rejects_invalid_mport() {
+    let node = parse_hysteria2_link(
+        "hy2://test@node.example.com:443?mport=20000-30000,443-443,40000:41000#hopping",
+    ).unwrap();
+    assert_eq!(node.extra["server_ports"], serde_json::json!(["20000:30000", "443:443", "40000:41000"]));
+    for ports in ["", "0", "65536", "30000-20000", "443,", "abc"] {
+        assert!(parse_hysteria2_link(&format!("hy2://test@node.example.com:443?mport={ports}")).is_none());
+    }
+}
+
+#[test]
+fn clash_hysteria2_preserves_port_hopping_and_intervals() {
+    for (interval, expected_minimum, expected_maximum) in [
+        (serde_json::json!(30), "30s", None),
+        (serde_json::json!("15-60"), "15s", Some("60s")),
+    ] {
+        let nodes = parse_clash_proxies(&[serde_json::json!({
+            "name": "HY2", "type": "hysteria2", "server": "node.example.com", "password": "test",
+            "ports": "20000-30000,443", "hop-interval": interval
+        })]).unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].server_port, None);
+        assert_eq!(nodes[0].extra["server_ports"], serde_json::json!(["20000:30000", "443:443"]));
+        assert_eq!(nodes[0].extra["hop_interval"], expected_minimum);
+        assert_eq!(nodes[0].extra.get("hop_interval_max").and_then(|value| value.as_str()), expected_maximum);
+    }
+    for (ports, interval) in [("0", "30"), ("30000-20000", "30"), ("443", "60-15"), ("443", "0")] {
+        assert!(parse_clash_proxies(&[serde_json::json!({
+            "name": "invalid", "type": "hysteria2", "server": "node.example.com", "port": 443,
+            "ports": ports, "hop-interval": interval
+        })]).unwrap().is_empty());
+    }
+}
+
+#[test]
 fn parse_clash_naive_ignores_network_field() {
     let proxies = vec![serde_json::json!({
         "name": "Naive H2",
@@ -494,7 +529,7 @@ fn exports_hysteria2_port_hopping_without_emitting_port_zero() {
     assert_eq!(decoded.server_port, None);
     assert_eq!(
         decoded.extra["server_ports"],
-        serde_json::json!([443, "2000:3000"])
+        serde_json::json!(["443:443", "2000:3000"])
     );
 }
 

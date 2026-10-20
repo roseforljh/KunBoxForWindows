@@ -2,18 +2,18 @@ use crate::types::SingBoxOutbound;
 
 use super::{parse_bool_param, parse_host_port};
 
-fn parse_hysteria2_server_ports(value: &str) -> Option<Vec<serde_json::Value>> {
+pub(super) fn parse_hysteria2_server_ports(value: &str) -> Option<Vec<serde_json::Value>> {
     let ports = value
         .split(',')
         .map(str::trim)
         .map(|item| {
-            if let Some((start, end)) = item.split_once('-') {
+            if let Some((start, end)) = item.split_once('-').or_else(|| item.split_once(':')) {
                 let start = start.parse::<u16>().ok().filter(|port| *port > 0)?;
                 let end = end.parse::<u16>().ok().filter(|port| *port > 0)?;
                 (start <= end).then(|| serde_json::Value::String(format!("{start}:{end}")))
             } else {
                 let port = item.parse::<u16>().ok().filter(|port| *port > 0)?;
-                Some(serde_json::Value::Number(port.into()))
+                Some(serde_json::Value::String(format!("{port}:{port}")))
             }
         })
         .collect::<Option<Vec<_>>>()?;
@@ -48,9 +48,10 @@ pub(super) fn parse_hysteria2_link(link: &str) -> Option<SingBoxOutbound> {
     let mut extra = std::collections::HashMap::new();
     extra.insert("password".to_string(), serde_json::Value::String(password));
 
-    let server_ports = params
-        .get("mport")
-        .and_then(|value| parse_hysteria2_server_ports(value));
+    let server_ports = match params.get("mport") {
+        Some(value) => Some(parse_hysteria2_server_ports(value)?),
+        None => None,
+    };
     if let Some(server_ports) = &server_ports {
         extra.insert(
             "server_ports".to_string(),

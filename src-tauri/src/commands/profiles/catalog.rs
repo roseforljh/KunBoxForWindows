@@ -618,6 +618,36 @@ fn find_incoming_detour(
     None
 }
 
+fn node_uses_valid_hysteria2_ports(node: &SingBoxOutbound) -> Result<bool, String> {
+    if node.outbound_type.as_deref() != Some("hysteria2") {
+        return Ok(false);
+    }
+    let Some(value) = node.extra.get("server_ports").filter(|value| !value.is_null()) else {
+        return Ok(false);
+    };
+    let invalid = || "端口跳跃格式无效，请填写 443 或 20000:30000".to_string();
+    let ports = value.as_array().ok_or_else(invalid)?;
+    for value in ports {
+        let text = value
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| value.to_string());
+        let parts = text.split(':').collect::<Vec<_>>();
+        if parts.len() > 2 {
+            return Err(invalid());
+        }
+        let values = parts
+            .iter()
+            .map(|part| part.parse::<u16>())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| invalid())?;
+        if values.contains(&0) || (values.len() == 2 && values[0] > values[1]) {
+            return Err(invalid());
+        }
+    }
+    Ok(!ports.is_empty())
+}
+
 #[tauri::command]
 pub async fn node_update(
     state: State<'_, AppState>,
@@ -655,7 +685,7 @@ pub async fn node_update(
         {
             return Err("服务器地址不能为空".to_string());
         }
-        if node.server_port.unwrap_or(0) == 0 {
+        if !node_uses_valid_hysteria2_ports(&node)? && node.server_port.unwrap_or(0) == 0 {
             return Err("端口必须在 1 到 65535 之间".to_string());
         }
     }
@@ -1016,6 +1046,32 @@ mod tests {
             auto_update_interval: 0,
             dns_pre_resolve: false,
             dns_server: None,
+        }
+    }
+
+    #[test]
+    fn hysteria2_hopping_ports_allow_editing_without_single_port() {
+        let mut node = test_node("HY2");
+        node.outbound_type = Some("hysteria2".into());
+        node.server_port = None;
+        assert!(!node_uses_valid_hysteria2_ports(&node).unwrap());
+        for ports in [
+            serde_json::json!(["20000:30000", 443]),
+            serde_json::json!(["443"]),
+        ] {
+            node.extra.insert("server_ports".into(), ports);
+            assert!(node_uses_valid_hysteria2_ports(&node).unwrap());
+        }
+        for ports in [
+            serde_json::json!([0]),
+            serde_json::json!([65536]),
+            serde_json::json!(["30000:20000"]),
+            serde_json::json!(["1:2:3"]),
+            serde_json::json!(["abc"]),
+            serde_json::json!([1.5]),
+        ] {
+            node.extra.insert("server_ports".into(), ports);
+            assert!(node_uses_valid_hysteria2_ports(&node).is_err());
         }
     }
 

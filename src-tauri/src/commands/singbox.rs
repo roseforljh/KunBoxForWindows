@@ -1337,6 +1337,13 @@ fn process_node(node: &serde_json::Value) -> serde_json::Value {
             }
         }
 
+        // Normalize old imports and editor shorthand before both runtime and latency use.
+        if node_type == "hysteria2" {
+            if let Some(ports) = obj.get_mut("server_ports") {
+                crate::types::normalize_hysteria2_server_ports(ports);
+            }
+        }
+
         if node_type == "vless" && !obj.contains_key("packet_encoding") {
             obj.insert(
                 "packet_encoding".to_string(),

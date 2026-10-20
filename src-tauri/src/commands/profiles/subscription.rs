@@ -196,9 +196,34 @@ fn parse_clash_proxies(proxies: &[serde_json::Value]) -> Result<Vec<SingBoxOutbo
                 return None;
             }
             let server = p.get("server")?.as_str()?.to_string();
-            let port = parse_u16_port(p.get("port")?.as_u64()?)?;
+            let hopping_ports = if proxy_type == "hysteria2" {
+                match p.get("ports") {
+                    Some(value) => Some(quic::parse_hysteria2_server_ports(value.as_str()?)?),
+                    None => None,
+                }
+            } else {
+                None
+            };
+            let port = if hopping_ports.is_some() {
+                None // Clash ignores port when ports is configured.
+            } else {
+                Some(parse_u16_port(p.get("port")?.as_u64()?)?)
+            };
 
             let mut extra = serde_json::Map::new();
+            if let Some(ports) = hopping_ports {
+                extra.insert("server_ports".to_string(), serde_json::json!(ports));
+                if let Some(value) = p.get("hop-interval") {
+                    let text = value.as_str().map(str::to_owned).unwrap_or_else(|| value.to_string());
+                    let (minimum, maximum) = text.split_once('-').unwrap_or((&text, &text));
+                    let minimum = minimum.trim().parse::<u32>().ok().filter(|value| *value > 0)?;
+                    let maximum = maximum.trim().parse::<u32>().ok().filter(|value| *value >= minimum)?;
+                    extra.insert("hop_interval".to_string(), serde_json::json!(format!("{minimum}s")));
+                    if maximum != minimum {
+                        extra.insert("hop_interval_max".to_string(), serde_json::json!(format!("{maximum}s")));
+                    }
+                }
+            }
 
             // Basic fields
             if let Some(username) = p.get("username").and_then(|v| v.as_str()) {
@@ -516,7 +541,7 @@ fn parse_clash_proxies(proxies: &[serde_json::Value]) -> Result<Vec<SingBoxOutbo
                 tag: Some(tag),
                 outbound_type: Some(proxy_type),
                 server: Some(server),
-                server_port: Some(port),
+                server_port: port,
                 extra: extra.into_iter().collect(),
             })
         })

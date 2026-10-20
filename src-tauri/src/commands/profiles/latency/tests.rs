@@ -409,6 +409,79 @@ fn temp_xhttp_node_detour_builds_non_null_chain_route() {
 }
 
 #[test]
+fn generate_temp_config_preserves_hy2_and_multiplex_options() {
+    let nodes = vec![
+        serde_json::json!({
+            "type": "hysteria2", "tag": "hy2-default", "server": "127.0.0.1",
+            "server_port": 443, "password": "test",
+            "tls": { "enabled": true, "server_name": "example.com" }
+        }),
+        serde_json::json!({
+            "type": "hysteria2", "tag": "hy2-compat", "server": "127.0.0.1",
+            "server_ports": ["20000:30000", 443, "8443"], "password": "test",
+            "hop_interval": "30s", "hop_interval_max": "60s",
+            "disable_chrome_parrot": true, "bbr_profile": "conservative",
+            "tls": { "enabled": true, "server_name": "example.com" }
+        }),
+        serde_json::json!({
+            "type": "vmess", "tag": "mux-default", "server": "127.0.0.1", "server_port": 443,
+            "uuid": "00000000-0000-0000-0000-000000000000",
+            "multiplex": { "enabled": true, "protocol": "h2mux", "max_connections": 4,
+                "min_streams": 4, "padding": false }
+        }),
+    ];
+    // Exercise the stored node type, shared runtime transformation, and latency path.
+    let stored: Vec<crate::types::SingBoxOutbound> =
+        serde_json::from_value(serde_json::json!(nodes)).unwrap();
+    let stored: Vec<serde_json::Value> = serde_json::from_value(serde_json::json!(stored)).unwrap();
+    let (config, _, _, _) = generate_temp_config_raw(
+        &stored,
+        TEMP_SINGBOX_PORT,
+        true,
+        TEMP_LATENCY_FALLBACK_REMOTE_DNS,
+    );
+    for (index, source) in nodes.iter().enumerate() {
+        let runtime = crate::commands::singbox::node_for_singbox_with_plugin_bridge(
+            &stored[index],
+            &mut Vec::new(),
+        );
+        for key in ["multiplex", "disable_chrome_parrot", "bbr_profile", "server_ports", "hop_interval", "hop_interval_max"] {
+            let expected = if key == "server_ports" && index == 1 {
+                Some(serde_json::json!(["20000:30000", "443:443", "8443:8443"]))
+            } else {
+                source.get(key).cloned()
+            };
+            assert_eq!(runtime.get(key), expected.as_ref(), "runtime {key}");
+            assert_eq!(
+                config["outbounds"][index].get(key),
+                expected.as_ref(),
+                "latency {key}"
+            );
+        }
+    }
+    if let Some(kernel) = std::env::var_os("KUNBOX_TEST_SINGBOX") {
+        let dir = unique_test_dir("hy2-multiplex-check");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        fs::write(&path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+        let mut command = std::process::Command::new(kernel);
+        command.args(["check", "-c"]).arg(&path);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000);
+        }
+        let output = command.output().unwrap();
+        fs::remove_dir_all(dir).unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
 fn generate_temp_config_uses_ascii_unique_tags_and_preserves_mapping() {
     let nodes = vec![
         serde_json::json!({
