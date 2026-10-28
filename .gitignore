@@ -2,6 +2,7 @@ LinJun/
 node_modules/
 dist/
 out/
+/target/
 src-tauri/target-alt-release/
 *.log
 .env
@@ -17,3 +18,8 @@ tmp-sb113/
 .gstack/
 .codex/
 \.sisyphus
+
+# Local test installers and pre-cleanup archives
+/release-artifacts/*/node-preservation-*/
+/release-artifacts/*/log-retention-*/
+/release-artifacts/*/archive-before-cleanup-*/
