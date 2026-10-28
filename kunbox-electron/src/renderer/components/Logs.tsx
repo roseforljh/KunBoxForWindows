@@ -1,68 +1,11 @@
-import { useState, useEffect, useRef } from 'react'
+import { useEffect, useRef } from 'react'
 import { Trash2, FileText } from 'lucide-react'
-import type { LogEntry } from '@shared/types'
+import { useLogsStore } from '../stores/logsStore'
 
 export default function Logs() {
-  const [logs, setLogs] = useState<LogEntry[]>([])
-  const [logsEnabled, setLogsEnabled] = useState(true)
+  const { logs, logsEnabled, clearLogs } = useLogsStore()
   const containerRef = useRef<HTMLDivElement>(null)
-  const pendingLogsRef = useRef<LogEntry[]>([])
   const shouldAutoScrollRef = useRef(true)
-
-  useEffect(() => {
-    let mounted = true
-
-    window.api.settings.get().then((settings) => {
-      if (mounted) {
-        setLogsEnabled(settings.enableRuntimeLogs)
-      }
-    }).catch((err) => {
-      console.error('Failed to load runtime log setting:', err)
-    })
-
-    const onRuntimeLogsChange = (event: Event) => {
-      const enabled = (event as CustomEvent<{ enabled: boolean }>).detail?.enabled
-      if (typeof enabled === 'boolean') {
-        setLogsEnabled(enabled)
-        if (!enabled) {
-          setLogs([])
-        }
-      }
-    }
-
-    window.addEventListener('runtime-logs-change', onRuntimeLogsChange as EventListener)
-
-    return () => {
-      mounted = false
-      window.removeEventListener('runtime-logs-change', onRuntimeLogsChange as EventListener)
-    }
-  }, [])
-
-  useEffect(() => {
-    if (!logsEnabled) {
-      pendingLogsRef.current = []
-      return
-    }
-
-    const unsubscribe = window.api.singbox.onLog((entry: LogEntry) => {
-      pendingLogsRef.current.push(entry)
-      if (pendingLogsRef.current.length > 1000) {
-        pendingLogsRef.current.splice(0, pendingLogsRef.current.length - 1000)
-      }
-    })
-
-    const flushTimer = window.setInterval(() => {
-      if (pendingLogsRef.current.length === 0) return
-      const chunk = pendingLogsRef.current.splice(0, pendingLogsRef.current.length)
-      setLogs((prev) => [...prev, ...chunk].slice(-500))
-    }, 150)
-
-    return () => {
-      unsubscribe()
-      clearInterval(flushTimer)
-      pendingLogsRef.current = []
-    }
-  }, [logsEnabled])
 
   useEffect(() => {
     const container = containerRef.current
@@ -73,7 +16,6 @@ export default function Logs() {
       shouldAutoScrollRef.current = container.scrollHeight - container.scrollTop - container.clientHeight <= threshold
     }
 
-    handleScroll()
     container.addEventListener('scroll', handleScroll)
     return () => container.removeEventListener('scroll', handleScroll)
   }, [])
@@ -106,10 +48,12 @@ export default function Logs() {
       <div className="flex items-center justify-between mb-10">
         <div className="space-y-1">
           <h2 className="text-3xl font-bold tracking-tight text-[var(--text-primary)]">日志</h2>
-          <p className="text-[var(--text-muted)] text-sm font-medium">查看代理核心运行日志</p>
+          <p className="text-[var(--text-muted)] text-sm font-medium">
+            {logsEnabled ? '查看代理核心运行日志' : '日志记录已关闭，已保留现有日志'}
+          </p>
         </div>
         <button
-          onClick={() => setLogs([])}
+          onClick={clearLogs}
           className="glass-btn h-11 px-5 rounded-xl text-sm font-medium flex items-center gap-2"
         >
           <Trash2 className="w-4 h-4" />
@@ -121,7 +65,7 @@ export default function Logs() {
         ref={containerRef}
         className="flex-1 glass-card p-5 rounded-2xl overflow-auto font-mono text-xs"
       >
-        {!logsEnabled ? (
+        {!logsEnabled && logs.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center">
             <div className="w-16 h-16 rounded-2xl bg-[var(--bg-elevated)] flex items-center justify-center mb-3">
               <FileText className="w-7 h-7 text-[var(--text-faint)]" />

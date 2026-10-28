@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, forwardRef, useImperativeHandle, useR
 import { motion, AnimatePresence, useAnimation } from 'framer-motion'
 import { Minus, Square, X, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { useConnectionStore } from './stores/connectionStore'
+import { subscribeRuntimeLogs } from './stores/logsStore'
 import { ToastProvider, useToast } from './components/ui/Toast'
 import Dashboard from './components/Dashboard'
 import Nodes from './components/Nodes'
@@ -496,6 +497,8 @@ function AppContent() {
   const disconnectRef = useRef(disconnect)
   const { warning, clear } = useToast()
   useTheme()
+
+  useEffect(() => subscribeRuntimeLogs(), [])
 
   useEffect(() => {
     stateRef.current = state
