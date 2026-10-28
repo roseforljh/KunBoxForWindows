@@ -2,8 +2,8 @@ use base64::Engine;
 use serde_json::{json, Value};
 
 use crate::types::{
-    SingBoxOutbound, NODE_AUTO_SELECTION_ELIGIBLE_META_KEY, NODE_METERED_PROTECTED_META_KEY,
-    NODE_RUNTIME_META_KEYS,
+    SingBoxOutbound, NODE_AUTO_SELECTION_ELIGIBLE_META_KEY, NODE_LOCAL_META_KEY,
+    NODE_METERED_PROTECTED_META_KEY, NODE_RUNTIME_META_KEYS,
 };
 
 use super::{parse_node_link, ECH_DNS_SERVER_META_KEY};
@@ -493,6 +493,7 @@ fn finish_export(node: &SingBoxOutbound, link: String) -> Result<String, String>
     for (key, value) in &node.extra {
         if key == NODE_AUTO_SELECTION_ELIGIBLE_META_KEY
             || key == NODE_METERED_PROTECTED_META_KEY
+            || key == NODE_LOCAL_META_KEY
             || NODE_RUNTIME_META_KEYS.contains(&key.as_str())
         {
             continue;

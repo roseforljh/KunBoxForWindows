@@ -1,7 +1,7 @@
 use crate::state::AppState;
 use crate::types::{
     Profile, ProfilesData, SingBoxOutbound, NODE_AUTO_SELECTION_ELIGIBLE_META_KEY,
-    NODE_METERED_PROTECTED_META_KEY,
+    NODE_LOCAL_META_KEY, NODE_METERED_PROTECTED_META_KEY,
 };
 use std::collections::HashSet;
 use std::fs;
@@ -154,7 +154,14 @@ fn preserve_node_editor_fields(
     refreshed_nodes: &mut [SingBoxOutbound],
 ) {
     for refreshed in refreshed_nodes {
-        let Some(previous) = previous_nodes.iter().find(|node| node.tag == refreshed.tag) else {
+        let Some(previous) = previous_nodes.iter().find(|node| {
+            node.tag == refreshed.tag
+                && node
+                    .extra
+                    .get(NODE_LOCAL_META_KEY)
+                    .and_then(serde_json::Value::as_bool)
+                    != Some(true)
+        }) else {
             continue;
         };
         for key in [
@@ -167,6 +174,76 @@ fn preserve_node_editor_fields(
             }
         }
     }
+}
+
+fn assign_unique_node_tag(node: &mut SingBoxOutbound, used_tags: &mut HashSet<String>) {
+    let original = node.tag.clone().unwrap_or_else(|| "Node".to_string());
+    let mut tag = original.clone();
+    let mut suffix = 2;
+    while !used_tags.insert(tag.clone()) {
+        tag = format!("{} #{}", original, suffix);
+        suffix += 1;
+    }
+    node.tag = Some(tag);
+}
+
+fn merge_subscription_nodes(
+    previous_nodes: &[SingBoxOutbound],
+    mut refreshed_nodes: Vec<SingBoxOutbound>,
+) -> Vec<SingBoxOutbound> {
+    let refreshed_tags: HashSet<_> = refreshed_nodes
+        .iter()
+        .filter_map(|node| node.tag.clone())
+        .collect();
+    let mut local_nodes: Vec<_> = previous_nodes
+        .iter()
+        .filter(|node| {
+            match node
+                .extra
+                .get(NODE_LOCAL_META_KEY)
+                .and_then(serde_json::Value::as_bool)
+            {
+                Some(local) => local,
+                // Older versions did not track origins. Keep unmatched nodes to avoid data loss.
+                None => !node
+                    .tag
+                    .as_ref()
+                    .is_some_and(|tag| refreshed_tags.contains(tag)),
+            }
+        })
+        .cloned()
+        .collect();
+    for node in &mut local_nodes {
+        node.extra.insert(
+            NODE_LOCAL_META_KEY.to_string(),
+            serde_json::Value::Bool(true),
+        );
+    }
+
+    // Reserve local names and original subscription names before resolving collisions.
+    // This keeps local selections and references intact, including names with a # suffix.
+    let local_tags: HashSet<_> = local_nodes
+        .iter()
+        .filter_map(|node| node.tag.clone())
+        .collect();
+    let mut used_tags = refreshed_tags;
+    used_tags.extend(local_tags.iter().cloned());
+    for node in &mut refreshed_nodes {
+        if node
+            .tag
+            .as_ref()
+            .is_some_and(|tag| local_tags.contains(tag))
+        {
+            assign_unique_node_tag(node, &mut used_tags);
+        }
+        node.extra.insert(
+            NODE_LOCAL_META_KEY.to_string(),
+            serde_json::Value::Bool(false),
+        );
+    }
+    preserve_node_editor_fields(previous_nodes, &mut refreshed_nodes);
+    refreshed_nodes.extend(local_nodes);
+    refreshed_nodes
 }
 
 fn outbound_is_metered_protected(node: &SingBoxOutbound) -> bool {
@@ -243,7 +320,7 @@ pub async fn profile_add(
     dns_pre_resolve: Option<bool>,
     dns_server: Option<String>,
 ) -> Result<Profile, String> {
-    let nodes = fetch_subscription(&url).await?;
+    let nodes = merge_subscription_nodes(&[], fetch_subscription(&url).await?);
 
     let profile = Profile {
         id: Uuid::new_v4().to_string(),
@@ -273,6 +350,26 @@ pub async fn profile_add(
 
 #[tauri::command]
 pub async fn profile_update(state: State<'_, AppState>, id: String) -> Result<Profile, String> {
+    profile_update_impl(&state, &id).await
+}
+
+async fn profile_update_impl(state: &AppState, id: &str) -> Result<Profile, String> {
+    let url = load_profiles_data(state)
+        .profiles
+        .into_iter()
+        .find(|profile| profile.id == id)
+        .ok_or("Profile not found")?
+        .url;
+    let nodes = fetch_subscription(&url).await?;
+    apply_profile_update(state, id, nodes).await
+}
+
+pub(crate) async fn apply_profile_update(
+    state: &AppState,
+    id: &str,
+    refreshed_nodes: Vec<SingBoxOutbound>,
+) -> Result<Profile, String> {
+    // Reload after downloading so nodes added or edited during the request are retained.
     let mut data = load_profiles_data(&state);
     let profile_idx = data
         .profiles
@@ -280,16 +377,14 @@ pub async fn profile_update(state: State<'_, AppState>, id: String) -> Result<Pr
         .position(|p| p.id == id)
         .ok_or("Profile not found")?;
 
-    let url = data.profiles[profile_idx].url.clone();
-    let previous_nodes = load_profile_nodes(&state, &id);
-    let mut nodes = fetch_subscription(&url).await?;
-    preserve_node_editor_fields(&previous_nodes, &mut nodes);
+    let previous_nodes = load_profile_nodes(&state, id);
+    let nodes = merge_subscription_nodes(&previous_nodes, refreshed_nodes);
 
     data.profiles[profile_idx].last_update = Some(chrono::Utc::now().timestamp_millis() as u64);
     data.profiles[profile_idx].node_count = nodes.len() as u32;
 
-    save_profile_nodes(&state, &id, &nodes)?;
-    reconcile_profile_node_selection(&mut data, &id, &nodes);
+    save_profile_nodes(&state, id, &nodes)?;
+    reconcile_profile_node_selection(&mut data, id, &nodes);
     save_profiles_data(&state, &data)?;
 
     let profile = data.profiles[profile_idx].clone();
@@ -653,6 +748,15 @@ pub async fn node_update(
     state: State<'_, AppState>,
     profile_id: String,
     original_tag: String,
+    node: SingBoxOutbound,
+) -> Result<SingBoxOutbound, String> {
+    node_update_impl(&state, profile_id, original_tag, node).await
+}
+
+async fn node_update_impl(
+    state: &AppState,
+    profile_id: String,
+    original_tag: String,
     mut node: SingBoxOutbound,
 ) -> Result<SingBoxOutbound, String> {
     let mut data = load_profiles_data(&state);
@@ -701,6 +805,13 @@ pub async fn node_update(
         return Err("同一配置中已存在同名节点".to_string());
     }
 
+    // Origin is persisted by the backend and must survive editor round trips.
+    if let Some(local) = nodes[index].extra.get(NODE_LOCAL_META_KEY) {
+        node.extra
+            .insert(NODE_LOCAL_META_KEY.to_string(), local.clone());
+    } else {
+        node.extra.remove(NODE_LOCAL_META_KEY);
+    }
     normalize_node_policy(&mut node);
     normalize_and_validate_detour(&state, &data, &profile_id, original_tag, &mut node)?;
     if outbound_is_metered_protected(&node) {
@@ -951,7 +1062,20 @@ pub async fn node_add(
     profile_id: Option<String>,
     profile_name: Option<String>,
 ) -> Result<SingBoxOutbound, String> {
-    let node = parse_node_link(&link).ok_or("Invalid node link")?;
+    node_add_impl(&state, link, profile_id, profile_name).await
+}
+
+async fn node_add_impl(
+    state: &AppState,
+    link: String,
+    profile_id: Option<String>,
+    profile_name: Option<String>,
+) -> Result<SingBoxOutbound, String> {
+    let mut node = parse_node_link(&link).ok_or("Invalid node link")?;
+    node.extra.insert(
+        NODE_LOCAL_META_KEY.to_string(),
+        serde_json::Value::Bool(true),
+    );
 
     let mut data = load_profiles_data(&state);
     let target_id = if let Some(profile_id) = profile_id {
@@ -986,6 +1110,8 @@ pub async fn node_add(
     }
 
     let mut nodes = load_profile_nodes(&state, &target_id);
+    let mut used_tags = nodes.iter().filter_map(|node| node.tag.clone()).collect();
+    assign_unique_node_tag(&mut node, &mut used_tags);
     nodes.push(node.clone());
     save_profile_nodes(&state, &target_id, &nodes)?;
 
@@ -1083,6 +1209,222 @@ mod tests {
             server_port: Some(1080),
             extra: std::collections::HashMap::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn subscription_update_preserves_added_and_edited_local_nodes_across_restarts() {
+        let data_dir = unique_test_dir("subscription-local-nodes");
+        let state = AppState::new(data_dir.clone());
+        let mut data = ProfilesData::default();
+        data.profiles.push(test_profile("profile-a"));
+        data.active_profile_id = Some("profile-a".into());
+        save_profiles_data(&state, &data).unwrap();
+        apply_profile_update(&state, "profile-a", vec![test_node("remote")])
+            .await
+            .unwrap();
+
+        let mut added = node_add_impl(
+            &state,
+            "socks5://user:pass@local.example.com:1080#local".into(),
+            Some("profile-a".into()),
+            None,
+        )
+        .await
+        .unwrap();
+        added.tag = Some("renamed-local".into());
+        added.server_port = Some(2080);
+        // An editor sending only protocol fields must not remove the local origin.
+        added.extra.remove(NODE_LOCAL_META_KEY);
+        node_update_impl(&state, "profile-a".into(), "local".into(), added)
+            .await
+            .unwrap();
+        let mut data = load_profiles_data(&state);
+        data.active_node_tag = Some("renamed-local".into());
+        data.node_selections
+            .insert("profile-a".into(), "renamed-local".into());
+        save_profiles_data(&state, &data).unwrap();
+
+        for _ in 0..2 {
+            let state = AppState::new(data_dir.clone());
+            let profile = apply_profile_update(&state, "profile-a", vec![test_node("new-remote")])
+                .await
+                .unwrap();
+            let nodes = load_profile_nodes(&state, "profile-a");
+            assert_eq!(profile.node_count, 2);
+            assert!(profile.last_update.is_some());
+            assert_eq!(nodes[0].tag.as_deref(), Some("new-remote"));
+            assert_eq!(nodes[1].tag.as_deref(), Some("renamed-local"));
+            assert_eq!(nodes[1].server.as_deref(), Some("local.example.com"));
+            assert_eq!(nodes[1].server_port, Some(2080));
+            assert_eq!(nodes[1].extra["username"], "user");
+            assert_eq!(nodes[1].extra["password"], "pass");
+            assert_eq!(nodes[1].extra[NODE_LOCAL_META_KEY], true);
+            let data = load_profiles_data(&state);
+            assert_eq!(data.active_node_tag.as_deref(), Some("renamed-local"));
+            assert_eq!(data.node_selections["profile-a"], "renamed-local");
+            assert_eq!(state.profiles_data.lock().await.profiles[0].node_count, 2);
+        }
+        // Removing a local node from storage must not resurrect it on the next update.
+        save_profile_nodes(&state, "profile-a", &[]).unwrap();
+        apply_profile_update(&state, "profile-a", vec![test_node("new-remote")])
+            .await
+            .unwrap();
+        assert_eq!(load_profile_nodes(&state, "profile-a").len(), 1);
+        fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[test]
+    fn subscription_update_keeps_legacy_unmatched_nodes_and_refreshes_known_remote_nodes() {
+        let previous = vec![test_node("remote"), test_node("legacy-local")];
+        let first = merge_subscription_nodes(&previous, vec![test_node("remote")]);
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0].extra[NODE_LOCAL_META_KEY], false);
+        assert_eq!(first[1].tag.as_deref(), Some("legacy-local"));
+        assert_eq!(first[1].extra[NODE_LOCAL_META_KEY], true);
+        let mut refreshed = test_node("remote");
+        refreshed.server = Some("updated.example.com".into());
+        let second = merge_subscription_nodes(&first, vec![refreshed]);
+        assert_eq!(second.len(), 2);
+        assert_eq!(second[0].server.as_deref(), Some("updated.example.com"));
+        assert_eq!(second[1].tag.as_deref(), Some("legacy-local"));
+        let third = merge_subscription_nodes(&second, vec![test_node("replacement")]);
+        assert_eq!(third.len(), 2);
+        assert_eq!(third[0].tag.as_deref(), Some("replacement"));
+        assert_eq!(third[1].tag.as_deref(), Some("legacy-local"));
+    }
+
+    #[tokio::test]
+    async fn subscription_update_resolves_collisions_without_overwriting_local_names_or_policies() {
+        let data_dir = unique_test_dir("subscription-local-collision");
+        let state = AppState::new(data_dir.clone());
+        let mut data = ProfilesData::default();
+        data.profiles.push(test_profile("profile-a"));
+        save_profiles_data(&state, &data).unwrap();
+        let remote = merge_subscription_nodes(&[], vec![test_node("same"), test_node("same #2")]);
+        save_profile_nodes(&state, "profile-a", &remote).unwrap();
+        let local = node_add_impl(
+            &state,
+            "socks5://local.example.com:2080#same".into(),
+            Some("profile-a".into()),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(local.tag.as_deref(), Some("same #3"));
+        let mut local = local;
+        local.extra.insert(
+            NODE_METERED_PROTECTED_META_KEY.into(),
+            serde_json::json!(true),
+        );
+        save_profile_nodes(&state, "profile-a", &[local.clone()]).unwrap();
+
+        let mut previous = vec![local];
+        for _ in 0..2 {
+            let next = merge_subscription_nodes(
+                &previous,
+                vec![test_node("same #3"), test_node("same #3 #2")],
+            );
+            assert_eq!(next.len(), 3);
+            assert_eq!(next[0].tag.as_deref(), Some("same #3 #3"));
+            assert_eq!(next[1].tag.as_deref(), Some("same #3 #2"));
+            assert!(!next[0].extra.contains_key(NODE_METERED_PROTECTED_META_KEY));
+            assert_eq!(next[2].tag.as_deref(), Some("same #3"));
+            assert_eq!(next[2].server.as_deref(), Some("local.example.com"));
+            assert_eq!(next[2].extra[NODE_METERED_PROTECTED_META_KEY], true);
+            previous = next;
+        }
+        fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[test]
+    fn subscription_update_preserves_remote_editor_fields() {
+        let mut previous = merge_subscription_nodes(&[], vec![test_node("remote")]);
+        previous[0]
+            .extra
+            .insert("detour".into(), serde_json::json!("profile-b::front"));
+        previous[0].extra.insert(
+            NODE_AUTO_SELECTION_ELIGIBLE_META_KEY.into(),
+            serde_json::json!(false),
+        );
+        previous[0].extra.insert(
+            NODE_METERED_PROTECTED_META_KEY.into(),
+            serde_json::json!(true),
+        );
+        let mut refreshed = test_node("remote");
+        refreshed.server_port = Some(2080);
+        let next = merge_subscription_nodes(&previous, vec![refreshed]);
+        assert_eq!(next[0].server_port, Some(2080));
+        assert_eq!(next[0].extra["detour"], "profile-b::front");
+        assert_eq!(next[0].extra[NODE_AUTO_SELECTION_ELIGIBLE_META_KEY], false);
+        assert_eq!(next[0].extra[NODE_METERED_PROTECTED_META_KEY], true);
+    }
+
+    #[tokio::test]
+    async fn subscription_update_reloads_local_changes_made_during_download() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let data_dir = unique_test_dir("subscription-download-local-changes");
+        let state = AppState::new(data_dir.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut profile = test_profile("profile-a");
+        profile.url = format!("http://{}/subscription", listener.local_addr().unwrap());
+        let mut data = ProfilesData::default();
+        data.profiles.push(profile);
+        data.active_profile_id = Some("profile-a".into());
+        save_profiles_data(&state, &data).unwrap();
+        let (requested_tx, requested_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 4096];
+            stream.read(&mut request).await.unwrap();
+            requested_tx.send(()).unwrap();
+            release_rx.await.unwrap();
+            let body = "socks5://remote.example.com:1080#remote";
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+        });
+        let update_state = state.clone();
+        let update =
+            tokio::spawn(async move { profile_update_impl(&update_state, "profile-a").await });
+        tokio::time::timeout(std::time::Duration::from_secs(10), requested_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        node_add_impl(
+            &state,
+            "socks5://local.example.com:2080#local".into(),
+            Some("profile-a".into()),
+            None,
+        )
+        .await
+        .unwrap();
+        let mut data = load_profiles_data(&state);
+        data.profiles[0].name = "edited while downloading".into();
+        data.active_node_tag = Some("local".into());
+        save_profiles_data(&state, &data).unwrap();
+        release_tx.send(()).unwrap();
+        let profile = update.await.unwrap().unwrap();
+        server.await.unwrap();
+        assert_eq!(profile.name, "edited while downloading");
+        assert_eq!(profile.node_count, 2);
+        assert_eq!(
+            load_profile_nodes(&state, "profile-a")[1].tag.as_deref(),
+            Some("local")
+        );
+        assert_eq!(
+            load_profiles_data(&state).active_node_tag.as_deref(),
+            Some("local")
+        );
+        fs::remove_dir_all(data_dir).unwrap();
     }
 
     fn add_runtime_metadata(node: &mut SingBoxOutbound) {

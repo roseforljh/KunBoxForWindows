@@ -412,6 +412,20 @@ fn link_query(link: &str) -> std::collections::HashMap<String, String> {
 }
 
 #[test]
+fn exports_nodes_without_persisted_origin_metadata() {
+    for local in [true, false] {
+        let (link, decoded) = export_fixture(serde_json::json!({
+            "type": "socks", "tag": "local", "server": "local.example.com", "server_port": 1080,
+            crate::types::NODE_LOCAL_META_KEY: local,
+        }));
+        assert!(!link.contains(crate::types::NODE_LOCAL_META_KEY));
+        assert!(!decoded
+            .extra
+            .contains_key(crate::types::NODE_LOCAL_META_KEY));
+    }
+}
+
+#[test]
 fn exports_vless_reality_public_key_and_transport_in_standard_fields() {
     let (link, decoded) = export_fixture(serde_json::json!({
         "type": "vless", "tag": "美国 # 1", "server": "2001:db8::1", "server_port": 443,

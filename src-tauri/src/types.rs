@@ -220,6 +220,7 @@ pub struct SingBoxOutbound {
 
 pub const NODE_AUTO_SELECTION_ELIGIBLE_META_KEY: &str = "x_kunbox_auto_selection_eligible";
 pub const NODE_METERED_PROTECTED_META_KEY: &str = "x_kunbox_metered_protected";
+pub const NODE_LOCAL_META_KEY: &str = "x_kunbox_local";
 pub const NODE_RUNTIME_META_KEYS: [&str; 7] = [
     "latencyMs",
     "latencyStatus",

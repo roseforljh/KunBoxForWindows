@@ -2,7 +2,7 @@ use crate::state::AppState;
 use crate::types::{
     node_is_auto_selection_eligible, AppSettings, CommandResult, HealthEvent, HealthEventKind,
     HealthStatus, ProxyState, TrafficStats, NODE_AUTO_SELECTION_ELIGIBLE_META_KEY,
-    NODE_METERED_PROTECTED_META_KEY, NODE_RUNTIME_META_KEYS,
+    NODE_LOCAL_META_KEY, NODE_METERED_PROTECTED_META_KEY, NODE_RUNTIME_META_KEYS,
 };
 use futures_util::stream::StreamExt;
 use std::fs;
@@ -1285,6 +1285,7 @@ fn process_node(node: &serde_json::Value) -> serde_json::Value {
             crate::commands::profiles::ECH_DNS_SERVER_META_KEY,
             NODE_AUTO_SELECTION_ELIGIBLE_META_KEY,
             NODE_METERED_PROTECTED_META_KEY,
+            NODE_LOCAL_META_KEY,
         ] {
             obj.remove(key);
         }
@@ -1881,6 +1882,9 @@ fn node_has_ech(node: &serde_json::Value) -> bool {
 }
 
 fn node_needs_ech_subscription_repair(node: &serde_json::Value) -> bool {
+    if node.get(NODE_LOCAL_META_KEY).and_then(serde_json::Value::as_bool) == Some(true) {
+        return false;
+    }
     let Some(ech) = node.get("tls").and_then(|value| value.get("ech")) else {
         return false;
     };
@@ -2645,18 +2649,27 @@ async fn generate_config_with_settings(
         if needs_ech_repair {
             match crate::commands::profiles::fetch_subscription(&profile.url).await {
                 Ok(repaired_nodes) if !repaired_nodes.is_empty() => {
-                    if let Ok(repaired_content) = serde_json::to_string_pretty(&repaired_nodes) {
-                        if fs::write(&nodes_file, &repaired_content).is_ok() {
-                            if let Ok(repaired_raw_nodes) =
-                                serde_json::from_str::<Vec<serde_json::Value>>(&repaired_content)
-                            {
-                                raw_nodes = repaired_raw_nodes;
-                                log::info!(
-                                    "Repaired legacy ECH subscription nodes for profile '{}'",
-                                    profile.name
-                                );
-                            }
+                    match crate::commands::profiles::apply_profile_update(
+                        state,
+                        &profile.id,
+                        repaired_nodes,
+                    )
+                    .await
+                    {
+                        Ok(_) => {
+                            let content =
+                                fs::read_to_string(&nodes_file).map_err(|e| e.to_string())?;
+                            raw_nodes = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+                            log::info!(
+                                "Repaired legacy ECH subscription nodes for profile '{}'",
+                                profile.name
+                            );
                         }
+                        Err(err) => log::warn!(
+                            "Failed to save repaired ECH nodes for profile '{}': {}",
+                            profile.name,
+                            err
+                        ),
                     }
                 }
                 Ok(_) => {}
@@ -4458,7 +4471,8 @@ mod tests {
                 "isTimeout": false,
                 "isTesting": false,
                 "sourceProfileId": "profile-a",
-                "sourceProfileName": "Profile A"
+                "sourceProfileName": "Profile A",
+                NODE_LOCAL_META_KEY: true
             }),
             serde_json::json!({
                 "tag": "idc",
@@ -4471,7 +4485,8 @@ mod tests {
                 "latencyMs": null,
                 "latencyStatus": "timeout",
                 "isTimeout": true,
-                "isTesting": true
+                "isTesting": true,
+                NODE_LOCAL_META_KEY: false
             }),
         ];
         write_json_file(&state.profiles_file(), &profiles_data);
@@ -4490,6 +4505,7 @@ mod tests {
             for key in NODE_RUNTIME_META_KEYS {
                 assert!(outbound.get(key).is_none(), "unexpected field: {key}");
             }
+            assert!(outbound.get(NODE_LOCAL_META_KEY).is_none());
         }
 
         let _ = fs::remove_dir_all(data_dir);
@@ -5993,6 +6009,59 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn generate_config_ech_repair_preserves_local_nodes() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let data_dir = unique_test_dir("ech-repair-local-nodes");
+        let state = AppState::new(data_dir.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut profile = make_profile("profile-a", "Profile A");
+        profile.url = format!("http://{}/subscription", listener.local_addr().unwrap());
+        let profiles_data = ProfilesData {
+            profiles: vec![profile],
+            active_profile_id: Some("profile-a".into()),
+            active_node_tag: Some("local".into()),
+            node_selections: HashMap::new(),
+        };
+        let mut local = make_node("local");
+        local[NODE_LOCAL_META_KEY] = serde_json::json!(true);
+        let mut legacy = make_node("legacy-ech");
+        legacy["tls"]["ech"] = serde_json::json!({"enabled": true});
+        let nodes_file = state.configs_dir().join("profile-a.json");
+        write_json_file(&state.profiles_file(), &profiles_data);
+        write_json_file(&nodes_file, &vec![legacy.clone(), local.clone()]);
+        legacy[crate::commands::profiles::ECH_DNS_SERVER_META_KEY] =
+            serde_json::json!("https://dns.example.com/dns-query");
+        legacy["tls"]["ech"]["query_server_name"] = serde_json::json!("public.example.com");
+        let body = serde_json::json!({"outbounds": [legacy]}).to_string();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 4096];
+            stream.read(&mut request).await.unwrap();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(), body
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10), generate_config(&state))
+            .await.unwrap().unwrap();
+        server.await.unwrap();
+        assert!(result.success, "{:?}", result);
+        let saved: Vec<serde_json::Value> =
+            serde_json::from_str(&fs::read_to_string(nodes_file).unwrap()).unwrap();
+        assert_eq!(saved.len(), 2);
+        assert_eq!(saved[1], local);
+        assert_eq!(saved[0]["tls"]["ech"]["query_server_name"], "public.example.com");
+        let data: ProfilesData =
+            serde_json::from_str(&fs::read_to_string(state.profiles_file()).unwrap()).unwrap();
+        assert_eq!(data.profiles[0].node_count, 2);
+        assert_eq!(data.active_node_tag.as_deref(), Some("local"));
+        let config = read_generated_config(&state);
+        assert!(config["outbounds"].as_array().unwrap().iter().any(|node| node["tag"] == "local"));
+        fs::remove_dir_all(data_dir).unwrap();
     }
 
     #[tokio::test]
