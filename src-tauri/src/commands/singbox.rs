@@ -2075,14 +2075,24 @@ fn collect_node_detour_references(
     active_nodes: &[serde_json::Value],
     active_profile_id: &str,
     all_profiles: &[ProfileInfo],
-) -> std::collections::HashSet<String> {
-    let mut references = std::collections::HashSet::new();
-    for node in active_nodes {
-        let prepared =
-            prepare_profile_node_for_runtime(node.clone(), active_profile_id, active_profile_id);
-        if let Some(detour) = prepared.get("detour").and_then(serde_json::Value::as_str) {
-            if parse_profile_scoped_node_ref(detour).is_some() {
-                references.insert(detour.to_string());
+    referenced_profile_ids: &std::collections::HashSet<String>,
+    references: &mut std::collections::HashSet<String>,
+) {
+    // 配置分流会加载整个配置；这些节点和固定分流节点都必须参与依赖收集。
+    let profiles = std::iter::once((active_profile_id, active_nodes)).chain(
+        all_profiles
+            .iter()
+            .filter(|profile| referenced_profile_ids.contains(&profile.id))
+            .map(|profile| (profile.id.as_str(), profile.nodes.as_slice())),
+    );
+    for (profile_id, nodes) in profiles {
+        for node in nodes {
+            let prepared =
+                prepare_profile_node_for_runtime(node.clone(), profile_id, active_profile_id);
+            if let Some(detour) = prepared.get("detour").and_then(serde_json::Value::as_str) {
+                if parse_profile_scoped_node_ref(detour).is_some() {
+                    references.insert(detour.to_string());
+                }
             }
         }
     }
@@ -2115,7 +2125,6 @@ fn collect_node_detour_references(
             break;
         }
     }
-    references
 }
 
 fn collect_route_profile_and_node_references(
@@ -2752,12 +2761,13 @@ async fn generate_config_with_settings(
     let enabled_rulesets: Vec<_> = rulesets.iter().filter(|r| r.enabled).collect();
     let (referenced_profile_ids, mut referenced_profile_scoped_node_refs) =
         collect_route_profile_and_node_references(&rulesets, &custom_rules);
-    let runtime_detour_nodes = raw_nodes.clone();
-    referenced_profile_scoped_node_refs.extend(collect_node_detour_references(
-        &runtime_detour_nodes,
+    collect_node_detour_references(
+        &raw_nodes,
         &active_profile_id,
         &all_profiles,
-    ));
+        &referenced_profile_ids,
+        &mut referenced_profile_scoped_node_refs,
+    );
 
     // Pre-scan for tag collisions to avoid conflict with node tags named "PROXY" or "auto"
     let will_proxy_collide = selector_tag_collides(
@@ -4388,6 +4398,168 @@ mod tests {
             .any(|outbound| outbound["tag"].as_str() == Some("profile-b::front")));
 
         let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn route_detour_dependencies_survive_active_profile_switches() {
+        let data_dir = unique_test_dir("route-detour-dependencies");
+        let state = AppState::new(data_dir.clone());
+        let mut profiles_data = ProfilesData {
+            profiles: vec![
+                make_profile("profile-a", "Alpha"),
+                make_profile("profile-b", "Beta"),
+                make_profile("profile-c", "Gamma"),
+            ],
+            active_profile_id: None,
+            active_node_tag: None,
+            node_selections: HashMap::new(),
+        };
+        let mut target = make_node("target");
+        target["detour"] = serde_json::json!("front");
+        let mut front = make_node("front");
+        front["detour"] = serde_json::json!("profile-c::gateway");
+        let mut gateway = make_node("gateway");
+        gateway["detour"] = serde_json::json!("profile-a::front");
+        write_json_file(
+            &state.configs_dir().join("profile-a.json"),
+            &vec![make_node("front")],
+        );
+        write_json_file(
+            &state.configs_dir().join("profile-b.json"),
+            &vec![target, front],
+        );
+        write_json_file(&state.configs_dir().join("profile-c.json"), &vec![gateway]);
+        fs::create_dir_all(state.rulesets_cache_dir()).unwrap();
+        fs::write(state.rulesets_cache_dir().join("routed.srs"), b"dummy").unwrap();
+
+        for source in ["domain", "ruleset"] {
+            for mode in ["node", "profile"] {
+                let value = if mode == "node" {
+                    "profile-b::target"
+                } else {
+                    "profile-b"
+                };
+                let mut domain_rule = make_domain_rule("example.com", value);
+                domain_rule.outbound_mode = mode.to_string();
+                *state.custom_rules.lock().await = CustomRules {
+                    domain_rules: if source == "domain" {
+                        vec![domain_rule]
+                    } else {
+                        vec![]
+                    },
+                };
+                *state.rulesets.lock().await = if source == "ruleset" {
+                    vec![make_ruleset("routed", mode, Some(value))]
+                } else {
+                    vec![]
+                };
+
+                for (active_profile, active_tag) in [
+                    ("profile-a", "front"),
+                    ("profile-b", "target"),
+                    ("profile-c", "gateway"),
+                ] {
+                    profiles_data.active_profile_id = Some(active_profile.to_string());
+                    profiles_data.active_node_tag = Some(active_tag.to_string());
+                    write_json_file(&state.profiles_file(), &profiles_data);
+                    let result = generate_config(&state).await.unwrap();
+                    assert!(result.success);
+
+                    let config = read_generated_config(&state);
+                    let outbounds = config["outbounds"].as_array().unwrap();
+                    let tags: std::collections::HashSet<&str> = outbounds
+                        .iter()
+                        .filter_map(|node| node["tag"].as_str())
+                        .collect();
+                    for node in outbounds {
+                        if let Some(detour) = node["detour"].as_str() {
+                            assert!(
+                                tags.contains(detour),
+                                "{source}/{mode}, active {active_profile}: {} needs missing {detour}",
+                                node["tag"]
+                            );
+                        }
+                    }
+                    let expected_route = if mode == "node" {
+                        "profile-b::target"
+                    } else {
+                        "P:profile-b"
+                    };
+                    assert!(config["route"]["rules"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|rule| rule["outbound"].as_str() == Some(expected_route)));
+                    let front_tag = if active_profile == "profile-b" {
+                        "front"
+                    } else {
+                        "profile-b::front"
+                    };
+                    let front = outbounds
+                        .iter()
+                        .find(|node| node["tag"] == front_tag)
+                        .unwrap();
+                    let gateway_tag = if active_profile == "profile-c" {
+                        "gateway"
+                    } else {
+                        "profile-c::gateway"
+                    };
+                    assert_eq!(front["detour"], gateway_tag);
+                }
+            }
+        }
+        fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn missing_rule_nodes_use_current_proxy() {
+        let data_dir = unique_test_dir("missing-rule-nodes");
+        let state = AppState::new(data_dir.clone());
+        let profiles_data = ProfilesData {
+            profiles: vec![make_profile("profile-a", "Alpha")],
+            active_profile_id: Some("profile-a".into()),
+            active_node_tag: Some("selected".into()),
+            node_selections: HashMap::new(),
+        };
+        write_json_file(&state.profiles_file(), &profiles_data);
+        write_json_file(
+            &state.configs_dir().join("profile-a.json"),
+            &vec![make_node("first"), make_node("selected")],
+        );
+        *state.custom_rules.lock().await = CustomRules {
+            domain_rules: vec![
+                make_domain_rule("vk.ru", "profile-a::RU-2"),
+                make_domain_rule("edgecenter.ru", ""),
+            ],
+        };
+        *state.rulesets.lock().await = vec![
+            make_ruleset("missing-node", "node", Some("profile-a::RU-2")),
+            make_ruleset("empty-node", "node", None),
+        ];
+        fs::create_dir_all(state.rulesets_cache_dir()).unwrap();
+        for tag in ["missing-node", "empty-node"] {
+            fs::write(state.rulesets_cache_dir().join(format!("{tag}.srs")), b"dummy").unwrap();
+        }
+        let result = generate_config(&state).await.unwrap();
+        assert!(result.success);
+        let config = read_generated_config(&state);
+        let proxy = config["outbounds"].as_array().unwrap().iter()
+            .find(|node| node["tag"] == "PROXY")
+            .unwrap();
+        assert_eq!(proxy["default"], "selected");
+        let rules = config["route"]["rules"].as_array().unwrap();
+        for (field, value) in [
+            ("domain", "vk.ru"),
+            ("domain", "edgecenter.ru"),
+            ("rule_set", "missing-node"),
+            ("rule_set", "empty-node"),
+        ] {
+            let rule = rules.iter()
+                .find(|rule| rule[field] == serde_json::json!([value]))
+                .unwrap();
+            assert_eq!(rule["outbound"], "PROXY");
+        }
+        fs::remove_dir_all(data_dir).unwrap();
     }
 
     #[tokio::test]
