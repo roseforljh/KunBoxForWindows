@@ -35,6 +35,7 @@ import {
 } from './rulesets-model'
 import { useToast } from './ui/Toast'
 import { useProfiles } from '../lib/useProfiles'
+import { getRuleNodeValue, resolveRuleNode } from '../lib/ruleNodes'
 import { RoutingModeNotice } from './RoutingModeNotice'
 
 const fastTransition = { duration: 0.15, ease: [0.4, 0, 0.2, 1] as const }
@@ -525,7 +526,9 @@ export default function RuleSets() {
       type: rs.type,
       format: rs.format,
       outboundMode: rs.outboundMode,
-      outboundValue: rs.outboundValue || ''
+      outboundValue: rs.outboundMode === 'node'
+        ? getRuleNodeValue(rs.outboundValue, allNodes)
+        : rs.outboundValue || ''
     })
     setShowAddDialog(true)
   }
@@ -559,8 +562,8 @@ export default function RuleSets() {
       toast.error('请输入规则集下载地址')
       return
     }
-    if ((dialogData.outboundMode === 'node' || dialogData.outboundMode === 'profile') && !dialogData.outboundValue) {
-      toast.error(dialogData.outboundMode === 'node' ? '请选择节点' : '请选择配置')
+    if (dialogData.outboundMode === 'profile' && !dialogData.outboundValue) {
+      toast.error('请选择配置')
       return
     }
     const nextRule: RuleSetItem = {
@@ -703,15 +706,8 @@ export default function RuleSets() {
       return profile?.name || ruleSet.outboundValue
     }
     if (ruleSet.outboundMode === 'node') {
-      const parts = ruleSet.outboundValue.split('::')
-      if (parts.length === 2) {
-        const [profileId, nodeTag] = parts
-        const profile = profiles.find(p => p.id === profileId)
-        if (profile) {
-          return `${nodeTag} (${profile.name})`
-        }
-        return nodeTag
-      }
+      const node = resolveRuleNode(ruleSet.outboundValue, allNodes)
+      return node ? `${node.tag} (${node.sourceProfileName})` : null
     }
     return ruleSet.outboundValue
   }
@@ -1070,7 +1066,9 @@ export default function RuleSets() {
                 </div>
               ) : (
                 <AppSelect
-                  value={dialogData.outboundValue}
+                  value={dialogData.outboundMode === 'node'
+                    ? getRuleNodeValue(dialogData.outboundValue, allNodes)
+                    : dialogData.outboundValue}
                   onValueChange={(value) =>
                     setDialogData({ ...dialogData, outboundValue: value })
                   }
@@ -1091,6 +1089,9 @@ export default function RuleSets() {
               )}
               {dialogData.outboundMode === 'node' && allNodes.filter((n) => n.tag).length === 0 && !isLoadingData && (
                 <p className="text-xs text-amber-400 mt-1">暂无可用节点</p>
+              )}
+              {dialogData.outboundMode === 'node' && (
+                <p className="text-xs text-[var(--text-faint)] mt-1">未选择时使用当前选中的代理。</p>
               )}
               {dialogData.outboundMode === 'profile' && profiles.length === 0 && !isLoadingData && (
                 <p className="text-xs text-amber-400 mt-1">暂无可用配置</p>

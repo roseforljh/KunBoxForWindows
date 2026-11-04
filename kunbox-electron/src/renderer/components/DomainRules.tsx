@@ -20,6 +20,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { useNodesStore } from '../stores/nodesStore'
 import type { DomainRule, DomainRuleType, OutboundMode } from '@shared/types'
 import { useProfiles } from '../lib/useProfiles'
+import { getRuleNodeValue, resolveRuleNode } from '../lib/ruleNodes'
 import { useToast } from './ui/Toast'
 import { RoutingModeNotice } from './RoutingModeNotice'
 
@@ -227,7 +228,9 @@ export default function DomainRules() {
       value: rule.value,
       type: rule.type,
       outboundMode: rule.outboundMode,
-      outboundValue: rule.outboundValue || ''
+      outboundValue: rule.outboundMode === 'node'
+        ? getRuleNodeValue(rule.outboundValue, allNodes)
+        : rule.outboundValue || ''
     })
     setShowAddDialog(true)
   }
@@ -248,11 +251,10 @@ export default function DomainRules() {
     if (!rawValue) return
 
     if (
-      (dialogData.outboundMode === 'node' ||
-        dialogData.outboundMode === 'profile') &&
+      dialogData.outboundMode === 'profile' &&
       !dialogData.outboundValue
     ) {
-      toast.error(dialogData.outboundMode === 'node' ? '请选择节点' : '请选择配置')
+      toast.error('请选择配置')
       return
     }
 
@@ -295,8 +297,7 @@ export default function DomainRules() {
     }
   }
 
-  const needsOutboundValue =
-    dialogData.outboundMode === 'node' || dialogData.outboundMode === 'profile'
+  const needsOutboundValue = dialogData.outboundMode === 'profile'
 
   const availableNodes = allNodes.filter((n) => n.tag)
   const availableProfiles = profiles
@@ -352,13 +353,11 @@ export default function DomainRules() {
             {getTypeLabel(rule.type)}
           </span>
         </div>
-        {rule.outboundValue && (
+        {rule.outboundValue && (rule.outboundMode !== 'node' || resolveRuleNode(rule.outboundValue, allNodes)) && (
           <p className="text-[10px] text-[var(--text-faint)]">
             → {rule.outboundMode === 'profile'
               ? (profiles.find((profile) => profile.id === rule.outboundValue)?.name || rule.outboundValue)
-              : rule.outboundValue.includes('::')
-                ? rule.outboundValue.split('::')[1]
-                : rule.outboundValue}
+              : resolveRuleNode(rule.outboundValue, allNodes)?.tag}
           </p>
         )}
       </div>
@@ -659,7 +658,7 @@ export default function DomainRules() {
           {dialogData.outboundMode === 'node' && (
             <div>
               <label className="block text-sm text-[var(--text-muted)] mb-1.5">
-                选择节点 *
+                选择节点
               </label>
               {isLoadingData ? (
                 <div className="flex items-center gap-2 h-10 px-3 rounded-xl bg-[var(--bg-secondary)] border border-[var(--glass-border)]">
@@ -676,7 +675,7 @@ export default function DomainRules() {
                 </div>
               ) : (
                 <AppSelect
-                  value={dialogData.outboundValue || ''}
+                  value={getRuleNodeValue(dialogData.outboundValue, allNodes)}
                   onValueChange={(value) => setDialogData({ ...dialogData, outboundValue: value })}
                   options={availableNodes.map((node) => ({
                     value: `${node.sourceProfileId}::${node.tag}`,
@@ -687,7 +686,7 @@ export default function DomainRules() {
                 />
               )}
               <p className="text-xs text-[var(--text-faint)] mt-1.5">
-                共 {availableNodes.length} 个可用节点
+                共 {availableNodes.length} 个可用节点。未选择时使用当前选中的代理。
               </p>
             </div>
           )}

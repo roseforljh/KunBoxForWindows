@@ -14,6 +14,7 @@ import DomainRules from './components/DomainRules'
 import Plugins from './components/Plugins'
 import About from './components/About'
 import { Logo } from './components/Logo'
+import { getMissingRuleNodeWarning } from './lib/ruleNodes'
 
 type Page = 'dashboard' | 'nodes' | 'profiles' | 'settings' | 'logs' | 'rulesets' | 'domainrules' | 'plugins' | 'about'
 type Theme = 'dark' | 'light' | 'system'
@@ -514,32 +515,51 @@ function AppContent() {
     document.documentElement.style.setProperty('--sidebar-width', sidebarCollapsed ? '72px' : '256px')
   }, [sidebarCollapsed])
 
-  // Auto connect on startup if enabled
+  // Check routing targets on every launch, including when auto-connect is disabled.
   useEffect(() => {
     let cancelled = false
 
     const checkAutoConnect = async () => {
+      let startupWarning: string | undefined
       try {
         const settings = await window.api.settings.get()
-        if (!settings?.autoConnect) return
+        if (settings?.autoConnect) {
+          // Give Windows startup launches time to initialize the network.
+          const startupDelay = settings.startWithWindows ? 8000 : 1000
+          if (settings.startWithWindows) {
+            warning('检测到开机自启，已延迟自动连接 8 秒以避免首启失败')
+          }
+          await new Promise(resolve => setTimeout(resolve, startupDelay))
+          if (cancelled) return
+          clear()
 
-        // On Windows auto-start, the system/network/proxy environment may not be
-        // fully ready yet. Give startup launches a longer grace period to avoid
-        // flaky first-boot connection failures.
-        const startupDelay = settings.startWithWindows ? 8000 : 1000
-        if (settings.startWithWindows) {
-          warning('检测到开机自启，已延迟自动连接 8 秒以避免首启失败')
-        }
-        await new Promise(resolve => setTimeout(resolve, startupDelay))
-        clear()
-        if (cancelled) return
-
-        const currentState = useConnectionStore.getState().state
-        if (currentState === 'idle') {
-          await connect()
+          const currentState = useConnectionStore.getState().state
+          if (currentState === 'idle') {
+            const result = await connect()
+            startupWarning = result.warning
+          }
         }
       } catch (e) {
         console.error('Auto connect failed:', e)
+      }
+
+      if (cancelled) return
+      try {
+        const [domainRules, ruleSets, nodes] = await Promise.all([
+          window.api.customRules.getDomainRules(),
+          window.api.ruleset.list(),
+          window.api.node.listAll(),
+        ])
+        if (cancelled) return
+        const nodeWarning = getMissingRuleNodeWarning([
+          ...domainRules.map((rule) => ({ ...rule, label: rule.value })),
+          ...ruleSets.map((rule) => ({ ...rule, label: rule.name || rule.tag })),
+        ], nodes)
+        const message = [startupWarning, nodeWarning].filter(Boolean).join('\n')
+        if (message) warning(message)
+      } catch (e) {
+        console.error('Failed to check rule nodes:', e)
+        if (!cancelled && startupWarning) warning(startupWarning)
       }
     }
     checkAutoConnect()
