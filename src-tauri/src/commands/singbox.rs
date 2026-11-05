@@ -79,6 +79,7 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 const SELECTOR_LATENCY_CONCURRENCY_LIMIT: usize = 8;
 const DEFAULT_CLASH_API_PORT: u16 = 9090;
 const KUNBOX_TUN_ALIAS: &str = "kunbox-tun";
+const KUNBOX_TUN_ADDRESS: &str = "10.255.255.1/30";
 const PLUGIN_BRIDGES_FILE: &str = "plugin-bridges.json";
 const XRAY_PLUGIN_FILENAME: &str = "xray.exe";
 const PLUGIN_DETOUR_CHAIN_PORT_BASE: u16 = 19_390;
@@ -1882,7 +1883,11 @@ fn node_has_ech(node: &serde_json::Value) -> bool {
 }
 
 fn node_needs_ech_subscription_repair(node: &serde_json::Value) -> bool {
-    if node.get(NODE_LOCAL_META_KEY).and_then(serde_json::Value::as_bool) == Some(true) {
+    if node
+        .get(NODE_LOCAL_META_KEY)
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
         return false;
     }
     let Some(ech) = node.get("tls").and_then(|value| value.get("ech")) else {
@@ -2668,7 +2673,8 @@ async fn generate_config_with_settings(
                         Ok(_) => {
                             let content =
                                 fs::read_to_string(&nodes_file).map_err(|e| e.to_string())?;
-                            raw_nodes = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+                            raw_nodes =
+                                serde_json::from_str(&content).map_err(|e| e.to_string())?;
                             log::info!(
                                 "Repaired legacy ECH subscription nodes for profile '{}'",
                                 profile.name
@@ -2927,8 +2933,8 @@ async fn generate_config_with_settings(
         inbounds.push(serde_json::json!({
             "type": "tun",
             "tag": "tun-in",
-            "interface_name": "kunbox-tun",
-            "address": ["172.19.0.1/30"],
+            "interface_name": KUNBOX_TUN_ALIAS,
+            "address": [KUNBOX_TUN_ADDRESS],
             "mtu": 1500,
             "auto_route": true,
             "strict_route": settings.tun_strict_route,
@@ -4538,12 +4544,19 @@ mod tests {
         ];
         fs::create_dir_all(state.rulesets_cache_dir()).unwrap();
         for tag in ["missing-node", "empty-node"] {
-            fs::write(state.rulesets_cache_dir().join(format!("{tag}.srs")), b"dummy").unwrap();
+            fs::write(
+                state.rulesets_cache_dir().join(format!("{tag}.srs")),
+                b"dummy",
+            )
+            .unwrap();
         }
         let result = generate_config(&state).await.unwrap();
         assert!(result.success);
         let config = read_generated_config(&state);
-        let proxy = config["outbounds"].as_array().unwrap().iter()
+        let proxy = config["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
             .find(|node| node["tag"] == "PROXY")
             .unwrap();
         assert_eq!(proxy["default"], "selected");
@@ -4554,7 +4567,8 @@ mod tests {
             ("rule_set", "missing-node"),
             ("rule_set", "empty-node"),
         ] {
-            let rule = rules.iter()
+            let rule = rules
+                .iter()
                 .find(|rule| rule[field] == serde_json::json!([value]))
                 .unwrap();
             assert_eq!(rule["outbound"], "PROXY");
@@ -6214,25 +6228,36 @@ mod tests {
             stream.read(&mut request).await.unwrap();
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(), body
+                body.len(),
+                body
             );
             stream.write_all(response.as_bytes()).await.unwrap();
         });
-        let result = tokio::time::timeout(std::time::Duration::from_secs(10), generate_config(&state))
-            .await.unwrap().unwrap();
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(10), generate_config(&state))
+                .await
+                .unwrap()
+                .unwrap();
         server.await.unwrap();
         assert!(result.success, "{:?}", result);
         let saved: Vec<serde_json::Value> =
             serde_json::from_str(&fs::read_to_string(nodes_file).unwrap()).unwrap();
         assert_eq!(saved.len(), 2);
         assert_eq!(saved[1], local);
-        assert_eq!(saved[0]["tls"]["ech"]["query_server_name"], "public.example.com");
+        assert_eq!(
+            saved[0]["tls"]["ech"]["query_server_name"],
+            "public.example.com"
+        );
         let data: ProfilesData =
             serde_json::from_str(&fs::read_to_string(state.profiles_file()).unwrap()).unwrap();
         assert_eq!(data.profiles[0].node_count, 2);
         assert_eq!(data.active_node_tag.as_deref(), Some("local"));
         let config = read_generated_config(&state);
-        assert!(config["outbounds"].as_array().unwrap().iter().any(|node| node["tag"] == "local"));
+        assert!(config["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["tag"] == "local"));
         fs::remove_dir_all(data_dir).unwrap();
     }
 
@@ -6591,7 +6616,7 @@ mod tests {
             tun_inbound
                 .get("address")
                 .and_then(|value| value.as_array()),
-            Some(&vec![serde_json::json!("172.19.0.1/30")])
+            Some(&vec![serde_json::json!("10.255.255.1/30")])
         );
         assert_eq!(
             tun_inbound.get("mtu").and_then(|value| value.as_u64()),

@@ -445,7 +445,14 @@ fn generate_temp_config_preserves_hy2_and_multiplex_options() {
             &stored[index],
             &mut Vec::new(),
         );
-        for key in ["multiplex", "disable_chrome_parrot", "bbr_profile", "server_ports", "hop_interval", "hop_interval_max"] {
+        for key in [
+            "multiplex",
+            "disable_chrome_parrot",
+            "bbr_profile",
+            "server_ports",
+            "hop_interval",
+            "hop_interval_max",
+        ] {
             let expected = if key == "server_ports" && index == 1 {
                 Some(serde_json::json!(["20000:30000", "443:443", "8443:8443"]))
             } else {

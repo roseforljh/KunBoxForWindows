@@ -214,13 +214,30 @@ fn parse_clash_proxies(proxies: &[serde_json::Value]) -> Result<Vec<SingBoxOutbo
             if let Some(ports) = hopping_ports {
                 extra.insert("server_ports".to_string(), serde_json::json!(ports));
                 if let Some(value) = p.get("hop-interval") {
-                    let text = value.as_str().map(str::to_owned).unwrap_or_else(|| value.to_string());
+                    let text = value
+                        .as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| value.to_string());
                     let (minimum, maximum) = text.split_once('-').unwrap_or((&text, &text));
-                    let minimum = minimum.trim().parse::<u32>().ok().filter(|value| *value > 0)?;
-                    let maximum = maximum.trim().parse::<u32>().ok().filter(|value| *value >= minimum)?;
-                    extra.insert("hop_interval".to_string(), serde_json::json!(format!("{minimum}s")));
+                    let minimum = minimum
+                        .trim()
+                        .parse::<u32>()
+                        .ok()
+                        .filter(|value| *value > 0)?;
+                    let maximum = maximum
+                        .trim()
+                        .parse::<u32>()
+                        .ok()
+                        .filter(|value| *value >= minimum)?;
+                    extra.insert(
+                        "hop_interval".to_string(),
+                        serde_json::json!(format!("{minimum}s")),
+                    );
                     if maximum != minimum {
-                        extra.insert("hop_interval_max".to_string(), serde_json::json!(format!("{maximum}s")));
+                        extra.insert(
+                            "hop_interval_max".to_string(),
+                            serde_json::json!(format!("{maximum}s")),
+                        );
                     }
                 }
             }

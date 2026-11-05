@@ -717,7 +717,11 @@ fn node_uses_valid_hysteria2_ports(node: &SingBoxOutbound) -> Result<bool, Strin
     if node.outbound_type.as_deref() != Some("hysteria2") {
         return Ok(false);
     }
-    let Some(value) = node.extra.get("server_ports").filter(|value| !value.is_null()) else {
+    let Some(value) = node
+        .extra
+        .get("server_ports")
+        .filter(|value| !value.is_null())
+    else {
         return Ok(false);
     };
     let invalid = || "端口跳跃格式无效，请填写 443 或 20000:30000".to_string();
