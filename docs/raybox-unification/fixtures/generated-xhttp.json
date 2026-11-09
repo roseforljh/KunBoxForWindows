@@ -1,0 +1,38 @@
+{
+  "detour": "contract-hop",
+  "outbound": {
+    "protocol": "vless",
+    "settings": {
+      "vnext": [
+        {
+          "address": "example.invalid",
+          "port": 443,
+          "users": [
+            {
+              "encryption": "none",
+              "id": "00000000-0000-0000-0000-000000000001"
+            }
+          ]
+        }
+      ]
+    },
+    "streamSettings": {
+      "network": "xhttp",
+      "security": "tls",
+      "tlsSettings": {
+        "alpn": [
+          "h2"
+        ],
+        "fingerprint": "chrome",
+        "serverName": "edge.example.invalid"
+      },
+      "xhttpSettings": {
+        "host": "edge.example.invalid",
+        "mode": "packet-up",
+        "path": "/contract"
+      }
+    }
+  },
+  "tag": "contract-xhttp",
+  "type": "xray"
+}

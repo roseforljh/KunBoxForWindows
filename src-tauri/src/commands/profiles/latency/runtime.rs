@@ -65,17 +65,7 @@ pub(super) async fn can_start_temp_singbox(
 }
 
 fn get_kernel_path_with_fallback(app: &AppHandle) -> Option<std::path::PathBuf> {
-    if let Ok(data_dir) = app.path().app_data_dir() {
-        let data_kernel = data_dir.join("libs").join("sing-box.exe");
-        if data_kernel.exists() {
-            return Some(data_kernel);
-        }
-    }
-
-    app.path()
-        .resource_dir()
-        .ok()
-        .map(|dir| dir.join("resources").join("libs").join("sing-box.exe"))
+    crate::commands::kernel::runtime_kernel_path(app).ok()
 }
 
 fn split_temp_detour_reference(owner_profile_id: &str, value: &str) -> (String, String) {
@@ -310,6 +300,13 @@ pub(super) async fn start_temp_singbox(
         return false;
     }
 
+    if !crate::commands::kernel::raybox_manifest_is_valid(
+        kernel_path.parent().unwrap_or(std::path::Path::new(".")),
+    ) {
+        append_latency_diagnostic(state, "测速需要有效的 RayBox 内核");
+        return false;
+    }
+
     // Load nodes and generate temp config
     let naive_runtime_available =
         support_file_available_for_executable(&kernel_path, "libcronet.dll");
@@ -388,13 +385,27 @@ pub(super) async fn start_temp_singbox(
     );
 
     let (config, temp_tag_map, temp_proxy_port_map, plugin_bridge_specs) =
-        generate_temp_config_with_dependencies_raw(
+        match generate_temp_config_with_native_xray_raw(
             &nodes_raw,
             &detour_dependencies,
             TEMP_SINGBOX_PORT,
             naive_runtime_available,
             &temp_remote_dns,
-        );
+            crate::commands::kernel::raybox_manifest_is_valid(
+                &kernel_path.parent().unwrap_or(std::path::Path::new(".")),
+            ),
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                append_latency_diagnostic(
+                    state,
+                    &format!("temp config generation failed: {}", error),
+                );
+                log::warn!("Temp config generation failed: {}", error);
+                let _ = remove_temp_singbox_dir(&temp_dir);
+                return false;
+            }
+        };
     if temp_tag_map.is_empty() {
         append_latency_diagnostic(
             state,
@@ -432,143 +443,12 @@ pub(super) async fn start_temp_singbox(
         *map_slot = temp_proxy_port_map;
     }
 
-    // Save bridge specs for temp processes if any
-    let bridge_path = temp_dir.join("plugin_bridges.json");
     if !plugin_bridge_specs.is_empty() {
-        if let Ok(specs_str) = serde_json::to_string(&plugin_bridge_specs) {
-            let _ = fs::write(&bridge_path, specs_str);
-        }
-    }
-
-    // Start xray bridges if needed
-    let mut xray_processes = Vec::new();
-    if !plugin_bridge_specs.is_empty() {
-        if let Ok(xray_path) = crate::commands::singbox::xray_plugin_path(app) {
-            append_latency_diagnostic(state, &format!("resolved temp Xray path: {:?}", xray_path));
-            if xray_path.exists() {
-                for spec in &plugin_bridge_specs {
-                    let port =
-                        match crate::commands::singbox::parse_plugin_bridge_port(spec, "port")
-                            .and_then(|port| port.ok_or_else(|| "插件桥接缺少端口".to_string()))
-                        {
-                            Ok(port) => port,
-                            Err(err) => {
-                                append_latency_diagnostic(
-                                    state,
-                                    &format!("invalid temp Xray bridge port: {}", err),
-                                );
-                                log::warn!("Invalid temp Xray bridge port: {}", err);
-                                continue;
-                            }
-                        };
-                    let plugin_config = spec.get("node").cloned().unwrap_or(serde_json::json!({}));
-                    let front_proxy_chain_port =
-                        match crate::commands::singbox::parse_plugin_bridge_port(
-                            spec,
-                            "frontProxyChainPort",
-                        ) {
-                            Ok(port) => port,
-                            Err(err) => {
-                                append_latency_diagnostic(
-                                    state,
-                                    &format!("invalid temp front proxy chain port: {}", err),
-                                );
-                                log::warn!("Invalid temp front proxy chain port: {}", err);
-                                continue;
-                            }
-                        };
-                    let config_for_xray = match crate::commands::singbox::build_xray_plugin_config(
-                        &plugin_config,
-                        port,
-                        front_proxy_chain_port,
-                    ) {
-                        Ok(config) => config,
-                        Err(err) => {
-                            append_latency_diagnostic(
-                                state,
-                                &format!("failed to build temp Xray config port={}: {}", port, err),
-                            );
-                            log::warn!(
-                                "Failed to build temp Xray config on port {}: {}",
-                                port,
-                                err
-                            );
-                            continue;
-                        }
-                    };
-                    let config_str =
-                        serde_json::to_string_pretty(&config_for_xray).unwrap_or_default();
-
-                    let config_path = temp_dir.join(format!("plugin-xray-temp-{}.json", port));
-                    let _ = fs::write(&config_path, &config_str);
-                    let config_path_str = config_path.to_str().unwrap_or("");
-                    let stdout_path = temp_dir.join(format!("plugin-xray-temp-{}.out.log", port));
-                    let stderr_path = temp_dir.join(format!("plugin-xray-temp-{}.err.log", port));
-                    let stdout = fs::File::create(&stdout_path).ok();
-                    let stderr = fs::File::create(&stderr_path).ok();
-
-                    let mut child_cmd = tokio::process::Command::new(&xray_path);
-                    #[cfg(windows)]
-                    child_cmd.creation_flags(CREATE_NO_WINDOW);
-
-                    child_cmd
-                        .args(["run", "-config", config_path_str])
-                        .current_dir(&temp_dir)
-                        .kill_on_drop(true);
-                    if let Some(stdout) = stdout {
-                        child_cmd.stdout(std::process::Stdio::from(stdout));
-                    }
-                    if let Some(stderr) = stderr {
-                        child_cmd.stderr(std::process::Stdio::from(stderr));
-                    }
-                    let child = child_cmd.spawn();
-
-                    if let Ok(c) = child {
-                        append_latency_diagnostic(
-                            state,
-                            &format!(
-                                "started temp Xray bridge port={}, config={:?}",
-                                port, config_path
-                            ),
-                        );
-                        log::info!(
-                            "Started temp Xray bridge on port {}, config: {:?}",
-                            port,
-                            config_path
-                        );
-                        xray_processes.push(c);
-                    } else if let Err(err) = child {
-                        append_latency_diagnostic(
-                            state,
-                            &format!("failed to start temp Xray bridge port={}: {}", port, err),
-                        );
-                        log::warn!("Failed to start temp Xray bridge on port {}: {}", port, err);
-                    }
-                }
-            }
-        } else if let Err(err) = crate::commands::singbox::xray_plugin_path(app) {
-            append_latency_diagnostic(state, &format!("failed to resolve temp Xray path: {}", err));
-        }
-    }
-
-    if xray_processes.len() != plugin_bridge_specs.len() {
-        for mut child in xray_processes {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-        }
-        append_latency_diagnostic(
-            state,
-            "temp Xray bridge startup incomplete; temp sing-box startup aborted",
-        );
+        append_latency_diagnostic(state, "RayBox 不支持外部插件桥接");
         clear_temp_singbox_tag_map().await;
         clear_temp_singbox_proxy_port_map().await;
         let _ = remove_temp_singbox_dir(&temp_dir);
         return false;
-    }
-
-    {
-        let mut global_xray = TEMP_XRAY_PROCESSES.lock().await;
-        *global_xray = xray_processes;
     }
 
     // Start temp sing-box

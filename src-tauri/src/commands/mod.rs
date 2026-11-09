@@ -1,6 +1,5 @@
 pub(crate) mod git_proxy;
 pub mod kernel;
-pub mod plugins;
 pub mod profiles;
 pub mod rules;
 pub mod rulesets;
@@ -10,7 +9,6 @@ pub mod updater;
 pub mod window;
 
 pub use kernel::*;
-pub use plugins::*;
 pub use profiles::*;
 pub use rules::*;
 pub use rulesets::*;

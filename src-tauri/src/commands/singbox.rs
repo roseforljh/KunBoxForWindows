@@ -82,6 +82,7 @@ const KUNBOX_TUN_ALIAS: &str = "kunbox-tun";
 const KUNBOX_TUN_ADDRESS: &str = "10.255.255.1/30";
 const PLUGIN_BRIDGES_FILE: &str = "plugin-bridges.json";
 const XRAY_PLUGIN_FILENAME: &str = "xray.exe";
+const LEGACY_XRAY_BRIDGE_KEY: &str = "x_kunbox_legacy_xray_bridge";
 const PLUGIN_DETOUR_CHAIN_PORT_BASE: u16 = 19_390;
 const HEALTH_FAILED_BACKOFF_BASE_MS: i64 = 30_000;
 const HEALTH_FAILED_BACKOFF_MAX_MS: i64 = 300_000;
@@ -198,50 +199,6 @@ async fn detect_foreign_wintun_aliases() -> Result<Vec<String>, String> {
 
     let stdout = decode_windows_output(&output.stdout);
     Ok(parse_foreign_wintun_aliases(&stdout, KUNBOX_TUN_ALIAS))
-}
-
-#[cfg(windows)]
-async fn kill_stray_singbox_processes(state: &AppState) -> Result<(), String> {
-    append_startup_diagnostic(
-        state,
-        "startup cleanup: killing stray sing-box.exe processes",
-    );
-
-    let output = Command::new("taskkill")
-        .args(["/F", "/T", "/IM", "sing-box.exe"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if output.status.success() {
-        append_startup_diagnostic(
-            state,
-            "startup cleanup: stray sing-box.exe processes terminated",
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        return Ok(());
-    }
-
-    let stdout = decode_windows_output(&output.stdout);
-    let stderr = decode_windows_output(&output.stderr);
-    let combined = if !stderr.is_empty() { stderr } else { stdout };
-    let lower = combined.to_lowercase();
-
-    if lower.contains("not found") || lower.contains("没有运行的任务") || lower.contains("没有找到")
-    {
-        append_startup_diagnostic(
-            state,
-            "startup cleanup: no stray sing-box.exe process found",
-        );
-        return Ok(());
-    }
-
-    append_startup_diagnostic(
-        state,
-        &format!("startup cleanup: taskkill failed: {}", combined),
-    );
-    Err(format!("清理残留 sing-box 进程失败: {}", combined))
 }
 
 fn inbound_listen_addr(settings: &AppSettings) -> &'static str {
@@ -491,9 +448,6 @@ pub(crate) async fn singbox_start_impl(
 
     crate::commands::profiles::cleanup_temp_singbox(state).await;
 
-    #[cfg(windows)]
-    kill_stray_singbox_processes(state).await?;
-
     let (ports_changed, inbound_port_reservations) =
         resolve_available_inbound_ports(state, &mut effective_settings).await?;
     if ports_changed {
@@ -529,21 +483,21 @@ pub(crate) async fn singbox_start_impl(
         state,
         &format!("selected clash api port: {}", clash_api_port),
     );
-    let kernel_version = crate::commands::kernel::kernel_get_local_version(app.clone())
-        .await
-        .ok()
-        .flatten()
-        .map(|info| info.version);
-    let use_singbox_1_14_dns = uses_singbox_1_14_dns_config(kernel_version.as_deref());
-    append_startup_diagnostic(
-        state,
-        &format!(
-            "generating config for sing-box version {}",
-            kernel_version.as_deref().unwrap_or("unknown")
-        ),
-    );
-    let config_result =
-        generate_config_with_settings(&state, &effective_settings, use_singbox_1_14_dns).await?;
+    let native_enabled = native_xray_runtime_available(&app);
+    if !native_enabled {
+        return Ok(CommandResult::err(
+            "请在【设置 → 内核】安装有效的 RayBox 内核".to_string(),
+        ));
+    }
+    let use_singbox_1_14_dns = true;
+    append_startup_diagnostic(state, "generating config for verified RayBox");
+    let config_result = generate_config_with_settings_and_native(
+        &state,
+        &effective_settings,
+        use_singbox_1_14_dns,
+        native_enabled,
+    )
+    .await?;
     if !config_result.success {
         return Ok(config_result);
     }
@@ -553,11 +507,6 @@ pub(crate) async fn singbox_start_impl(
             Some(existing) => format!("{}\n{}", existing, warning),
             None => warning,
         });
-    }
-
-    if let Err(err) = start_plugin_bridges(&app, state).await {
-        stop_plugin_bridges(state).await;
-        return Ok(CommandResult::err(err));
     }
 
     let config_path = state.config_dir.join("config.json");
@@ -571,7 +520,7 @@ pub(crate) async fn singbox_start_impl(
         && !support_file_available_for_executable(&singbox_path, "libcronet.dll")
     {
         stop_plugin_bridges(state).await;
-        let message = "当前配置包含 naive 节点，但未找到 libcronet.dll。请到【设置 → 内核】重新下载 sing-box 1.13+ 官方 Windows 内核，或将 libcronet.dll 放到 sing-box.exe 同目录后重试。";
+        let message = "当前配置包含 naive 节点，但未找到 libcronet.dll。请在【设置 → 内核】检查 RayBox 内核与配套文件。";
         append_startup_diagnostic(state, message);
         return Ok(CommandResult::err(message));
     }
@@ -1381,6 +1330,190 @@ fn plugin_bridge_path(state: &AppState) -> PathBuf {
     state.config_dir.join(PLUGIN_BRIDGES_FILE)
 }
 
+pub(crate) fn native_xray_runtime_available_from_state(state: &AppState) -> bool {
+    if let Some(candidate) = std::env::var_os("KUNBOX_RAYBOX_WINDOWS_CANDIDATE") {
+        return cfg!(debug_assertions)
+            && crate::commands::kernel::raybox_manifest_is_valid(std::path::Path::new(&candidate));
+    }
+    crate::commands::kernel::raybox_manifest_is_valid(&state.data_dir.join("libs"))
+}
+
+pub(crate) fn native_xray_runtime_available(app: &AppHandle) -> bool {
+    crate::commands::kernel::runtime_kernel_path(app)
+        .ok()
+        .is_some_and(|path| {
+            path.parent()
+                .is_some_and(crate::commands::kernel::raybox_manifest_is_valid)
+        })
+}
+
+fn is_native_xray_node(node: &serde_json::Value) -> bool {
+    matches!(
+        node.get("type").and_then(serde_json::Value::as_str),
+        Some("vless" | "vmess" | "trojan")
+    ) && (node
+        .get("transport")
+        .and_then(|value| value.get("type"))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "xhttp" | "splithttp"))
+        || node
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value == "vless" && vless_encryption(node) != "none"))
+}
+
+fn build_native_xray_outbound(node: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let original_node = node;
+    // Xray 的 VLESS/VMess 固定使用 xudp；packet_encoding 只是 sing-box 客户端字段。
+    if let Some(encoding) = original_node.get("packet_encoding") {
+        let value = encoding.as_str().unwrap_or("");
+        if !matches!(value, "" | "xudp") {
+            return Err(format!("Xray outbound 不支持 packet_encoding={value}"));
+        }
+    }
+    let mut node = process_node(node);
+    node.as_object_mut()
+        .map(|object| object.remove("packet_encoding"));
+    if original_node.get("transport").is_some_and(|transport| {
+        transport
+            .get("host")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|hosts| hosts.len() > 1)
+    }) {
+        return Err("XHTTP 仅支持一个 host".to_string());
+    }
+    let protocol = node
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("原生 Xray 节点缺少协议")?;
+    let tag = node
+        .get("tag")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!("xray"));
+    let server = node
+        .get("server")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("原生 Xray 节点缺少服务器")?;
+    let port = node
+        .get("server_port")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or("原生 Xray 节点缺少端口")?;
+    let mut user = serde_json::Map::new();
+    match protocol {
+        "trojan" => {
+            user.insert(
+                "password".to_string(),
+                node.get("password").cloned().ok_or("Trojan 节点缺少密码")?,
+            );
+        }
+        "vless" | "vmess" => {
+            user.insert(
+                "id".to_string(),
+                node.get("uuid").cloned().ok_or("Xray 节点缺少 UUID")?,
+            );
+            if protocol == "vless" {
+                user.insert(
+                    "encryption".to_string(),
+                    serde_json::json!(vless_encryption(&node)),
+                );
+                if let Some(flow) = node.get("flow") {
+                    user.insert("flow".to_string(), flow.clone());
+                }
+            } else {
+                if node
+                    .get("alter_id")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0)
+                    != 0
+                {
+                    return Err("VMess alter_id 不受原生 Xray 支持".to_string());
+                }
+                if let Some(security) = node.get("security") {
+                    user.insert("security".to_string(), security.clone());
+                }
+            }
+        }
+        _ => return Err(format!("节点 {} 不支持原生 Xray", tag)),
+    }
+    let server_entry = if protocol == "trojan" {
+        serde_json::json!({"address": server, "port": port, "password": user.get("password").cloned().unwrap_or_default()})
+    } else {
+        serde_json::json!({"address": server, "port": port, "users": [serde_json::Value::Object(user)]})
+    };
+    let settings_key = if protocol == "trojan" {
+        "servers"
+    } else {
+        "vnext"
+    };
+    let settings = serde_json::json!({settings_key: [server_entry]});
+    let stream = xray_stream_settings(&node, false)?;
+    let mut outer = serde_json::Map::new();
+    for key in [
+        "tag",
+        "detour",
+        "bind_interface",
+        "inet4_bind_address",
+        "inet6_bind_address",
+        "bind_address_no_port",
+        "protect_path",
+        "routing_mark",
+        "reuse_addr",
+        "netns",
+        "tcp_fast_open",
+        "tcp_multi_path",
+        "disable_tcp_keep_alive",
+        "tcp_keep_alive",
+        "tcp_keep_alive_interval",
+        "udp_fragment",
+        "connect_timeout",
+        "domain_resolver",
+        "network_strategy",
+        "network_type",
+        "fallback_network_type",
+        "fallback_delay",
+        "domain_strategy",
+    ] {
+        if let Some(value) = original_node.get(key) {
+            outer.insert(key.to_string(), value.clone());
+        }
+    }
+    outer.insert("type".to_string(), serde_json::json!("xray"));
+    outer.insert(
+        "outbound".to_string(),
+        serde_json::json!({"protocol": protocol, "settings": settings, "streamSettings": stream}),
+    );
+    Ok(serde_json::Value::Object(outer))
+}
+
+pub(crate) fn node_for_singbox_with_native_xray_result(
+    node: &serde_json::Value,
+    native_enabled: bool,
+    bridge_specs: &mut Vec<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    if is_native_xray_node(node) {
+        if !native_enabled {
+            return Err("请在【设置 → 内核】安装有效的 RayBox 内核".to_string());
+        }
+        return build_native_xray_outbound(node);
+    }
+    let _ = bridge_specs;
+    Ok(process_node(node))
+}
+
+pub(crate) fn node_for_singbox_with_native_xray(
+    node: &serde_json::Value,
+    native_enabled: bool,
+    bridge_specs: &mut Vec<serde_json::Value>,
+) -> serde_json::Value {
+    node_for_singbox_with_native_xray_result(node, native_enabled, bridge_specs).unwrap_or_else(|error| {
+        log::warn!("Native Xray conversion failed: {}", error);
+        serde_json::json!({
+            "type": "block",
+            "tag": node.get("tag").cloned().unwrap_or_else(|| serde_json::json!("unsupported-xray"))
+        })
+    })
+}
+
 pub(crate) fn node_for_singbox_with_plugin_bridge(
     node: &serde_json::Value,
     bridge_specs: &mut Vec<serde_json::Value>,
@@ -1446,51 +1579,148 @@ pub(crate) fn xray_plugin_path(app: &AppHandle) -> Result<PathBuf, String> {
         .join(XRAY_PLUGIN_FILENAME))
 }
 
-fn xray_tls_settings(tls: &serde_json::Value) -> serde_json::Value {
+fn allowed_xray_keys(
+    object: &serde_json::Map<String, serde_json::Value>,
+    allowed: &[&str],
+    context: &str,
+) -> Result<(), String> {
+    if let Some(key) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
+        return Err(format!("{} 含不支持的 Xray 字段: {}", context, key));
+    }
+    Ok(())
+}
+
+fn xray_tls_settings(tls: &serde_json::Value) -> Result<(String, serde_json::Value), String> {
+    let object = tls.as_object().ok_or("Xray TLS 配置必须是对象")?;
+    allowed_xray_keys(
+        object,
+        &[
+            "enabled",
+            "server_name",
+            "insecure",
+            "alpn",
+            "utls",
+            "reality",
+            "certificate",
+        ],
+        "TLS",
+    )?;
+    let enabled = object
+        .get("enabled")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if !enabled {
+        if object.keys().any(|key| key != "enabled") {
+            return Err("未启用 TLS 时不能提供 TLS 选项".to_string());
+        }
+        return Ok(("none".to_string(), serde_json::json!({})));
+    }
+    let reality = object.get("reality");
+    let reality_enabled = reality
+        .and_then(|value| value.get("enabled"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
     let mut settings = serde_json::Map::new();
-
-    if let Some(server_name) = tls.get("server_name").and_then(|value| value.as_str()) {
-        settings.insert(
-            "serverName".to_string(),
-            serde_json::Value::String(server_name.to_string()),
-        );
-    }
-    if let Some(insecure) = tls.get("insecure").and_then(|value| value.as_bool()) {
-        settings.insert(
-            "allowInsecure".to_string(),
-            serde_json::Value::Bool(insecure),
-        );
-    }
-    if let Some(alpn) = tls.get("alpn").and_then(|value| value.as_array()) {
-        settings.insert("alpn".to_string(), serde_json::Value::Array(alpn.clone()));
-    }
-    if let Some(fingerprint) = tls
-        .get("utls")
-        .and_then(|value| value.get("fingerprint"))
-        .and_then(|value| value.as_str())
+    if let Some(server_name) = object
+        .get("server_name")
+        .and_then(serde_json::Value::as_str)
     {
+        settings.insert("serverName".to_string(), serde_json::json!(server_name));
+    }
+    if let Some(utls) = object.get("utls") {
+        let utls_object = utls.as_object().ok_or("uTLS 配置必须是对象")?;
+        allowed_xray_keys(utls_object, &["enabled", "fingerprint"], "uTLS")?;
+        let utls_enabled = utls_object
+            .get("enabled")
+            .and_then(serde_json::Value::as_bool);
+        let fingerprint = utls_object
+            .get("fingerprint")
+            .and_then(serde_json::Value::as_str);
+        if utls_enabled == Some(true) && fingerprint.is_none() {
+            return Err("启用 uTLS 时必须提供 fingerprint".to_string());
+        }
+        if utls_enabled == Some(false) && fingerprint.is_some() {
+            return Err("禁用 uTLS 时不能提供 fingerprint".to_string());
+        }
+        if let Some(fingerprint) = fingerprint {
+            settings.insert("fingerprint".to_string(), serde_json::json!(fingerprint));
+        }
+    }
+    if reality_enabled {
+        if object.get("insecure").and_then(serde_json::Value::as_bool) == Some(true)
+            || object
+                .get("alpn")
+                .is_some_and(|value| !value.as_array().is_some_and(Vec::is_empty))
+        {
+            return Err("Reality 不支持 insecure 或 ALPN".to_string());
+        }
+        if object.get("certificate").is_some() {
+            return Err("Reality 不支持自定义证书".to_string());
+        }
+        let reality_object = reality
+            .and_then(serde_json::Value::as_object)
+            .ok_or("Reality 配置必须是对象")?;
+        allowed_xray_keys(
+            reality_object,
+            &["enabled", "public_key", "short_id"],
+            "Reality",
+        )?;
+        let public_key = reality_object
+            .get("public_key")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or("Reality 缺少公钥")?;
+        settings.insert("publicKey".to_string(), serde_json::json!(public_key));
+        if let Some(short_id) = reality_object
+            .get("short_id")
+            .and_then(serde_json::Value::as_str)
+        {
+            settings.insert("shortId".to_string(), serde_json::json!(short_id));
+        }
+        if !settings.contains_key("fingerprint") {
+            settings.insert("fingerprint".to_string(), serde_json::json!("chrome"));
+        }
+        return Ok(("reality".to_string(), serde_json::Value::Object(settings)));
+    }
+    if let Some(insecure) = object.get("insecure") {
+        if !insecure.is_boolean() {
+            return Err("TLS insecure 必须是布尔值".to_string());
+        }
+        settings.insert("allowInsecure".to_string(), insecure.clone());
+    }
+    if let Some(alpn) = object.get("alpn") {
+        if !alpn.is_array() {
+            return Err("TLS ALPN 必须是数组".to_string());
+        }
+        settings.insert("alpn".to_string(), alpn.clone());
+    }
+    // sing-box tls.certificate 表示额外的受信证书（如自签测试 CA），映射为 Xray 的 verify 证书链。
+    if let Some(certificate) = object.get("certificate") {
+        let values = match certificate {
+            serde_json::Value::Array(items) => items
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .map(str::to_string)
+                        .ok_or("TLS certificate 只能是 PEM 字符串数组")
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            serde_json::Value::String(value) => vec![value.clone()],
+            _ => return Err("TLS certificate 只能是 PEM 字符串数组".to_string()),
+        };
+        if values.is_empty()
+            || values
+                .iter()
+                .any(|value| !value.contains("BEGIN CERTIFICATE"))
+        {
+            return Err("TLS certificate 必须包含 PEM 证书".to_string());
+        }
         settings.insert(
-            "fingerprint".to_string(),
-            serde_json::Value::String(fingerprint.to_string()),
+            "certificates".to_string(),
+            serde_json::json!([{ "usage": "verify", "certificate": values }]),
         );
     }
-
-    if let Some(reality) = tls.get("reality").and_then(|value| value.as_object()) {
-        if let Some(public_key) = reality.get("public_key").and_then(|value| value.as_str()) {
-            settings.insert(
-                "publicKey".to_string(),
-                serde_json::Value::String(public_key.to_string()),
-            );
-        }
-        if let Some(short_id) = reality.get("short_id").and_then(|value| value.as_str()) {
-            settings.insert(
-                "shortId".to_string(),
-                serde_json::Value::String(short_id.to_string()),
-            );
-        }
-    }
-
-    serde_json::Value::Object(settings)
+    Ok(("tls".to_string(), serde_json::Value::Object(settings)))
 }
 
 fn vless_encryption(node: &serde_json::Value) -> &str {
@@ -1507,76 +1737,198 @@ fn vless_encryption(node: &serde_json::Value) -> &str {
         .unwrap_or("none")
 }
 
-fn xray_stream_settings(node: &serde_json::Value) -> serde_json::Value {
-    let mut stream = serde_json::Map::new();
+fn reject_xray_special(value: &serde_json::Value, context: &str) -> Result<(), String> {
+    match value {
+        serde_json::Value::Array(values) => values
+            .iter()
+            .try_for_each(|value| reject_xray_special(value, context)),
+        serde_json::Value::Object(object) => {
+            if object
+                .keys()
+                .any(|key| key.eq_ignore_ascii_case("rx") || key.eq_ignore_ascii_case("oob"))
+            {
+                return Err(format!(
+                    "{} 的 RX/OOB 需要明确的 Cloudflare 上下文",
+                    context
+                ));
+            }
+            object
+                .values()
+                .try_for_each(|value| reject_xray_special(value, context))
+        }
+        _ => Ok(()),
+    }
+}
 
-    let transport = node.get("transport").and_then(|value| value.as_object());
-    let network = transport
-        .and_then(|value| value.get("type"))
-        .and_then(|value| value.as_str())
-        .unwrap_or("tcp");
-    stream.insert(
-        "network".to_string(),
-        serde_json::Value::String(network.to_string()),
-    );
+fn xray_extra(value: &serde_json::Value, context: &str) -> Result<serde_json::Value, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| format!("{} extra 必须是对象", context))?;
+    reject_xray_special(value, context)?;
+    let allowed = [
+        "headers",
+        "xPaddingBytes",
+        "xPaddingObfsMode",
+        "xPaddingKey",
+        "xPaddingHeader",
+        "xPaddingPlacement",
+        "xPaddingMethod",
+        "uplinkHTTPMethod",
+        "sessionIDPlacement",
+        "sessionIDKey",
+        "sessionIDTable",
+        "sessionIDLength",
+        "seqPlacement",
+        "seqKey",
+        "uplinkDataPlacement",
+        "uplinkDataKey",
+        "uplinkChunkSize",
+        "noGRPCHeader",
+        "noSSEHeader",
+        "scMaxEachPostBytes",
+        "scMinPostsIntervalMs",
+        "scMaxBufferedPosts",
+        "scStreamUpServerSecs",
+        "serverMaxHeaderBytes",
+        "xmux",
+        "encryption",
+    ];
+    allowed_xray_keys(object, &allowed, context)?;
+    let mut result = object.clone();
+    result.remove("encryption");
+    Ok(serde_json::Value::Object(result))
+}
 
-    if network.eq_ignore_ascii_case("xhttp") {
-        let mut xhttp = serde_json::Map::new();
-        if let Some(transport) = transport {
-            for (key, value) in transport {
-                if key == "type" {
-                    continue;
+fn xray_transport(node: &serde_json::Value) -> Result<(String, serde_json::Value), String> {
+    let transport = node.get("transport").and_then(serde_json::Value::as_object);
+    let kind = transport
+        .and_then(|object| object.get("type"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("tcp")
+        .to_ascii_lowercase();
+    let (network, settings) = match kind.as_str() {
+        "tcp" => {
+            if let Some(object) = transport {
+                allowed_xray_keys(object, &["type"], "TCP transport")?;
+            }
+            ("tcp", None)
+        }
+        "ws" => {
+            let object = transport.ok_or("WS transport 缺少配置")?;
+            allowed_xray_keys(object, &["type", "path", "headers"], "WS transport")?;
+            let mut settings = serde_json::Map::new();
+            if let Some(path) = object.get("path") {
+                if !path.is_string() {
+                    return Err("WS path 必须是字符串".to_string());
                 }
-                if key == "extra" {
-                    if let Some(extra) = value.as_object() {
-                        let mut cleaned = extra.clone();
-                        cleaned.remove("encryption");
-                        if !cleaned.is_empty() {
-                            xhttp.insert(key.clone(), serde_json::Value::Object(cleaned));
-                        }
-                    } else {
-                        xhttp.insert(key.clone(), value.clone());
+                settings.insert("path".to_string(), path.clone());
+            }
+            if let Some(headers) = object.get("headers") {
+                if !headers.is_object() {
+                    return Err("WS headers 必须是对象".to_string());
+                }
+                settings.insert("headers".to_string(), headers.clone());
+            }
+            ("ws", Some(serde_json::Value::Object(settings)))
+        }
+        "xhttp" | "splithttp" => {
+            let object = transport.ok_or("XHTTP transport 缺少配置")?;
+            allowed_xray_keys(
+                object,
+                &[
+                    "type",
+                    "path",
+                    "host",
+                    "mode",
+                    "extra",
+                    "sc_max_each_post_bytes",
+                    "sc_min_posts_interval_ms",
+                    "sc_max_buffered_posts",
+                    "x_padding_bytes",
+                    "no_grpc_header",
+                    "no_sse_header",
+                ],
+                "XHTTP transport",
+            )?;
+            let mut settings = serde_json::Map::new();
+            if let Some(path) = object.get("path") {
+                if !path.is_string() {
+                    return Err("XHTTP path 必须是字符串".to_string());
+                }
+                settings.insert("path".to_string(), path.clone());
+            }
+            if let Some(host) = object.get("host") {
+                let host = if let Some(values) = host.as_array() {
+                    if values.len() > 1 {
+                        return Err("XHTTP 仅支持一个 host".to_string());
                     }
+                    values.first().cloned()
                 } else {
-                    xhttp.insert(key.clone(), value.clone());
+                    Some(host.clone())
+                };
+                if let Some(host) = host {
+                    if !host.is_string() {
+                        return Err("XHTTP host 必须是字符串".to_string());
+                    }
+                    settings.insert("host".to_string(), host);
                 }
             }
+            if let Some(mode) = object.get("mode") {
+                if !mode.is_string() {
+                    return Err("XHTTP mode 必须是字符串".to_string());
+                }
+                settings.insert("mode".to_string(), mode.clone());
+            }
+            for (source, target) in [
+                ("sc_max_each_post_bytes", "scMaxEachPostBytes"),
+                ("sc_min_posts_interval_ms", "scMinPostsIntervalMs"),
+                ("sc_max_buffered_posts", "scMaxBufferedPosts"),
+                ("x_padding_bytes", "xPaddingBytes"),
+                ("no_grpc_header", "noGRPCHeader"),
+                ("no_sse_header", "noSSEHeader"),
+            ] {
+                if let Some(value) = object.get(source) {
+                    settings.insert(target.to_string(), value.clone());
+                }
+            }
+            if let Some(extra) = object.get("extra") {
+                settings.insert("extra".to_string(), xray_extra(extra, "XHTTP")?);
+            }
+            ("xhttp", Some(serde_json::Value::Object(settings)))
         }
-        stream.insert(
-            "xhttpSettings".to_string(),
-            serde_json::Value::Object(xhttp),
-        );
-    }
+        _ => return Err(format!("不支持的 Xray transport: {}", kind)),
+    };
+    Ok((
+        network.to_string(),
+        settings.unwrap_or_else(|| serde_json::json!({})),
+    ))
+}
 
-    if let Some(tls) = node.get("tls").filter(|value| {
-        value
-            .get("enabled")
-            .and_then(|enabled| enabled.as_bool())
-            .unwrap_or(false)
-    }) {
-        let security = if tls
-            .get("reality")
-            .and_then(|value| value.get("enabled"))
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false)
-        {
-            "reality"
-        } else {
-            "tls"
-        };
-        stream.insert(
-            "security".to_string(),
-            serde_json::Value::String(security.to_string()),
-        );
-        stream.insert(format!("{}Settings", security), xray_tls_settings(tls));
-    } else {
-        stream.insert(
-            "security".to_string(),
-            serde_json::Value::String("none".to_string()),
-        );
+fn xray_stream_settings(
+    node: &serde_json::Value,
+    allow_packet_encoding: bool,
+) -> Result<serde_json::Value, String> {
+    if !allow_packet_encoding && node.get("packet_encoding").is_some() {
+        return Err("Xray outbound 不支持 packet_encoding".to_string());
     }
-
-    serde_json::Value::Object(stream)
+    let (network, transport_settings) = xray_transport(node)?;
+    let (security, tls_settings) = match node.get("tls") {
+        Some(tls) => xray_tls_settings(tls)?,
+        None => ("none".to_string(), serde_json::json!({})),
+    };
+    let mut stream = serde_json::Map::new();
+    stream.insert("network".to_string(), serde_json::json!(network));
+    stream.insert("security".to_string(), serde_json::json!(security));
+    if security != "none" {
+        stream.insert(format!("{}Settings", security), tls_settings);
+    }
+    if network == "ws" {
+        stream.insert("wsSettings".to_string(), transport_settings.clone());
+    }
+    if network == "xhttp" {
+        stream.insert("xhttpSettings".to_string(), transport_settings);
+    }
+    Ok(serde_json::Value::Object(stream))
 }
 
 pub(crate) fn build_xray_plugin_config(
@@ -1621,7 +1973,7 @@ pub(crate) fn build_xray_plugin_config(
                 }
             ]
         },
-        "streamSettings": xray_stream_settings(node)
+        "streamSettings": xray_stream_settings(node, true)?
     });
     let mut outbounds = vec![remote_outbound.clone()];
     if let Some(chain_port) = front_proxy_chain_port {
@@ -2621,6 +2973,17 @@ async fn generate_config_with_settings(
     settings: &crate::types::AppSettings,
     use_singbox_1_14_dns: bool,
 ) -> Result<CommandResult, String> {
+    let native_enabled = native_xray_runtime_available_from_state(state);
+    generate_config_with_settings_and_native(state, settings, use_singbox_1_14_dns, native_enabled)
+        .await
+}
+
+async fn generate_config_with_settings_and_native(
+    state: &AppState,
+    settings: &crate::types::AppSettings,
+    use_singbox_1_14_dns: bool,
+    native_xray_enabled: bool,
+) -> Result<CommandResult, String> {
     // Always reload profiles data from file to ensure we have the latest
     let profiles_file = state.profiles_file();
     let profiles_data: crate::types::ProfilesData = if profiles_file.exists() {
@@ -3020,10 +3383,11 @@ async fn generate_config_with_settings(
     for node in &nodes {
         let node_type = node.get("type").and_then(|t| t.as_str()).unwrap_or("");
         if is_proxy_type(node_type) {
-            outbounds.push(node_for_singbox_with_plugin_bridge(
+            outbounds.push(node_for_singbox_with_native_xray_result(
                 node,
+                native_xray_enabled,
                 &mut plugin_bridge_specs,
-            ));
+            )?);
             if let Some(tag) = node.get("tag").and_then(|t| t.as_str()) {
                 proxy_tags.push(tag.to_string());
                 existing_tags.insert(tag.to_string());
@@ -3054,10 +3418,11 @@ async fn generate_config_with_settings(
                         &active_profile_id,
                     );
                     let scoped_node = with_outbound_tag(prepared_node, &outbound_tag);
-                    outbounds.push(node_for_singbox_with_plugin_bridge(
+                    outbounds.push(node_for_singbox_with_native_xray_result(
                         &scoped_node,
+                        native_xray_enabled,
                         &mut plugin_bridge_specs,
-                    ));
+                    )?);
                     existing_tags.insert(outbound_tag.clone());
                     log::info!(
                         "Added profile-scoped node: {} from profile {}",
@@ -3103,10 +3468,11 @@ async fn generate_config_with_settings(
                             } else {
                                 with_outbound_tag(process_node(&prepared_node), &outbound_tag)
                             };
-                            outbounds.push(node_for_singbox_with_plugin_bridge(
+                            outbounds.push(node_for_singbox_with_native_xray_result(
                                 &outbound_node,
+                                native_xray_enabled,
                                 &mut plugin_bridge_specs,
-                            ));
+                            )?);
                             existing_tags.insert(outbound_tag.clone());
                         }
                         profile_proxy_entries.push((
@@ -3511,14 +3877,7 @@ async fn generate_config_with_settings(
 }
 
 fn get_singbox_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let data_kernel = app_data_dir.join("libs").join("sing-box.exe");
-    if data_kernel.exists() {
-        return Ok(data_kernel);
-    }
-
-    let resource_path = app.path().resource_dir().map_err(|e| e.to_string())?;
-    Ok(resource_path.join("resources/libs/sing-box.exe"))
+    crate::commands::kernel::runtime_kernel_path(app)
 }
 
 struct SystemProxySnapshot {
@@ -4698,7 +5057,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn xhttp_node_detour_builds_chain_route() {
+    async fn xhttp_node_detour_requires_verified_raybox() {
         let data_dir = unique_test_dir("xhttp-node-detour-chain");
         let state = AppState::new(data_dir.clone());
         let profiles_data = ProfilesData {
@@ -4714,46 +5073,8 @@ mod tests {
             &state.configs_dir().join("profile-a.json"),
             &vec![make_node("front-node"), xhttp_node],
         );
-
-        let result = generate_config(&state).await.unwrap();
-        assert!(result.success);
-
-        let config = read_generated_config(&state);
-        let chain_inbound = config["inbounds"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|inbound| {
-                inbound["tag"]
-                    .as_str()
-                    .is_some_and(|tag| tag.starts_with("kunbox-front-proxy-chain-in"))
-            })
-            .expect("expected node detour chain inbound");
-        assert_eq!(chain_inbound["listen"].as_str(), Some("127.0.0.1"));
-        let chain_tag = chain_inbound["tag"].as_str().unwrap();
-        let chain_port = chain_inbound["listen_port"].as_u64().unwrap();
-        assert!(config["route"]["rules"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|rule| {
-                rule["inbound"].as_str() == Some(chain_tag)
-                    && rule["outbound"].as_str() == Some("front-node")
-            }));
-
-        let plugin_specs: serde_json::Value = serde_json::from_str(
-            &fs::read_to_string(state.config_dir.join("plugin-bridges.json")).unwrap(),
-        )
-        .unwrap();
-        let xhttp_spec = plugin_specs
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|spec| spec["tag"].as_str() == Some("xhttp-node"))
-            .unwrap();
-        assert_eq!(xhttp_spec["frontProxyTag"].as_str(), Some("front-node"));
-        assert_eq!(xhttp_spec["frontProxyChainPort"].as_u64(), Some(chain_port));
-
+        let result = generate_config(&state).await;
+        assert!(result.is_err() || !result.unwrap().success);
         let _ = fs::remove_dir_all(data_dir);
     }
 
@@ -6436,7 +6757,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn generate_config_bridges_xhttp_nodes_through_local_xray_plugin() {
+    async fn generate_config_rejects_xhttp_without_verified_raybox() {
         let data_dir = unique_test_dir("xhttp-plugin-bridge");
         let state = AppState::new(data_dir.clone());
 
@@ -6453,40 +6774,8 @@ mod tests {
             &vec![make_xhttp_node("XHTTP Node")],
         );
 
-        let result = generate_config(&state).await.unwrap();
-        assert!(result.success);
-
-        let config = read_generated_config(&state);
-        let outbound = config["outbounds"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|node| node.get("tag").and_then(|value| value.as_str()) == Some("XHTTP Node"))
-            .unwrap();
-
-        assert_eq!(
-            outbound.get("type").and_then(|value| value.as_str()),
-            Some("socks")
-        );
-        assert_eq!(
-            outbound.get("server").and_then(|value| value.as_str()),
-            Some("127.0.0.1")
-        );
-        assert!(outbound
-            .get("server_port")
-            .and_then(|value| value.as_u64())
-            .is_some());
-
-        let plugin_specs: serde_json::Value = serde_json::from_str(
-            &fs::read_to_string(state.config_dir.join("plugin-bridges.json")).unwrap(),
-        )
-        .unwrap();
-        let spec = plugin_specs.as_array().unwrap().first().unwrap();
-
-        assert_eq!(spec["tag"].as_str(), Some("XHTTP Node"));
-        assert_eq!(spec["core"].as_str(), Some("xray"));
-        assert_eq!(spec["node"]["transport"]["type"].as_str(), Some("xhttp"));
-
+        let result = generate_config(&state).await;
+        assert!(result.is_err() || !result.unwrap().success);
         let _ = fs::remove_dir_all(data_dir);
     }
 
@@ -6509,30 +6798,8 @@ mod tests {
         write_json_file(&state.profiles_file(), &profiles_data);
         write_json_file(&state.configs_dir().join("profile-xhttp.json"), &vec![node]);
 
-        let result = generate_config(&state).await.unwrap();
-        assert!(result.success);
-
-        let config = read_generated_config(&state);
-        let rules = config["route"]["rules"].as_array().unwrap();
-        let remote_rule = rules
-            .iter()
-            .find(|rule| {
-                rule.get("ip_cidr")
-                    .and_then(|values| values.as_array())
-                    .map(|values| {
-                        values
-                            .iter()
-                            .any(|value| value.as_str() == Some("35.194.192.123/32"))
-                    })
-                    .unwrap_or(false)
-            })
-            .expect("xray plugin remote server must bypass TUN proxy loop");
-
-        assert_eq!(
-            remote_rule.get("outbound").and_then(|value| value.as_str()),
-            Some("direct")
-        );
-
+        let result = generate_config(&state).await;
+        assert!(result.is_err() || !result.unwrap().success);
         let _ = fs::remove_dir_all(data_dir);
     }
 
@@ -7291,21 +7558,124 @@ mod tests {
     }
 
     #[test]
-    fn recognizes_taskkill_missing_process_output() {
-        let samples = [
-            "ERROR: The process \"sing-box.exe\" not found.",
-            "错误: 没有找到进程 \"sing-box.exe\"。",
-            "错误: 没有运行的任务与指定标准匹配。",
-        ];
-
-        for sample in samples {
-            let lower = sample.to_lowercase();
-            assert!(
-                lower.contains("not found")
-                    || lower.contains("没有运行的任务")
-                    || lower.contains("没有找到")
-            );
+    fn native_xray_accepts_xudp_packet_encoding_and_rejects_unknown_values() {
+        let base = serde_json::json!({
+            "type": "vless",
+            "tag": "encoding-probe",
+            "server": "edge.example.com",
+            "server_port": 443,
+            "uuid": "00000000-0000-0000-0000-000000000000",
+            "encryption": "mlkem768x25519plus.native.0rtt.test",
+            "tls": {"enabled": true, "server_name": "edge.example.com"},
+            "transport": {"type": "xhttp", "path": "/probe", "mode": "packet-up"}
+        });
+        for encoding in ["xudp", ""] {
+            let mut node = base.clone();
+            node["packet_encoding"] = serde_json::json!(encoding);
+            let generated = build_native_xray_outbound(&node).unwrap();
+            assert!(generated.get("packet_encoding").is_none());
         }
+        let mut unsupported = base.clone();
+        unsupported["packet_encoding"] = serde_json::json!("quic");
+        assert!(build_native_xray_outbound(&unsupported).is_err());
+    }
+
+    #[test]
+    fn native_xray_maps_custom_tls_certificates_for_verification() {
+        let mut node = make_xhttp_node("cert-probe");
+        node["tls"]["certificate"] =
+            serde_json::json!(["-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"]);
+        let generated = build_native_xray_outbound(&node).unwrap();
+        assert_eq!(
+            generated["outbound"]["streamSettings"]["tlsSettings"]["certificates"][0]["usage"],
+            "verify"
+        );
+        assert_eq!(
+            generated["outbound"]["streamSettings"]["tlsSettings"]["certificates"][0]
+                ["certificate"][0],
+            "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"
+        );
+        let mut reality = node.clone();
+        reality["tls"] = serde_json::json!({
+            "enabled": true, "server_name": "edge.example.com",
+            "reality": {"enabled": true, "public_key": "key", "short_id": "01"},
+            "certificate": ["-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"]
+        });
+        assert!(build_native_xray_outbound(&reality).is_err());
+    }
+
+    #[test]
+    fn generate_contract_xhttp_fixture() {
+        let node = serde_json::json!({
+            "type": "vless",
+            "tag": "contract-xhttp",
+            "server": "example.invalid",
+            "server_port": 443,
+            "uuid": "00000000-0000-0000-0000-000000000001",
+            "encryption": "none",
+            "transport": {
+                "type": "xhttp",
+                "path": "/contract",
+                "host": ["edge.example.invalid"],
+                "mode": "packet-up"
+            },
+            "tls": {
+                "enabled": true,
+                "server_name": "edge.example.invalid",
+                "alpn": ["h2"],
+                "utls": {"fingerprint": "chrome"}
+            },
+            "detour": "contract-hop"
+        });
+        let generated = build_native_xray_outbound(&node).unwrap();
+        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("docs/raybox-unification/fixtures/generated-xhttp.json");
+        if let Some(parent) = fixture_path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(
+            &fixture_path,
+            serde_json::to_string_pretty(&generated).unwrap(),
+        )
+        .unwrap();
+        let fixture: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(fixture_path).unwrap()).unwrap();
+        assert_eq!(fixture, generated);
+        assert_eq!(fixture["type"], "xray");
+        assert_eq!(fixture["outbound"]["protocol"], "vless");
+        assert_eq!(fixture["outbound"]["streamSettings"]["network"], "xhttp");
+        assert_eq!(
+            fixture["outbound"]["streamSettings"]["xhttpSettings"]["mode"],
+            "packet-up"
+        );
+        assert_eq!(
+            fixture["outbound"]["streamSettings"]["realitySettings"].is_null(),
+            true
+        );
+        assert_eq!(
+            fixture["outbound"]["streamSettings"]["tlsSettings"]["serverName"],
+            "edge.example.invalid"
+        );
+        assert_eq!(
+            fixture["outbound"]["settings"]["vnext"][0]["address"],
+            "example.invalid"
+        );
+    }
+    #[test]
+    fn xray_bridge_detection_is_explicit_and_narrow() {
+        assert!(is_xray_bridge_node(&serde_json::json!({
+            "type": "vless",
+            "transport": {"type": "xhttp"}
+        })));
+        assert!(!is_xray_bridge_node(&serde_json::json!({
+            "type": "vmess",
+            "transport": {"type": "xhttp"}
+        })));
+        assert!(!is_xray_bridge_node(&serde_json::json!({
+            "type": "vless",
+            "transport": {"type": "ws"}
+        })));
     }
 }
 

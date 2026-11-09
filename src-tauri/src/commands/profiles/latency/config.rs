@@ -12,13 +12,15 @@ pub(super) fn generate_temp_config_raw(
     std::collections::HashMap<String, Vec<u16>>,
     Vec<serde_json::Value>,
 ) {
-    generate_temp_config_with_dependencies_raw(
+    generate_temp_config_with_native_xray_raw(
         nodes,
         &[],
         api_port,
         naive_runtime_available,
         remote_dns,
+        true,
     )
+    .expect("生成测速配置失败")
 }
 
 pub(super) fn generate_temp_config_with_dependencies_raw(
@@ -33,6 +35,33 @@ pub(super) fn generate_temp_config_with_dependencies_raw(
     std::collections::HashMap<String, Vec<u16>>,
     Vec<serde_json::Value>,
 ) {
+    generate_temp_config_with_native_xray_raw(
+        nodes,
+        detour_dependencies,
+        api_port,
+        naive_runtime_available,
+        remote_dns,
+        true,
+    )
+    .expect("生成测速配置失败")
+}
+
+pub(super) fn generate_temp_config_with_native_xray_raw(
+    nodes: &[serde_json::Value],
+    detour_dependencies: &[serde_json::Value],
+    api_port: u16,
+    naive_runtime_available: bool,
+    remote_dns: &str,
+    native_xray_enabled: bool,
+) -> Result<
+    (
+        serde_json::Value,
+        std::collections::HashMap<String, Vec<String>>,
+        std::collections::HashMap<String, Vec<u16>>,
+        Vec<serde_json::Value>,
+    ),
+    String,
+> {
     let inferred_ech_dns_server = nodes
         .iter()
         .filter_map(|node| node.get(ECH_DNS_SERVER_META_KEY))
@@ -72,17 +101,19 @@ pub(super) fn generate_temp_config_with_dependencies_raw(
                 })
         })
         .enumerate()
-        .map(|(index, node)| {
+        .map(|(index, node)| -> Result<serde_json::Value, String> {
             let original_node_tag = node
                 .get("tag")
                 .and_then(|tag| tag.as_str())
                 .unwrap_or("")
                 .to_string();
             let bridge_index = plugin_bridge_specs.len();
-            let processed_node = crate::commands::singbox::node_for_singbox_with_plugin_bridge(
-                node,
-                &mut plugin_bridge_specs,
-            );
+            let processed_node =
+                crate::commands::singbox::node_for_singbox_with_native_xray_result(
+                    node,
+                    native_xray_enabled,
+                    &mut plugin_bridge_specs,
+                )?;
             let mut node = processed_node.clone();
             if plugin_bridge_specs.len() > bridge_index {
                 let bridge_port = temp_xray_bridge_port(bridge_index);
@@ -185,9 +216,9 @@ pub(super) fn generate_temp_config_with_dependencies_raw(
 
                 apply_temp_latency_domain_resolver(obj, "dns-bootstrap");
             }
-            node
+            Ok(node)
         })
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
 
     for dependency in detour_dependencies.iter().filter(|node| {
         node.get("type")
@@ -198,10 +229,11 @@ pub(super) fn generate_temp_config_with_dependencies_raw(
             })
     }) {
         let bridge_index = plugin_bridge_specs.len();
-        let mut dependency = crate::commands::singbox::node_for_singbox_with_plugin_bridge(
+        let mut dependency = crate::commands::singbox::node_for_singbox_with_native_xray_result(
             dependency,
+            native_xray_enabled,
             &mut plugin_bridge_specs,
-        );
+        )?;
         if plugin_bridge_specs.len() > bridge_index {
             let bridge_port = temp_xray_bridge_port(bridge_index);
             if let Some(spec) = plugin_bridge_specs
@@ -257,7 +289,7 @@ pub(super) fn generate_temp_config_with_dependencies_raw(
     // 添加 direct 出站
     outbounds.push(serde_json::json!({ "type": "direct", "tag": "direct" }));
 
-    (
+    Ok((
         serde_json::json!({
             "log": {
                 "disabled": false,
@@ -295,5 +327,5 @@ pub(super) fn generate_temp_config_with_dependencies_raw(
         tag_map,
         proxy_port_map,
         plugin_bridge_specs,
-    )
+    ))
 }

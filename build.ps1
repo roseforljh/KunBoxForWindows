@@ -69,6 +69,17 @@ if ($hasSigningKey) {
     $tauriArgs += @("--config", $tempConfigPath)
 }
 
+# Step 0: Ensure the pinned RayBox runtime is present and verified
+Write-Host "[0/2] Verifying RayBox runtime..." -ForegroundColor Cyan
+try {
+    & (Join-Path $PSScriptRoot "scripts\fetch-raybox.ps1")
+} catch {
+    Write-Host "RayBox runtime verification failed: $_" -ForegroundColor Red
+    if ($tempConfigPath -and (Test-Path $tempConfigPath)) { Remove-Item $tempConfigPath -Force }
+    exit 1
+}
+Write-Host "RayBox runtime verified." -ForegroundColor Green
+
 # Step 1: Build frontend
 Write-Host "[1/2] Building frontend..." -ForegroundColor Cyan
 Set-Location "$PSScriptRoot\kunbox-electron"

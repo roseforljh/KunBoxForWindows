@@ -186,30 +186,30 @@ export const mockApi = {
   },
 
   kernel: {
-    getLocalVersion: async (_isAlpha?: boolean) => ({
-      version: '1.11.0',
-      versionDetail: 'sing-box 1.11.0 (mock)',
+    getLocalVersion: async () => ({
+      version: '0.0.1',
+      versionDetail: 'RayBox version 0.0.1 (mock)',
       isAlpha: false,
     }),
     getInstalledVersions: () =>
       Promise.resolve([
-        { version: '1.11.0', versionDetail: 'sing-box 1.11.0', isBackup: false, path: '/mock/path' },
+        { version: '0.0.1', versionDetail: 'RayBox version 0.0.1', isBackup: false, path: '/mock/path' },
       ]),
     getCapabilities: () =>
       Promise.resolve({
-        version: '1.11.0',
+        version: '0.0.1',
         supportsNaive: false,
-        supportsIcmpProxy: false,
+        supportsIcmpProxy: true,
         supportsBypassAction: true,
       }),
     getRemoteReleases: async (_includePrerelease?: boolean) => [
       {
-        version: '1.12.0',
-        tagName: 'v1.12.0',
+        version: '0.0.1',
+        tagName: 'windows-v0.0.1',
         publishedAt: new Date().toISOString(),
         isPrerelease: false,
         downloadUrl: 'https://example.com/release',
-        assetName: 'sing-box-1.12.0-windows-amd64.zip',
+        assetName: 'raybox-windows-amd64.exe',
       },
     ],
     download: (_tagName: string) => Promise.resolve({ success: true }),
@@ -219,31 +219,6 @@ export const mockApi = {
     openReleasesPage: () => Promise.resolve(),
     openDirectory: () => Promise.resolve(),
     onDownloadProgress: (_callback: (progress: { downloaded: number; contentLength: number }) => void) => noopUnlisten(),
-    onDownloadComplete: (_callback: () => void) => noopUnlisten(),
-    onDownloadError: (_callback: (error: string) => void) => noopUnlisten(),
-  },
-
-  plugin: {
-    getXrayLocalVersion: () =>
-      Promise.resolve({
-        version: '25.5.16',
-        versionDetail: 'Xray 25.5.16 (mock)',
-      }),
-    getXrayRemoteReleases: () =>
-      Promise.resolve([
-        {
-          version: '25.5.16',
-          tagName: 'v25.5.16',
-          publishedAt: new Date().toISOString(),
-          isPrerelease: false,
-          downloadUrl: 'https://example.com/xray',
-          assetName: 'Xray-windows-64.zip',
-        },
-      ]),
-    downloadXray: (_tagName: string) => Promise.resolve({ success: true }),
-    openDirectory: () => Promise.resolve(),
-    openXrayReleasesPage: () => Promise.resolve(),
-    onDownloadProgress: (_callback: (progress: { downloaded: number; total: number; percent: number }) => void) => noopUnlisten(),
     onDownloadComplete: (_callback: () => void) => noopUnlisten(),
     onDownloadError: (_callback: (error: string) => void) => noopUnlisten(),
   },

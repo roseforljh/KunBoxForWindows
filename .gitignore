@@ -1,3 +1,6 @@
+# Downloaded RayBox assets; the trusted lock remains tracked
+/src-tauri/resources/libs/raybox/
+
 LinJun/
 node_modules/
 dist/
@@ -22,4 +25,4 @@ tmp-sb113/
 # Local test installers and pre-cleanup archives
 /release-artifacts/*/node-preservation-*/
 /release-artifacts/*/log-retention-*/
-/release-artifacts/*/archive-before-cleanup-*/
+/graphify-out

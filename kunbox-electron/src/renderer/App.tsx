@@ -11,12 +11,11 @@ import SettingsPage from './components/Settings'
 import Logs from './components/Logs'
 import RuleSets from './components/RuleSets'
 import DomainRules from './components/DomainRules'
-import Plugins from './components/Plugins'
 import About from './components/About'
 import { Logo } from './components/Logo'
 import { getMissingRuleNodeWarning } from './lib/ruleNodes'
 
-type Page = 'dashboard' | 'nodes' | 'profiles' | 'settings' | 'logs' | 'rulesets' | 'domainrules' | 'plugins' | 'about'
+type Page = 'dashboard' | 'nodes' | 'profiles' | 'settings' | 'logs' | 'rulesets' | 'domainrules' | 'about'
 type Theme = 'dark' | 'light' | 'system'
 
 interface IconHandle {
@@ -188,46 +187,6 @@ const RouteIcon = forwardRef<IconHandle, AnimatedIconProps>(({ size = 20, classN
   )
 })
 
-const PluginIcon = forwardRef<IconHandle, AnimatedIconProps>(({ size = 20, className }, ref) => {
-  const controls = useAnimation()
-  const isControlledRef = useRef(false)
-
-  useImperativeHandle(ref, () => {
-    isControlledRef.current = true
-    return {
-      startAnimation: () => controls.start("animate"),
-      stopAnimation: () => controls.start("normal"),
-    }
-  })
-
-  return (
-    <div className={className}>
-      <svg fill="none" height={size} width={size} viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <motion.path
-          animate={controls}
-          d="M9 7V2"
-          variants={{
-            animate: { y: -1 },
-            normal: { y: 0 },
-          }}
-          transition={defaultTransition}
-        />
-        <motion.path
-          animate={controls}
-          d="M15 7V2"
-          variants={{
-            animate: { y: -1 },
-            normal: { y: 0 },
-          }}
-          transition={defaultTransition}
-        />
-        <path d="M7 7h10v5a5 5 0 0 1-10 0V7Z" />
-        <path d="M12 17v5" />
-      </svg>
-    </div>
-  )
-})
-
 const SettingsIcon = forwardRef<IconHandle, AnimatedIconProps>(({ size = 20, className }, ref) => {
   const controls = useAnimation()
   const isControlledRef = useRef(false)
@@ -339,8 +298,7 @@ const navItems = [
   { id: 'nodes' as Page, Icon: GlobeIcon, label: '节点' },
   { id: 'profiles' as Page, Icon: FolderIcon, label: '订阅' },
   { id: 'rulesets' as Page, Icon: ShieldIcon, label: '规则集' },
-  { id: 'domainrules' as Page, Icon: RouteIcon, label: '域名分流' },
-  { id: 'plugins' as Page, Icon: PluginIcon, label: '插件' }
+  { id: 'domainrules' as Page, Icon: RouteIcon, label: '域名分流' }
 ]
 
 const footerItems = [
@@ -680,7 +638,6 @@ function AppContent() {
       case 'logs': return <Logs />
       case 'rulesets': return <RuleSets />
       case 'domainrules': return <DomainRules />
-      case 'plugins': return <Plugins />
       case 'about': return <About />
     }
   }

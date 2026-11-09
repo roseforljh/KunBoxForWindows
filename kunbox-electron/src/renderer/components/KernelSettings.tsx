@@ -1,458 +1,113 @@
 import { useState, useEffect, useCallback } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
-import { 
-  Download, RotateCcw, Trash2, ExternalLink, FolderOpen, RefreshCw, 
-  Loader2, CheckCircle2, Check, AlertCircle
-} from 'lucide-react'
+import { Download, RotateCcw, Trash2, ExternalLink, FolderOpen, RefreshCw, Loader2, Check, AlertCircle } from 'lucide-react'
 import { useToast } from './ui/Toast'
 
-interface KernelVersion {
-  version: string
-  versionDetail: string
-  isAlpha: boolean
-}
-
-interface RemoteRelease {
-  version: string
-  tagName: string
-  publishedAt: string
-  isPrerelease: boolean
-  downloadUrl: string
-  assetName: string
-}
-
-interface KernelCapabilities {
-  version: string
-  supportsNaive: boolean
-  supportsIcmpProxy: boolean
-  supportsBypassAction: boolean
-}
-
-type KernelBranch = 'stable' | 'alpha'
+interface KernelVersion { version: string; versionDetail: string }
+interface RemoteRelease { version: string; tagName: string }
+interface KernelCapabilities { supportsNaive: boolean; supportsIcmpProxy: boolean; supportsBypassAction: boolean }
 
 export function KernelSettings() {
-  const [activeBranch, setActiveBranch] = useState<KernelBranch>(() => {
-    return (localStorage.getItem('kunbox-kernel-branch') as KernelBranch) || 'stable'
-  })
-  const [localStable, setLocalStable] = useState<KernelVersion | null>(null)
-  const [localAlpha, setLocalAlpha] = useState<KernelVersion | null>(null)
-  const [remoteReleases, setRemoteReleases] = useState<RemoteRelease[]>([])
+  const [local, setLocal] = useState<KernelVersion | null>(null)
+  const [remote, setRemote] = useState<RemoteRelease | null>(null)
   const [capabilities, setCapabilities] = useState<KernelCapabilities | null>(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(false)
   const [downloading, setDownloading] = useState(false)
+  const [progress, setProgress] = useState(0)
   const [canRollback, setCanRollback] = useState(false)
-  const { success: toastSuccess, error: toastError, info: toastInfo } = useToast()
+  const { success: toastSuccess, error: toastError } = useToast()
 
   const loadVersions = useCallback(async () => {
     setLoading(true)
+    setLoadError(false)
     try {
-      const [stable, alpha, releases, rollbackStable, rollbackAlpha, kernelCaps] = await Promise.all([
-        window.api.kernel.getLocalVersion(false),
-        window.api.kernel.getLocalVersion(true),
-        window.api.kernel.getRemoteReleases(true),
-        window.api.kernel.canRollback(false),
-        window.api.kernel.canRollback(true),
-        window.api.kernel.getCapabilities()
+      const [installed, releases, rollback, caps] = await Promise.all([
+        window.api.kernel.getLocalVersion(), window.api.kernel.getRemoteReleases(false),
+        window.api.kernel.canRollback(), window.api.kernel.getCapabilities()
       ])
-      setLocalStable(stable)
-      setLocalAlpha(alpha)
-      setRemoteReleases(releases)
-      setCapabilities(kernelCaps)
-      setCanRollback(activeBranch === 'stable' ? rollbackStable : rollbackAlpha)
+      setLocal(installed)
+      setRemote(releases[0] || null)
+      setCanRollback(rollback)
+      setCapabilities(caps)
+      if (!releases.length) setLoadError(true)
     } catch {
-      toastError('加载版本信息失败')
-    } finally {
-      setLoading(false)
-    }
-  }, [toastError, activeBranch])
+      setLoadError(true)
+      toastError('加载 RayBox 版本信息失败')
+    } finally { setLoading(false) }
+  }, [toastError])
 
   useEffect(() => {
     loadVersions()
-
+    const unsubProgress = window.api.kernel.onDownloadProgress(value => setProgress(value.percent))
     const unsubComplete = window.api.kernel.onDownloadComplete(() => {
       setDownloading(false)
-      toastSuccess('内核更新完成')
+      toastSuccess('RayBox 内核更新完成')
       loadVersions()
     })
-    const unsubError = window.api.kernel.onDownloadError((err: string) => {
+    const unsubError = window.api.kernel.onDownloadError(err => {
       setDownloading(false)
       toastError(`下载失败: ${err}`)
     })
-
-    return () => {
-      unsubComplete()
-      unsubError()
-    }
+    return () => { unsubProgress(); unsubComplete(); unsubError() }
   }, [loadVersions, toastSuccess, toastError])
 
-  useEffect(() => {
-    // Update canRollback when branch changes
-    const updateRollback = async () => {
-      const result = await window.api.kernel.canRollback(activeBranch === 'alpha')
-      setCanRollback(result)
-    }
-    updateRollback()
-  }, [activeBranch])
-
-  const handleBranchChange = (branch: KernelBranch) => {
-    setActiveBranch(branch)
-    localStorage.setItem('kunbox-kernel-branch', branch)
-    toastInfo(`已切换到${branch === 'stable' ? '正式版' : '测试版'}内核`)
-  }
-
-  const currentLocal = activeBranch === 'stable' ? localStable : localAlpha
-  const currentRemote = remoteReleases.find(r => 
-    activeBranch === 'stable' ? !r.isPrerelease : r.isPrerelease
-  )
-  const isUpdatable = currentRemote && currentLocal?.version !== currentRemote.version
-
-  const handleDownload = async () => {
-    if (!currentRemote) return
+  const download = async () => {
+    if (!remote) return
     setDownloading(true)
-    try {
-      await window.api.kernel.download(currentRemote.tagName)
-    } catch (err) {
-      toastError(String(err))
-      setDownloading(false)
-    }
+    setProgress(0)
+    try { await window.api.kernel.download(remote.tagName) }
+    catch (err) { setDownloading(false); toastError(String(err)) }
   }
-
-  const handleRollback = async () => {
+  const rollback = async () => {
     try {
-      const result = await window.api.kernel.rollback(activeBranch === 'alpha')
-      if (result.success) {
-        toastSuccess('已回退到上一版本')
-        loadVersions()
-      } else {
-        toastError('回退失败')
-      }
-    } catch (err) {
-      toastError(String(err))
-    }
+      const result = await window.api.kernel.rollback()
+      if (result.success) { toastSuccess('已回退到上一版本'); loadVersions() }
+      else toastError('回退失败')
+    } catch (err) { toastError(String(err)) }
   }
-
-  const handleClearCache = async () => {
+  const clearCache = async () => {
     try {
       const result = await window.api.kernel.clearCache()
-      if (result.success) {
-        const freedMB = (result.freedBytes / 1024 / 1024).toFixed(2)
-        toastSuccess(`缓存已清理，释放 ${freedMB} MB`)
-      }
-    } catch (err) {
-      toastError(String(err))
-    }
+      if (result.success) toastSuccess(`缓存已清理，释放 ${(result.freedBytes / 1024 / 1024).toFixed(2)} MB`)
+    } catch (err) { toastError(String(err)) }
   }
+  const updateAvailable = !!remote && (!local || local.version !== remote.version)
 
   return (
-    <div className="space-y-8">
-      {/* Branch Selection */}
-      <div>
-        <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-4">选择内核版本</h3>
-        <div className="grid grid-cols-2 gap-4">
-          <BranchCard
-            title="正式版"
-            subtitle="Stable"
-            description="推荐使用，稳定可靠"
-            selected={activeBranch === 'stable'}
-            onClick={() => handleBranchChange('stable')}
-            color="emerald"
-          />
-          <BranchCard
-            title="测试版"
-            subtitle="Alpha"
-            description="包含最新功能，可能不稳定"
-            selected={activeBranch === 'alpha'}
-            onClick={() => handleBranchChange('alpha')}
-            color="amber"
-          />
+    <div className="space-y-6">
+      <div className="glass-card rounded-2xl p-6 border border-[var(--glass-border)]">
+        <div className="flex items-center justify-between mb-6">
+          <div><h3 className="font-semibold text-[var(--text-primary)]">RayBox 内核</h3><p className="text-xs text-[var(--text-muted)]">可信来源与完整性校验</p></div>
+          <div className="flex items-center gap-2">
+            <ActionButton icon={RefreshCw} onClick={loadVersions} tooltip="刷新" />
+            <ActionButton icon={ExternalLink} onClick={() => window.api.kernel.openReleasesPage()} tooltip="GitHub" />
+            <ActionButton icon={FolderOpen} onClick={() => window.api.kernel.openDirectory()} tooltip="打开目录" />
+            <ActionButton icon={Trash2} onClick={clearCache} tooltip="清理缓存" />
+            {canRollback && <ActionButton icon={RotateCcw} onClick={rollback} tooltip="回退版本" />}
+          </div>
         </div>
+        {loading ? <div className="flex justify-center py-12"><Loader2 className="w-8 h-8 animate-spin text-emerald-400" /></div> : <>
+          <div className="grid grid-cols-2 gap-4 mb-6">
+            <div className="p-4 rounded-xl bg-[var(--bg-tertiary)]/50"><div className="text-xs text-[var(--text-muted)]">本地版本</div><div className="text-lg font-mono">{local?.version || '未安装'}</div></div>
+            <div className="p-4 rounded-xl bg-[var(--bg-tertiary)]/50"><div className="text-xs text-[var(--text-muted)]">可信目标版本</div><div className="text-lg font-mono">{remote?.version || '不可用'}</div></div>
+          </div>
+          {local && capabilities && <div className="mb-6 flex flex-wrap gap-4 text-xs text-[var(--text-muted)]">
+            <span>NaiveProxy：{capabilities.supportsNaive ? '支持' : '不支持'}</span>
+            <span>ICMP：{capabilities.supportsIcmpProxy ? '支持' : '不支持'}</span>
+            <span>绕过规则：{capabilities.supportsBypassAction ? '支持' : '不支持'}</span>
+          </div>}
+          {loadError ? <div className="flex items-center gap-2 text-amber-400"><AlertCircle className="w-5 h-5" />无法获取可信目标版本，请重试</div> :
+            updateAvailable ? <button onClick={download} disabled={downloading} className="w-full flex justify-center items-center gap-2 py-3 rounded-xl bg-emerald-600 text-white disabled:opacity-70">
+              {downloading ? <><Loader2 className="w-5 h-5 animate-spin" />正在下载 {progress.toFixed(0)}%</> : <><Download className="w-5 h-5" />{local ? '更新到' : '安装'} {remote?.version}</>}
+            </button> : local && remote ? <div className="flex justify-center items-center gap-2 py-3 text-[var(--text-muted)]"><Check className="w-5 h-5" />已是可信目标版本</div> : null}
+          {local?.versionDetail && <div className="mt-4 p-3 rounded-lg bg-[var(--bg-tertiary)]/30 text-xs font-mono text-[var(--text-faint)] whitespace-pre-wrap max-h-24 overflow-y-auto">{local.versionDetail}</div>}
+        </>}
       </div>
-
-      {/* Current Branch Details */}
-      <motion.div
-        key={activeBranch}
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.2 }}
-        className="glass-card rounded-2xl p-6 border border-[var(--glass-border)] min-h-[280px]"
-      >
-        <AnimatePresence mode="wait">
-          {loading ? (
-            <motion.div
-              key="loading"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.2 }}
-              className="h-full flex flex-col items-center justify-center py-16"
-            >
-              <Loader2 className={`w-10 h-10 animate-spin ${
-                activeBranch === 'stable' ? 'text-emerald-400' : 'text-amber-400'
-              }`} />
-              <p className="mt-4 text-sm text-[var(--text-muted)]">加载中...</p>
-            </motion.div>
-          ) : (
-            <motion.div
-              key="content"
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.3 }}
-            >
-              {/* Header */}
-              <div className="flex items-center justify-between mb-6">
-                <div className="flex items-center gap-3">
-                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
-                    activeBranch === 'stable' 
-                      ? 'bg-emerald-500/10' 
-                      : 'bg-amber-500/10'
-                  }`}>
-                    {activeBranch === 'stable' 
-                      ? <CheckCircle2 className="w-5 h-5 text-emerald-400" />
-                      : <AlertCircle className="w-5 h-5 text-amber-400" />
-                    }
-                  </div>
-                  <div>
-                    <h4 className="font-semibold text-[var(--text-primary)]">
-                      {activeBranch === 'stable' ? '正式版' : '测试版'}内核
-                    </h4>
-                    <p className="text-xs text-[var(--text-muted)]">sing-box</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <ActionButton icon={RefreshCw} onClick={loadVersions} tooltip="刷新" />
-                  <ActionButton icon={ExternalLink} onClick={() => window.api.kernel.openReleasesPage()} tooltip="GitHub" />
-                  <ActionButton icon={FolderOpen} onClick={() => window.api.kernel.openDirectory()} tooltip="打开目录" />
-                  <ActionButton icon={Trash2} onClick={handleClearCache} tooltip="清理缓存" />
-                  {canRollback && (
-                    <ActionButton icon={RotateCcw} onClick={handleRollback} tooltip="回退版本" />
-                  )}
-                </div>
-              </div>
-
-              {/* Version Info */}
-              <div className="grid grid-cols-2 gap-4 mb-6">
-                <div className="p-4 rounded-xl bg-[var(--bg-tertiary)]/50">
-                  <div className="text-xs text-[var(--text-muted)] mb-1">本地版本</div>
-                  <div className={`text-lg font-mono font-semibold ${
-                    currentLocal 
-                      ? (activeBranch === 'stable' ? 'text-emerald-400' : 'text-amber-400')
-                      : 'text-[var(--text-faint)]'
-                  }`}>
-                    {currentLocal?.version || '未安装'}
-                  </div>
-                </div>
-                <div className="p-4 rounded-xl bg-[var(--bg-tertiary)]/50">
-                  <div className="text-xs text-[var(--text-muted)] mb-1">最新版本</div>
-                  <div className="text-lg font-mono font-semibold text-[var(--text-primary)]">
-                    {currentRemote?.version || '-'}
-                  </div>
-                </div>
-              </div>
-
-              {currentLocal && capabilities && (
-                <div className="mb-6 p-4 rounded-xl bg-[var(--bg-tertiary)]/40 border border-[var(--glass-border)]">
-                  <div className="text-xs text-[var(--text-muted)] mb-2">1.13+ 能力探测</div>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs">
-                    <div className="flex items-center justify-between rounded-lg px-3 py-2 bg-[var(--bg-tertiary)]/40">
-                      <span>NaiveProxy</span>
-                      <span className={capabilities.supportsNaive ? 'text-emerald-400' : 'text-amber-400'}>
-                        {capabilities.supportsNaive ? '支持' : '不支持'}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between rounded-lg px-3 py-2 bg-[var(--bg-tertiary)]/40">
-                      <span>ICMP 代理/分流</span>
-                      <span className={capabilities.supportsIcmpProxy ? 'text-emerald-400' : 'text-amber-400'}>
-                        {capabilities.supportsIcmpProxy ? '支持' : '不支持'}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between rounded-lg px-3 py-2 bg-[var(--bg-tertiary)]/40">
-                      <span>bypass action</span>
-                      <span className={capabilities.supportsBypassAction ? 'text-emerald-400' : 'text-amber-400'}>
-                        {capabilities.supportsBypassAction ? '支持' : '不支持'}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Update Button - Only show when kernel is installed and update available */}
-              {currentLocal && isUpdatable && currentRemote && (
-                <motion.button
-                  whileHover={{ scale: 1.01 }}
-                  whileTap={{ scale: 0.99 }}
-                  onClick={handleDownload}
-                  disabled={downloading}
-                  className={`w-full flex items-center justify-center gap-2 py-3 rounded-xl text-white font-medium transition-all disabled:opacity-70 ${
-                    activeBranch === 'stable'
-                      ? 'bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 shadow-lg shadow-emerald-500/20'
-                      : 'bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 shadow-lg shadow-amber-500/20'
-                  }`}
-                >
-                  {downloading ? (
-                    <>
-                      <Loader2 className="w-5 h-5 animate-spin" />
-                      <span>正在下载...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Download className="w-5 h-5" />
-                      <span>更新到 {currentRemote.version}</span>
-                    </>
-                  )}
-                </motion.button>
-              )}
-
-              {/* Already up to date - Only show when kernel is installed */}
-              {currentLocal && !isUpdatable && !downloading && (
-                <div className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-[var(--bg-tertiary)]/50 text-[var(--text-muted)]">
-                  <Check className="w-5 h-5" />
-                  <span>已是最新版本</span>
-                </div>
-              )}
-
-              {/* Not installed - Show prompt and download button */}
-              {!currentLocal && (
-                <div className="space-y-4">
-                  <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/20">
-                    <div className="flex items-start gap-3">
-                      <AlertCircle className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
-                      <div className="space-y-1">
-                        <p className="text-sm font-medium text-amber-400">未检测到内核</p>
-                        <p className="text-xs text-[var(--text-muted)]">
-                          请先下载 sing-box 内核才能使用代理功能。点击下方按钮自动下载，或前往 GitHub 手动下载。
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                  <motion.button
-                    whileHover={{ scale: 1.01 }}
-                    whileTap={{ scale: 0.99 }}
-                    onClick={handleDownload}
-                    disabled={downloading || !currentRemote}
-                    className={`w-full flex items-center justify-center gap-2 py-3 rounded-xl text-white font-medium transition-all disabled:opacity-70 ${
-                      activeBranch === 'stable'
-                        ? 'bg-gradient-to-r from-emerald-500 to-emerald-600 shadow-lg shadow-emerald-500/20'
-                        : 'bg-gradient-to-r from-amber-500 to-amber-600 shadow-lg shadow-amber-500/20'
-                    }`}
-                  >
-                    {downloading ? (
-                      <>
-                        <Loader2 className="w-5 h-5 animate-spin" />
-                        <span>正在下载...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Download className="w-5 h-5" />
-                        <span>下载内核 {currentRemote?.version || ''}</span>
-                      </>
-                    )}
-                  </motion.button>
-                </div>
-              )}
-
-              {/* Version Details */}
-              {currentLocal?.versionDetail && (
-                <div className="mt-4 p-3 rounded-lg bg-[var(--bg-tertiary)]/30 text-xs font-mono text-[var(--text-faint)] whitespace-pre-wrap max-h-24 overflow-y-auto">
-                  {currentLocal.versionDetail}
-                </div>
-              )}
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </motion.div>
-
-      {/* Tips */}
-      <div className="text-xs text-[var(--text-faint)] space-y-1">
-        <p>切换版本后，将使用对应分支的内核运行代理服务。</p>
-        <p>更新前会自动备份当前版本，支持一键回退。</p>
-      </div>
-
+      <p className="text-xs text-[var(--text-faint)]">更新前自动备份当前版本，支持回退。</p>
     </div>
   )
 }
 
-function BranchCard({
-  title,
-  subtitle,
-  description,
-  selected,
-  onClick,
-  color
-}: {
-  title: string
-  subtitle: string
-  description: string
-  selected: boolean
-  onClick: () => void
-  color: 'emerald' | 'amber'
-}) {
-  const colorClasses = {
-    emerald: {
-      selected: 'border-emerald-500/50 bg-emerald-500/5',
-      icon: 'bg-emerald-500/20',
-      iconText: 'text-emerald-400',
-      badge: 'bg-emerald-500/20 text-emerald-400'
-    },
-    amber: {
-      selected: 'border-amber-500/50 bg-amber-500/5',
-      icon: 'bg-amber-500/20',
-      iconText: 'text-amber-400',
-      badge: 'bg-amber-500/20 text-amber-400'
-    }
-  }
-  const colors = colorClasses[color]
-
-  return (
-    <button
-      onClick={onClick}
-      className={`group relative p-5 rounded-2xl border-2 transition-all text-left ${
-        selected 
-          ? colors.selected
-          : 'border-[var(--border-secondary)] bg-[var(--bg-secondary)] hover:border-[var(--border-primary)]'
-      }`}
-    >
-      {selected && (
-        <motion.div
-          initial={{ scale: 0 }}
-          animate={{ scale: 1 }}
-          className={`absolute top-3 right-3 w-5 h-5 rounded-full ${colors.icon} flex items-center justify-center`}
-        >
-          <Check className={`w-3 h-3 ${colors.iconText}`} />
-        </motion.div>
-      )}
-      <div className="flex items-center gap-2 mb-2">
-        <span className="font-semibold text-[var(--text-primary)] transition-transform duration-200 group-hover:scale-105 origin-left">{title}</span>
-        <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-medium transition-transform duration-200 group-hover:scale-105 ${colors.badge}`}>
-          {subtitle}
-        </span>
-      </div>
-      <p className="text-xs text-[var(--text-muted)] transition-transform duration-200 group-hover:scale-[1.02] origin-left">{description}</p>
-    </button>
-  )
-}
-
-function ActionButton({ 
-  icon: Icon, 
-  onClick, 
-  loading = false,
-  tooltip 
-}: { 
-  icon: React.ElementType
-  onClick: () => void
-  loading?: boolean
-  tooltip?: string
-}) {
-  return (
-    <motion.button
-      whileHover={{ scale: 1.1 }}
-      whileTap={{ scale: 0.9 }}
-      onClick={onClick}
-      disabled={loading}
-      className="p-2 rounded-lg bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-50"
-      title={tooltip}
-    >
-      <Icon className={`w-4 h-4 text-[var(--text-muted)] ${loading ? 'animate-spin' : ''}`} />
-    </motion.button>
-  )
+function ActionButton({ icon: Icon, onClick, tooltip }: { icon: React.ElementType; onClick: () => void; tooltip: string }) {
+  return <button onClick={onClick} className="p-2 rounded-lg bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)]" title={tooltip}><Icon className="w-4 h-4 text-[var(--text-muted)]" /></button>
 }
