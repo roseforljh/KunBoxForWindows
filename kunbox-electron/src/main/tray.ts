@@ -12,20 +12,22 @@ let currentMode: 'rule' | 'global' | 'direct' = 'rule'
 export function createTray(mainWindow: BrowserWindow, iconPath: string): Tray {
   currentWindow = mainWindow
 
-  let icon: Electron.NativeImage
-  try {
-    icon = nativeImage.createFromPath(iconPath)
-    if (icon.isEmpty()) {
+  // Windows 下直接传入多尺寸 .ico 路径由系统按 DPI 选图，禁止压成 16x16 导致高分屏发糊
+  if (process.platform === 'win32' && iconPath.toLowerCase().endsWith('.ico')) {
+    tray = new Tray(iconPath)
+  } else {
+    let icon: Electron.NativeImage
+    try {
+      icon = nativeImage.createFromPath(iconPath)
+      if (icon.isEmpty()) {
+        icon = nativeImage.createEmpty()
+      }
+    } catch (err) {
+      log.error('Failed to load tray icon:', err)
       icon = nativeImage.createEmpty()
-    } else {
-      icon = icon.resize({ width: 16, height: 16 })
     }
-  } catch (err) {
-    log.error('Failed to load tray icon:', err)
-    icon = nativeImage.createEmpty()
+    tray = new Tray(icon)
   }
-
-  tray = new Tray(icon)
   tray.setToolTip('KunBox - 未连接')
 
   updateContextMenu()

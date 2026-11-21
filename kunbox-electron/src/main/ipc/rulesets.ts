@@ -6,7 +6,9 @@ import https from 'https'
 import { IPC_CHANNELS } from '../../shared/constants'
 import { downloadRuleSet, isRuleSetLocal, type RuleSetItem } from '../utils/ruleSetManager'
 
-const DATA_DIR = join(process.env.APPDATA || '', 'KunBox')
+import { getDataDir } from '../utils/paths'
+
+const DATA_DIR = getDataDir()
 const RULESETS_FILE = join(DATA_DIR, 'rulesets.json')
 
 const defaultRuleSets: RuleSetItem[] = [
@@ -107,7 +109,7 @@ export function initRuleSetsHandlers(): void {
   })
 
   ipcMain.handle('ruleset:fetch-hub', async () => {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       https.get('https://api.github.com/repos/MetaCubeX/meta-rules-dat/git/trees/meta?recursive=1', {
         headers: { 'User-Agent': 'KunBox/0.0.24' }
       }, (res) => {
@@ -116,7 +118,7 @@ export function initRuleSetsHandlers(): void {
         res.on('end', () => {
           try {
             resolve(JSON.parse(body))
-          } catch (e) {
+          } catch {
             resolve({ tree: [] })
           }
         })

@@ -3,7 +3,9 @@ import { join } from 'path'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import type { CustomRules, DomainRule } from '../../shared/types'
 
-const DATA_DIR = join(process.env.APPDATA || '', 'KunBox')
+import { getDataDir } from '../utils/paths'
+
+const DATA_DIR = getDataDir()
 const CUSTOM_RULES_FILE = join(DATA_DIR, 'custom_rules.json')
 
 function loadCustomRules(): CustomRules {

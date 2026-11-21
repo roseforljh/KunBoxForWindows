@@ -12,7 +12,8 @@ import type {
   NodeWithProfile,
   NodeLatencyResult,
   HealthEvent,
-  CustomProfileNodeSelection
+  CustomProfileNodeSelection,
+  RuleSet
 } from '../shared/types'
 
 function onEvent<T = any>(channel: string, callback: (data: T) => void): () => void {
@@ -153,10 +154,10 @@ const api = {
   },
 
   ruleset: {
-    list: () => ipcRenderer.invoke(IPC_CHANNELS.RULESET_LIST),
-    save: (ruleSets: any[]) => ipcRenderer.invoke(IPC_CHANNELS.RULESET_SAVE, ruleSets),
-    download: (ruleSet: any, force = false) => ipcRenderer.invoke(IPC_CHANNELS.RULESET_DOWNLOAD, ruleSet, force),
-    isCached: (tag: string) => ipcRenderer.invoke(IPC_CHANNELS.RULESET_IS_CACHED, tag),
+    list: (): Promise<RuleSet[]> => ipcRenderer.invoke(IPC_CHANNELS.RULESET_LIST),
+    save: (ruleSets: RuleSet[]) => ipcRenderer.invoke(IPC_CHANNELS.RULESET_SAVE, ruleSets),
+    download: (ruleSet: RuleSet, force = false) => ipcRenderer.invoke(IPC_CHANNELS.RULESET_DOWNLOAD, ruleSet, force),
+    isCached: (tag: string): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.RULESET_IS_CACHED, tag),
     fetchHub: () => ipcRenderer.invoke('ruleset:fetch-hub')
   },
 

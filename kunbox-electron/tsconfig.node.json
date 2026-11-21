@@ -1,17 +1,18 @@
 {
   "compilerOptions": {
-    "composite": true,
+    "target": "ES2023",
     "skipLibCheck": true,
     "module": "ESNext",
     "moduleResolution": "bundler",
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
     "types": ["node"],
-    "baseUrl": ".",
     "paths": {
-      "@main/*": ["src/main/*"],
-      "@shared/*": ["src/shared/*"]
+      "@main/*": ["./src/main/*"],
+      "@shared/*": ["./src/shared/*"]
     }
   },
   "include": [

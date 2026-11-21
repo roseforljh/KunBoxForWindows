@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
+import { createJSONStorage, persist } from 'zustand/middleware'
 import type { SingBoxOutbound, NodeWithProfile, NodeLatencyResult, NodeLatencyStatus, HealthStatus } from '@shared/types'
 
 interface NodeItem extends SingBoxOutbound {
@@ -435,6 +435,7 @@ export const useNodesStore = create<NodesState>()(
     }),
     {
       name: 'kunbox-nodes-store',
+      storage: createJSONStorage(() => globalThis.localStorage),
       partialize: (state) => ({
         latencyCache: state.latencyCache,
         activeNodeTag: state.activeNodeTag,

@@ -1,8 +1,13 @@
-import { app, BrowserWindow, shell, ipcMain } from 'electron'
+import { app, BrowserWindow, dialog, shell, ipcMain } from 'electron'
 import { join } from 'path'
 import { existsSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import log from 'electron-log'
+import { getDataDir } from './utils/paths'
+import { waitForAdminRestart } from './utils/windowsAdmin'
+
+// 将 Electron userData 统一指向 D:\KunBoxData（无 D 盘时回退 %APPDATA%\KunBox）
+app.setPath('userData', getDataDir())
 import { initSingBoxHandlers, cleanupBeforeQuit } from './ipc/singbox'
 import { initProfileHandlers, stopTempSingbox } from './ipc/profiles'
 import { initSettingsHandlers } from './ipc/settings'
@@ -16,13 +21,19 @@ import { createTray, destroyTray, updateTrayStatus } from './tray'
 let mainWindow: BrowserWindow | null = null
 
 function getIconPath(): string {
-  const devPath = join(__dirname, '../../build/icon.png')
+  // Windows 优先使用多尺寸 icon.ico（含 16/24/32/48/64/256），高分屏下由系统原生匹配清晰尺寸
+  const iconFile = process.platform === 'win32' ? 'icon.ico' : 'icon.png'
+  const devPath = join(__dirname, '../../build', iconFile)
   if (is.dev && existsSync(devPath)) {
     return devPath
   }
-  const prodPath = join(process.resourcesPath || '', 'icon.png')
+  const prodPath = join(process.resourcesPath || '', iconFile)
   if (existsSync(prodPath)) {
     return prodPath
+  }
+  const fallbackProdPng = join(process.resourcesPath || '', 'icon.png')
+  if (existsSync(fallbackProdPng)) {
+    return fallbackProdPng
   }
   return devPath
 }
@@ -76,6 +87,14 @@ function createWindow(): void {
   })
 
   createTray(mainWindow, iconPath)
+}
+
+try {
+  await waitForAdminRestart()
+} catch (error) {
+  log.error('等待旧 KunBox 进程退出失败', error)
+  dialog.showErrorBox('KunBox', '旧进程未退出，请先从托盘退出 KunBox，再以管理员身份打开。')
+  app.exit(1)
 }
 
 const gotTheLock = app.requestSingleInstanceLock()

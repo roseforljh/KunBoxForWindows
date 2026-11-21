@@ -1,10 +1,11 @@
+extends: ./electron-builder.checksums.mjs
 appId: com.kunbox.app
 productName: KunBox
 copyright: Copyright © 2024-2026 KunBox
 
 directories:
   buildResources: build
-  output: dist
+  output: release
 
 files:
   - "out/**/*"
@@ -17,19 +18,13 @@ extraResources:
       - "**/*"
   - from: "build/icon.png"
     to: "icon.png"
+  - from: "build/icon.ico"
+    to: "icon.ico"
 
 win:
   icon: build/icon.ico
-  sign: null
-  signAndEditExecutable: false
   target:
-    - target: dir
-      arch:
-        - x64
     - target: nsis
-      arch:
-        - x64
-    - target: portable
       arch:
         - x64
   artifactName: "${productName}-${version}-${arch}.${ext}"
@@ -43,6 +38,7 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: KunBox
+  include: build/installer.nsh
   installerIcon: build/icon.ico
   uninstallerIcon: build/icon.ico
   installerHeaderIcon: build/icon.ico

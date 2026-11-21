@@ -4,7 +4,9 @@ import { loadRuleSetsFromFile, isRuleSetLocal, getRuleSetLocalPath, type RuleSet
 import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 
-const DATA_DIR = join(process.env.APPDATA || '', 'KunBox')
+import { getDataDir } from './paths'
+
+const DATA_DIR = getDataDir()
 
 interface GeneratorInput {
   settings?: AppSettings
@@ -210,14 +212,11 @@ function buildInbounds(settings: AppSettings): object[] {
       type: 'tun',
       tag: 'tun-in',
       interface_name: 'kunbox-tun',
-      inet4_address: ['172.19.0.1/30'],
-      inet6_address: ['fdfe:dcba:9876::1/126'],
+      address: ['172.19.0.1/30', 'fdfe:dcba:9876::1/126'],
       mtu: 9000,
       auto_route: true,
       strict_route: settings.tunStrictRoute ?? true,
-      stack: settings.tunStack || 'system',
-      sniff: true,
-      sniff_override_destination: false
+      stack: settings.tunStack || 'system'
     })
   }
 
@@ -294,7 +293,12 @@ function kernelOutbound(node: SingBoxOutbound): object {
   return Object.fromEntries(Object.entries(node).filter(([key]) => !key.startsWith('x_')))
 }
 
-function buildRouteConfig(settings: AppSettings, ruleSets: RuleSetItem[], domainRules: DomainRule[]): object {  const rules: object[] = []
+function buildRouteConfig(settings: AppSettings, ruleSets: RuleSetItem[], domainRules: DomainRule[]): object {
+  const rules: object[] = []
+
+  if (settings.tunEnabled) {
+    rules.push({ inbound: ['tun-in'], action: 'sniff' })
+  }
 
   rules.push({
     protocol: ['dns'],

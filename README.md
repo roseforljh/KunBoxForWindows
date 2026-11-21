@@ -21,13 +21,13 @@
 
 ## Tech Stack
 
-- **Framework**: Electron 33.x + Node.js
-- **Packaging**: electron-builder
-- **Frontend**: React 18 + TypeScript + Vite + electron-vite
-- **Styling**: Tailwind CSS
+- **Framework**: Electron 45.x + Node.js 22+
+- **Packaging**: electron-builder 26.x
+- **Frontend**: React 19 + TypeScript 6 + Vite 8 + electron-vite 6
+- **Styling**: Tailwind CSS 4 (@tailwindcss/vite)
 - **UI Components**: Radix UI
-- **State Management**: Zustand
-- **Animations**: Framer Motion
+- **State Management**: Zustand 5
+- **Animations**: Framer Motion 14
 
 ## Project Structure
 
@@ -101,7 +101,7 @@ npm run lint            # ESLint check
 
 ## Configuration
 
-Settings are stored in `%APPDATA%\KunBox` and include:
+Settings and runtime data are stored in `D:\KunBoxData` (fallback `%APPDATA%\KunBox` when drive `D:` is unavailable) and include:
 
 - **Proxy Settings**: HTTP/SOCKS port, LAN access
 - **TUN Settings**: Enable TUN mode, network stack selection

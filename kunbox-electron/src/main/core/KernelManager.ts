@@ -1157,7 +1157,7 @@ export class KernelManager extends EventEmitter {
         try {
           renameSync(backup, current)
         } catch (restoreErr) {
-          throw new Error(`安装失败: ${String(err)}；恢复失败: ${String(restoreErr)}`)
+          throw new Error(`安装失败: ${String(err)}；恢复失败: ${String(restoreErr)}`, { cause: restoreErr })
         }
       }
       if (existsSync(retired)) {
@@ -1291,7 +1291,8 @@ export class KernelManager extends EventEmitter {
           const restored = await this.lifecycleHooks.restartAfterInstall?.()
           if (!restored?.success) {
             throw new Error(
-              `安装失败: ${String(replaceErr)}；恢复旧内核连接失败: ${restored?.error || '未知错误'}`
+              `安装失败: ${String(replaceErr)}；恢复旧内核连接失败: ${restored?.error || '未知错误'}`,
+              { cause: replaceErr }
             )
           }
         }
@@ -1310,7 +1311,8 @@ export class KernelManager extends EventEmitter {
             await this.rollbackRayboxDirectory()
           } catch (rollbackErr) {
             throw new Error(
-              `${started?.error || '新内核启动失败'}；旧内核恢复失败: ${String(rollbackErr)}`
+              `${started?.error || '新内核启动失败'}；旧内核恢复失败: ${String(rollbackErr)}`,
+              { cause: rollbackErr }
             )
           }
           throw new Error(

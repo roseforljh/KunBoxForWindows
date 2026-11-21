@@ -5,6 +5,7 @@ LinJun/
 node_modules/
 dist/
 out/
+release/
 *.log
 *.tsbuildinfo
 .env

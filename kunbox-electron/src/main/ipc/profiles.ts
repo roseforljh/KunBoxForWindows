@@ -1,23 +1,21 @@
 import { ipcMain } from 'electron'
 import { join } from 'path'
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { randomUUID } from 'crypto'
-import { spawn, ChildProcess } from 'child_process'
+import type { ChildProcess } from 'child_process'
 import axios from 'axios'
-import yaml from 'js-yaml'
+import { load as loadYaml } from 'js-yaml'
 import log from 'electron-log'
 import { IPC_CHANNELS } from '../../shared/constants'
 import type { Profile, SingBoxOutbound, NodeWithProfile, CustomProfileNodeSelection, NodeLatencyResult } from '../../shared/types'
-import { getSingBoxPath } from './singbox'
 import { parseShareLink } from './shareLink'
+import { getDataDir } from '../utils/paths'
 
-const DATA_DIR = join(process.env.APPDATA || '', 'KunBox')
+const DATA_DIR = getDataDir()
 const PROFILES_FILE = join(DATA_DIR, 'profiles.json')
 const CONFIGS_DIR = join(DATA_DIR, 'configs')
-const TEMP_TEST_DIR = join(DATA_DIR, 'temp_test')
 
 let tempSingboxProcess: ChildProcess | null = null
-const tempSingboxPort = 19090
 
 interface ProfilesData {
   profiles: Profile[]
@@ -106,7 +104,7 @@ function parseSubscriptionContent(content: string | object): SingBoxOutbound[] {
   }
 
   try {
-    const yamlDoc = yaml.load(str) as any
+    const yamlDoc = loadYaml(str) as any
     if (yamlDoc && yamlDoc.proxies && Array.isArray(yamlDoc.proxies)) {
       return parseClashProxies(yamlDoc.proxies)
     }
@@ -115,7 +113,7 @@ function parseSubscriptionContent(content: string | object): SingBoxOutbound[] {
   }
 
   // Base64 or plain links
-  let decoded = str
+  let decoded: string
   try {
     decoded = Buffer.from(str.replace(/\s+/g, ''), 'base64').toString('utf-8')
   } catch {

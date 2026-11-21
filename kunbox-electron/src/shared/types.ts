@@ -213,11 +213,12 @@ export interface RuleSet {
   name: string
   type: 'remote' | 'local'
   format: 'source' | 'binary'
-  url?: string
+  url: string
   path?: string
   enabled: boolean
-  outboundMode: 'direct' | 'proxy' | 'block'
-  isBuiltIn?: boolean
+  outboundMode: OutboundMode
+  outboundValue?: string
+  isBuiltIn: boolean
 }
 
 export type DomainRuleType = 'domain' | 'domain_suffix' | 'domain_keyword'

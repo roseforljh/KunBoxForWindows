@@ -1,8 +1,6 @@
 import { ipcMain, BrowserWindow, app } from 'electron'
-import { exec } from 'child_process'
-import { promisify } from 'util'
-
-const execAsync = promisify(exec)
+import log from 'electron-log'
+import { isRunningAsAdmin, launchAsAdmin } from '../utils/windowsAdmin'
 
 export function initWindowHandlers(getMainWindow: () => BrowserWindow | null): void {
   ipcMain.handle('window:minimize', () => {
@@ -34,27 +32,17 @@ export function initWindowHandlers(getMainWindow: () => BrowserWindow | null): v
     return true
   })
 
-  ipcMain.handle('window:is-admin', async (): Promise<boolean> => {
-    try {
-      await execAsync('net session', { windowsHide: true })
-      return true
-    } catch {
-      return false
-    }
-  })
+  ipcMain.handle('window:is-admin', isRunningAsAdmin)
 
   ipcMain.handle('window:restart-as-admin', async () => {
-    const exePath = process.execPath
-    const args = process.argv.slice(1).map(arg => `"${arg}"`).join(' ')
-    const ps = `Start-Process -FilePath "${exePath}" -ArgumentList '${args}' -Verb RunAs`
-
     try {
-      await execAsync(`powershell -Command "${ps}"`, { windowsHide: true })
-      ;(app as any).isQuitting = true
+      await launchAsAdmin(process.env.PORTABLE_EXECUTABLE_FILE || process.execPath,
+        app.isPackaged ? undefined : app.getAppPath())
       app.quit()
       return true
-    } catch (err: any) {
-      throw new Error(`管理员重启失败: ${err?.message || String(err)}`)
+    } catch (error) {
+      log.error('管理员重启失败', error)
+      throw new Error('未能以管理员身份重启，请确认 Windows 权限提示后重试', { cause: error })
     }
   })
 }

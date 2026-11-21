@@ -1,4 +1,4 @@
-import { ipcMain, app, shell } from 'electron'
+import { ipcMain, shell } from 'electron'
 import { join } from 'path'
 import { existsSync, mkdirSync } from 'fs'
 import log from 'electron-log'
@@ -7,17 +7,18 @@ import { KernelManager, RAYBOX_REPO_URL } from '../core/KernelManager'
 import { getServiceInstance, generateAndSaveConfig } from './singbox'
 import { stopTempSingbox } from './profiles'
 import { settingsStore } from './settings'
+import { getDataDir } from '../utils/paths'
 
 let kernelManager: KernelManager | null = null
 
 export function getKernelManager(): KernelManager {
   if (!kernelManager) {
-    const userDataPath = app.getPath('userData')
-    const dataKernelDir = join(userDataPath, 'libs')
+    const dataDir = getDataDir()
+    const dataKernelDir = join(dataDir, 'libs')
     const bundleKernelDir = is.dev
       ? join(__dirname, '../../resources/libs')
       : join(process.resourcesPath, 'resources/libs')
-    const cacheDir = join(userDataPath, 'KunBox', 'cache')
+    const cacheDir = join(dataDir, 'cache')
 
     kernelManager = new KernelManager({
       dataKernelDir,
@@ -57,7 +58,7 @@ export function getKernelManager(): KernelManager {
             return { success: false, error: genResult.error || '生成配置失败' }
           }
           const settings = settingsStore.get('settings')
-          const dataDir = join(process.env.APPDATA || '', 'KunBox')
+          const dataDir = getDataDir()
           service.updateConfig({
             core: {
               execPath,

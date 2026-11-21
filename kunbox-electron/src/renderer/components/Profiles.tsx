@@ -29,10 +29,6 @@ export default function Profiles() {
 
   const [updatingIds, setUpdatingIds] = useState<Set<string>>(new Set())
 
-  useEffect(() => {
-    loadProfiles()
-  }, [])
-
   const openAddModal = async () => {
     setAddModalOpen(true)
     setIsLoadingAllNodes(true)
@@ -74,6 +70,10 @@ export default function Profiles() {
       }
     }
   }
+
+  useEffect(() => {
+    loadProfiles()
+  }, [])
 
   const handleImportUrl = async (name: string, url: string, settings: { autoUpdateInterval: number; dnsPreResolve: boolean; dnsServer: string | null }) => {
     try {

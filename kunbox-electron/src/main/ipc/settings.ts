@@ -3,9 +3,11 @@ import Store from 'electron-store'
 import * as net from 'net'
 import { IPC_CHANNELS } from '../../shared/constants'
 import { DEFAULT_SETTINGS, type AppSettings } from '../../shared/types'
+import { getDataDir } from '../utils/paths'
 
 const store = new Store<{ settings: AppSettings }>({
   name: 'settings',
+  cwd: getDataDir(),
   defaults: {
     settings: DEFAULT_SETTINGS
   }

@@ -5,7 +5,9 @@ import https from 'https'
 import http from 'http'
 import type { RuleSet } from '../../shared/types'
 
-const DATA_DIR = join(process.env.APPDATA || '', 'KunBox')
+import { getDataDir } from './paths'
+
+const DATA_DIR = getDataDir()
 const RULESETS_DIR = join(DATA_DIR, 'rulesets')
 
 export interface RuleSetItem extends RuleSet {

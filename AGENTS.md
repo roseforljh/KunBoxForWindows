@@ -35,13 +35,13 @@ KunBoxForWindows/
 
 ## 技术栈
 
-- **框架**: Electron 33.x + Node.js
-- **打包**: electron-builder
-- **前端**: React 18 + TypeScript + Vite + electron-vite
-- **样式**: Tailwind CSS
+- **框架**: Electron 45.x + Node.js 22+
+- **打包**: electron-builder 26.x
+- **前端**: React 19 + TypeScript 6 + Vite 8 + electron-vite 6
+- **样式**: Tailwind CSS 4 (@tailwindcss/vite)
 - **组件库**: Radix UI
-- **状态管理**: Zustand
-- **动画**: Framer Motion
+- **状态管理**: Zustand 5
+- **动画**: Framer Motion 14
 
 ## 常用命令
 

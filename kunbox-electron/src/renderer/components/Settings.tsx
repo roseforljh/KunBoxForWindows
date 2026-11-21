@@ -28,6 +28,7 @@ export default function Settings() {
   const toast = useToast()
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [saving, setSaving] = useState(false)
+  const [restartingAsAdmin, setRestartingAsAdmin] = useState(false)
   const [isAdmin, setIsAdmin] = useState(false)
   const [activeTab, setActiveTab] = useState<SettingsTab>(() => {
     const savedTab = localStorage.getItem('kunbox-settings-tab') as SettingsTab | null
@@ -47,6 +48,19 @@ export default function Settings() {
       console.error('Failed to check admin status:', e)
     })
   }, [])
+
+  const restartAsAdmin = async () => {
+    setRestartingAsAdmin(true)
+    try {
+      await window.api.window.restartAsAdmin()
+      return true
+    } catch (error) {
+      console.error('Failed to restart as admin:', error)
+      toast.error('管理员重启失败，请确认 Windows 权限提示后重试')
+      setRestartingAsAdmin(false)
+      return false
+    }
+  }
 
   const updateSetting = async <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
     if (!settings) return
@@ -72,14 +86,9 @@ export default function Settings() {
         window.dispatchEvent(new CustomEvent('runtime-logs-change', { detail: { enabled: value } }))
       }
 
-      if (key === 'requireAdmin' && value === true && !isAdmin) {
-        try {
-          await window.api.window.restartAsAdmin()
-        } catch (e) {
-          setSettings(prevSettings)
-          await window.api.settings.set({ requireAdmin: false })
-          console.error('Failed to restart as admin, rolled back requireAdmin:', e)
-        }
+      if (key === 'requireAdmin' && value === true && !isAdmin && !(await restartAsAdmin())) {
+        setSettings(prevSettings)
+        await window.api.settings.set({ requireAdmin: false })
       }
     } catch (e) {
       setSettings(prevSettings)
@@ -271,11 +280,12 @@ export default function Settings() {
                         </div>
                       </div>
                       <button
-                        onClick={() => window.api.window.restartAsAdmin()}
-                        className="flex-shrink-0 px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-medium text-sm flex items-center gap-2 transition-colors"
+                        onClick={restartAsAdmin}
+                        disabled={restartingAsAdmin}
+                        className="flex-shrink-0 px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-medium text-sm flex items-center gap-2 transition-colors disabled:opacity-50"
                       >
-                        <RotateCcw className="w-4 h-4" />
-                        以管理员身份重启
+                        <RotateCcw className={`w-4 h-4 ${restartingAsAdmin ? 'animate-spin' : ''}`} />
+                        {restartingAsAdmin ? '等待管理员确认…' : '以管理员身份重启'}
                       </button>
                     </div>
                   </div>
@@ -346,11 +356,12 @@ export default function Settings() {
                     </div>
                     {!isAdmin && (
                       <button
-                        onClick={() => window.api.window.restartAsAdmin()}
-                        className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-xs font-medium transition-colors flex items-center gap-1.5"
+                        onClick={restartAsAdmin}
+                        disabled={restartingAsAdmin}
+                        className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-xs font-medium transition-colors flex items-center gap-1.5 disabled:opacity-50"
                       >
-                        <RotateCcw className="w-3 h-3" />
-                        以管理员身份重启
+                        <RotateCcw className={`w-3 h-3 ${restartingAsAdmin ? 'animate-spin' : ''}`} />
+                        {restartingAsAdmin ? '等待管理员确认…' : '以管理员身份重启'}
                       </button>
                     )}
                   </div>

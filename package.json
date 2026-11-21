@@ -1,0 +1,14 @@
+{
+  "name": "kunbox-windows",
+  "private": true,
+  "scripts": {
+    "dev": "bun run --cwd kunbox-electron dev",
+    "build": "bun run --cwd kunbox-electron build",
+    "build:release": "node scripts/build-release.mjs",
+    "build:win": "bun run --cwd kunbox-electron build:win",
+    "build:portable": "bun run --cwd kunbox-electron build:portable",
+    "typecheck": "bun run --cwd kunbox-electron typecheck",
+    "lint": "bun run --cwd kunbox-electron lint",
+    "test": "bun run --cwd kunbox-electron test"
+  }
+}

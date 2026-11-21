@@ -11,7 +11,9 @@ import { settingsStore } from './settings'
 import { VpnService, VpnServiceConfig, ServiceState } from '../core'
 import { getKernelManager } from './kernel'
 
-const DATA_DIR = join(process.env.APPDATA || '', 'KunBox')
+import { getDataDir } from '../utils/paths'
+
+const DATA_DIR = getDataDir()
 const CONFIG_DIR = DATA_DIR
 const PROFILES_FILE = join(DATA_DIR, 'profiles.json')
 const CONFIGS_DIR = join(DATA_DIR, 'configs')

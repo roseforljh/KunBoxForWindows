@@ -1,5 +1,6 @@
-import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
+import { defineConfig } from 'electron-vite'
 import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
 import { readFileSync } from 'fs'
 import { resolve } from 'path'
 
@@ -11,7 +12,7 @@ const define = {
 export default defineConfig({
   main: {
     define,
-    plugins: [externalizeDepsPlugin()],
+    // electron-vite 6 默认开启 build.externalizeDeps，无需再使用废弃的 externalizeDepsPlugin
     resolve: {
       alias: {
         '@main': resolve('src/main'),
@@ -21,7 +22,6 @@ export default defineConfig({
   },
   preload: {
     define,
-    plugins: [externalizeDepsPlugin()],
     resolve: {
       alias: {
         '@shared': resolve('src/shared')
@@ -30,7 +30,7 @@ export default defineConfig({
   },
   renderer: {
     define,
-    plugins: [react()],
+    plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
         '@': resolve('src/renderer'),
