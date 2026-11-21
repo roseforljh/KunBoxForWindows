@@ -6,10 +6,13 @@
 !macroend
 
 !macro customInit
-  ; 若未通过 /D 指定安装路径且存在 D 盘，默认安装并覆盖到 D:\KunBox
+  ; 若未通过 /D 指定安装路径且尚无历史安装记录，在存在 D 盘时默认安装到 D:\KunBox；已有安装记录则保留原安装路径直接覆盖
   !insertmacro GetDParameter $R0
   ${If} $R0 == ""
-    IfFileExists "D:\*.*" 0 +2
-      StrCpy $INSTDIR "D:\KunBox"
+    ReadRegStr $R1 HKCU "${INSTALL_REGISTRY_KEY}" InstallLocation
+    ${If} $R1 == ""
+      IfFileExists "D:\*.*" 0 +2
+        StrCpy $INSTDIR "D:\KunBox"
+    ${EndIf}
   ${EndIf}
 !macroend

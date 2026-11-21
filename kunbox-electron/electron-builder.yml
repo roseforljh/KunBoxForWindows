@@ -49,6 +49,6 @@ portable:
 
 publish:
   provider: github
-  owner: kunbox
-  repo: kunbox-windows
+  owner: roseforljh
+  repo: KunBoxForWindows
   releaseType: release
