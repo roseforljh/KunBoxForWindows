@@ -1,4 +1,4 @@
-type API = import('@shared/tauri-api').API
+type API = import('../../preload/index').API
 
 declare const __APP_VERSION__: string
 

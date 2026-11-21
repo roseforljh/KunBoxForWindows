@@ -1,5 +1,7 @@
+declare const __APP_VERSION__: string | undefined
+
 export const APP_NAME = 'KunBox'
-export const APP_VERSION = __APP_VERSION__
+export const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.24'
 
 export const IPC_CHANNELS = {
   SINGBOX_START: 'singbox:start',

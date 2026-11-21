@@ -1,28 +1,22 @@
 # Downloaded RayBox assets; the trusted lock remains tracked
-/src-tauri/resources/libs/raybox/
+/kunbox-electron/resources/libs/raybox/
 
 LinJun/
 node_modules/
 dist/
 out/
-/target/
-src-tauri/target-alt-release/
 *.log
+*.tsbuildinfo
 .env
 .DS_Store
 core/dist/
 CLAUDE.md
 .claude/settings.local.json
 
-tauri-signing.local.ps1
-tauri-private.key
-
 tmp-sb113/
 .gstack/
 .codex/
+.playwright-mcp/
 \.sisyphus
 
-# Local test installers and pre-cleanup archives
-/release-artifacts/*/node-preservation-*/
-/release-artifacts/*/log-retention-*/
 /graphify-out

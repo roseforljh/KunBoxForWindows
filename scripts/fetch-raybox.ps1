@@ -6,11 +6,11 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
-    $OutputDirectory = Join-Path $PSScriptRoot "..\src-tauri\resources\libs\raybox"
+    $OutputDirectory = Join-Path $PSScriptRoot "..\kunbox-electron\resources\libs\raybox"
 }
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$lockPath = Join-Path $root "src-tauri\resources\libs\raybox-windows.lock.json"
+$lockPath = Join-Path $root "kunbox-electron\resources\libs\raybox-windows.lock.json"
 $lock = Get-Content $lockPath -Raw | ConvertFrom-Json
 $legacyIdentity = $lock.commit -cmatch '^[0-9a-f]{40}$' -and
     $lock.tag -ceq "windows-$($lock.commit)" -and $lock.version -ceq "1.0.0-$($lock.commit.Substring(0, 12))"

@@ -4,64 +4,29 @@ title KunBox Build
 
 echo.
 echo ================================
-echo     KunBox Build Script
+echo     KunBox Build Script (Electron)
 echo ================================
 echo.
 
-set /p choice="Select build mode [0=Release, 1=Debug]: "
+set /p choice="Select build mode [0=Installer (Release), 1=Portable]: "
 
 if "%choice%"=="1" (
-    echo Building DEBUG version...
-    set BUILD_MODE=debug
+    echo Building Portable version...
+    set BUILD_CMD=build:portable
 ) else (
-    echo Building RELEASE version...
-    set BUILD_MODE=release
+    echo Building Installer version...
+    set BUILD_CMD=build:win
 )
 
 echo.
-echo [1/2] Building frontend...
+echo Building KunBox with Electron...
 cd /d "%~dp0kunbox-electron"
-call npm run build
+call npm run %BUILD_CMD%
 if %errorlevel% neq 0 (
-    echo Frontend build failed!
+    echo Build failed!
     pause
     exit /b 1
 )
-echo Frontend build completed.
-
-echo.
-echo [2/2] Building backend (Tauri)...
-cd /d "%~dp0src-tauri"
-
-if "%BUILD_MODE%"=="debug" (
-    cargo tauri build --debug
-) else (
-    cargo tauri build
-)
-
-if %errorlevel% neq 0 (
-    echo Backend build failed!
-    pause
-    exit /b 1
-)
-
+echo Build completed successfully!
 cd /d "%~dp0"
-
-echo.
-echo ================================
-echo     Build completed!
-echo ================================
-echo.
-
-if "%BUILD_MODE%"=="debug" (
-    echo Output: %~dp0src-tauri\target\debug
-) else (
-    echo Output directory: %~dp0src-tauri\target\release\bundle
-    echo.
-    echo Installer packages:
-    echo   MSI:  %~dp0src-tauri\target\release\bundle\msi\
-    echo   NSIS: %~dp0src-tauri\target\release\bundle\nsis\
-)
-
-echo.
 pause

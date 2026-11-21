@@ -1,4 +1,4 @@
-import type { API } from '../../shared/tauri-api'
+import type { API } from '../../preload/index'
 import type { HealthEvent, HealthEventKind, HealthStatus } from '../../shared/types'
 import { HEALTH_EVENT_TOAST_TYPES } from '../components/Dashboard'
 import { useNodesStore } from './nodesStore'

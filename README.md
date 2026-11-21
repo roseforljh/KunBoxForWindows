@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  A modern, cross-platform sing-box proxy client built with Tauri, React, and TypeScript.
+  A modern, cross-platform sing-box proxy client built with Electron, React, and TypeScript.
 </p>
 
 ## Features
@@ -21,8 +21,9 @@
 
 ## Tech Stack
 
-- **Framework**: Tauri 2.x (Rust backend)
-- **Frontend**: React 18 + TypeScript + Vite
+- **Framework**: Electron 33.x + Node.js
+- **Packaging**: electron-builder
+- **Frontend**: React 18 + TypeScript + Vite + electron-vite
 - **Styling**: Tailwind CSS
 - **UI Components**: Radix UI
 - **State Management**: Zustand
@@ -32,54 +33,43 @@
 
 ```
 KunBox-Windows/
-├── kunbox-electron/        # Frontend (React + Vite)
+├── kunbox-electron/        # Core App (Electron + React)
 │   ├── src/
+│   │   ├── main/           # Electron main process (sing-box, IPC, system proxy, kernel)
+│   │   ├── preload/        # Preload script (window.api bridge)
 │   │   ├── renderer/       # React frontend
 │   │   │   ├── components/ # UI components
 │   │   │   ├── stores/     # Zustand stores
 │   │   │   └── styles/     # Global styles
-│   │   └── shared/         # Shared types
+│   │   └── shared/         # Shared types and constants
+│   ├── resources/          # Kernel resources and lock files
+│   ├── electron.vite.config.ts
+│   ├── electron-builder.yml
 │   └── package.json
-├── src-tauri/              # Backend (Rust + Tauri)
-│   ├── src/
-│   │   ├── commands/       # Tauri commands
-│   │   ├── state.rs        # App state
-│   │   ├── types.rs        # Type definitions
-│   │   └── lib.rs          # Entry point
-│   └── Cargo.toml
-└── build.ps1               # Build script
+├── scripts/                # Build and kernel helper scripts
+├── build.bat               # Windows batch build script
+└── build.ps1               # PowerShell build script
 ```
 
 ## Getting Started
 
 ### Prerequisites
 
-- Node.js 18+
-- Rust 1.77.2+
-- npm or yarn
+- Node.js 20+
+- npm
 
 ### Installation
 
 ```bash
-# Install frontend dependencies
 cd kunbox-electron
 npm install
-
-# Check Rust backend
-cd ../src-tauri
-cargo check
 ```
 
 ### Development
 
 ```bash
-# Terminal 1: Start frontend dev server
 cd kunbox-electron
 npm run dev
-
-# Terminal 2: Start Tauri dev mode
-cd src-tauri
-cargo tauri dev
 ```
 
 ### Build
@@ -87,6 +77,16 @@ cargo tauri dev
 ```powershell
 # Build for production (from project root)
 .\build.ps1
+```
+
+Or inside `kunbox-electron/`:
+
+```powershell
+npm run build           # Build main, preload, and renderer
+npm run build:win       # Package Windows NSIS installer and portable build
+npm run build:portable  # Package Windows portable build
+npm run typecheck       # TypeScript type check
+npm run lint            # ESLint check
 ```
 
 ## Routing Modes
@@ -117,4 +117,4 @@ MIT License
 - [sing-box](https://github.com/SagerNet/sing-box) - The universal proxy platform
 - [sing-geosite](https://github.com/SagerNet/sing-geosite) - GeoSite rule sets
 - [sing-geoip](https://github.com/SagerNet/sing-geoip) - GeoIP rule sets
-- [Tauri](https://tauri.app/) - Build smaller, faster, and more secure desktop applications
+- [Electron](https://www.electronjs.org/) - Cross-platform desktop applications with web technologies

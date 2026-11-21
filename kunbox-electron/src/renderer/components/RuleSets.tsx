@@ -405,16 +405,13 @@ export default function RuleSets() {
     setHubLoading(true)
     setHubError(null)
     try {
-      // Detect Tauri environment
-      const isTauri = '__TAURI_INTERNALS__' in window
-      
       let data: { tree: HubTreeEntry[] }
       
-      if (isTauri && window.api.ruleset.fetchHub) {
-        // Use Tauri backend API (proxy support)
+      if (window.api.ruleset.fetchHub) {
+        // 优先走 Electron 主进程拉取，支持代理配置
         data = await window.api.ruleset.fetchHub()
       } else {
-        // Electron: use direct fetch
+        // 浏览器独立预览回退直接 fetch
         const response = await fetch(
           'https://api.github.com/repos/SagerNet/sing-geosite/git/trees/rule-set?recursive=1',
           {

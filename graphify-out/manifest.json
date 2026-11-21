@@ -1,7 +1,7 @@
 {
   "build.ps1": {
-    "mtime": 1794130630.1867886,
-    "seen": 1794131113.849226,
+    "mtime": 1794188969.0437202,
+    "seen": 1794207583.0915785,
     "ast_hash": "2dbef9c3814fc4cb796b93b88ed8fc71",
     "semantic_hash": ""
   },
@@ -24,8 +24,8 @@
     "semantic_hash": ""
   },
   "kunbox-electron/src/renderer/App.tsx": {
-    "mtime": 1794151273.377934,
-    "seen": 1794151956.9517238,
+    "mtime": 1794188969.0524192,
+    "seen": 1794207583.0915785,
     "ast_hash": "2ccc595900d8af49edd63a17bf4b4562",
     "semantic_hash": ""
   },
@@ -60,9 +60,9 @@
     "semantic_hash": ""
   },
   "kunbox-electron/src/renderer/components/KernelSettings.tsx": {
-    "mtime": 1794151315.281225,
-    "seen": 1794151956.9517238,
-    "ast_hash": "83d26493490d5152c1b1f8f54feb19e1",
+    "mtime": 1794207654.7903774,
+    "seen": 1794207695.8979878,
+    "ast_hash": "5633b71dcccbf85b93cd6d07794fe81a",
     "semantic_hash": ""
   },
   "kunbox-electron/src/renderer/components/Logo.tsx": {
@@ -192,14 +192,14 @@
     "semantic_hash": ""
   },
   "kunbox-electron/src/shared/mock-api.ts": {
-    "mtime": 1794151456.8882852,
-    "seen": 1794151956.9517238,
-    "ast_hash": "61b991ecc32315ce0e23eb4e99ad1fca",
+    "mtime": 1794206624.6027284,
+    "seen": 1794207583.0997646,
+    "ast_hash": "6be5d38c6448d86a784a006efabe0c7a",
     "semantic_hash": ""
   },
   "kunbox-electron/src/shared/tauri-api.ts": {
-    "mtime": 1794151423.763553,
-    "seen": 1794151956.9517238,
+    "mtime": 1794188969.0603144,
+    "seen": 1794207583.0997646,
     "ast_hash": "67df3ac506d9396b228b83d14c0cd506",
     "semantic_hash": ""
   },
@@ -216,9 +216,9 @@
     "semantic_hash": ""
   },
   "src-tauri/src/lib.rs": {
-    "mtime": 1794151402.9788084,
-    "seen": 1794151956.9517238,
-    "ast_hash": "6726bfb0fc6b4d679853f73753ef5e80",
+    "mtime": 1794188969.0641682,
+    "seen": 1794207583.1058147,
+    "ast_hash": "27a37dba4c3134d1eec4b913c586dab0",
     "semantic_hash": ""
   },
   "src-tauri/src/main.rs": {
@@ -228,9 +228,9 @@
     "semantic_hash": ""
   },
   "src-tauri/src/state.rs": {
-    "mtime": 1787716782.8136227,
-    "seen": 1793921493.6731508,
-    "ast_hash": "cb8d920d244521517d89b9685bb50c39",
+    "mtime": 1794191405.6256201,
+    "seen": 1794207583.1058147,
+    "ast_hash": "4d3ef251a9aeb40668b99676901a4a49",
     "semantic_hash": ""
   },
   "src-tauri/src/types.rs": {
@@ -240,15 +240,15 @@
     "semantic_hash": ""
   },
   "src-tauri/src/commands/kernel.rs": {
-    "mtime": 1794152118.8657012,
-    "seen": 1794153123.5163343,
-    "ast_hash": "1505556638ca4de7a8a3416b0ade18f7",
+    "mtime": 1794207285.6827624,
+    "seen": 1794207583.1058147,
+    "ast_hash": "9a00ba86419bb838179e5b3ee58bb259",
     "semantic_hash": ""
   },
   "src-tauri/src/commands/mod.rs": {
-    "mtime": 1794151384.4254217,
-    "seen": 1794151956.9517238,
-    "ast_hash": "4a833be6e21922faf33d2751522bd9d6",
+    "mtime": 1794188969.0603144,
+    "seen": 1794207583.1058147,
+    "ast_hash": "872dd94d1f62972be599282a71d3f60f",
     "semantic_hash": ""
   },
   "src-tauri/src/commands/profiles.rs": {
@@ -276,9 +276,9 @@
     "semantic_hash": ""
   },
   "src-tauri/src/commands/singbox.rs": {
-    "mtime": 1794182438.3285744,
-    "seen": 1794188703.5518985,
-    "ast_hash": "334be1f5cb1666577d3f165cee8da746",
+    "mtime": 1794205871.2854443,
+    "seen": 1794207583.1058147,
+    "ast_hash": "2e38e471387a5c104927321f5b290ae3",
     "semantic_hash": ""
   },
   "src-tauri/src/commands/updater.rs": {
@@ -612,8 +612,8 @@
     "semantic_hash": ""
   },
   "kunbox-electron/package.json": {
-    "mtime": 1794121644.5523977,
-    "seen": 1794121825.9482296,
+    "mtime": 1794188969.0524192,
+    "seen": 1794207583.0915785,
     "ast_hash": "d95268d4addfd7eb401d5ec74b96fda3",
     "semantic_hash": ""
   },
@@ -738,9 +738,9 @@
     "semantic_hash": ""
   },
   "src-tauri/Cargo.toml": {
-    "mtime": 1793917944.5363731,
-    "seen": 1793921493.6731508,
-    "ast_hash": "2ab8fbb8d09e0f93e74a36262a4852c5",
+    "mtime": 1794188969.0603144,
+    "seen": 1794207583.1058147,
+    "ast_hash": "68572da8efbd07d2b648eedc8f09941e",
     "semantic_hash": ""
   },
   "src-tauri/capabilities/default.json": {
@@ -768,9 +768,9 @@
     "semantic_hash": ""
   },
   "src-tauri/src/commands/profiles/latency/config.rs": {
-    "mtime": 1794152507.495654,
-    "seen": 1794153123.517948,
-    "ast_hash": "f8707aeb05d9a1fc70ec36af33c9f11f",
+    "mtime": 1794188969.0603144,
+    "seen": 1794207583.1058147,
+    "ast_hash": "12110a96ed9c1170900b77eb32ee77c1",
     "semantic_hash": ""
   },
   "src-tauri/src/commands/profiles/latency/probe.rs": {
@@ -780,15 +780,15 @@
     "semantic_hash": ""
   },
   "src-tauri/src/commands/profiles/latency/runtime.rs": {
-    "mtime": 1794151637.531948,
-    "seen": 1794151956.9517238,
-    "ast_hash": "06b6d6342cc969876f6fc65a33489e79",
+    "mtime": 1794188969.0641682,
+    "seen": 1794207583.1058147,
+    "ast_hash": "280f27793a353f5f53ca087204e68630",
     "semantic_hash": ""
   },
   "src-tauri/src/commands/profiles/latency/tests.rs": {
-    "mtime": 1794152995.517128,
-    "seen": 1794153123.5185525,
-    "ast_hash": "b3c5b3c9d68a28c1ef7057f331d79f2c",
+    "mtime": 1794188969.0641682,
+    "seen": 1794207583.1058147,
+    "ast_hash": "387e874cc6f3ce496eb6c059e2efcbc1",
     "semantic_hash": ""
   },
   "src-tauri/src/commands/profiles/subscription.rs": {
@@ -828,14 +828,14 @@
     "semantic_hash": ""
   },
   "src-tauri/tauri.conf.json": {
-    "mtime": 1794121668.304668,
-    "seen": 1794121825.9812875,
+    "mtime": 1794188969.0641682,
+    "seen": 1794207583.1058147,
     "ast_hash": "a85f220310c6920cd786f2c5c29c1d18",
     "semantic_hash": ""
   },
   ".github/workflows/release.yml": {
-    "mtime": 1794188681.3198836,
-    "seen": 1794188703.5518985,
+    "mtime": 1794188969.0437202,
+    "seen": 1794207583.1058147,
     "ast_hash": "292b4ce80b84df54a8b5902cb6cbf986",
     "semantic_hash": ""
   },
@@ -876,33 +876,33 @@
     "semantic_hash": ""
   },
   "docs/raybox-unification/BASELINE.md": {
-    "mtime": 1793910816.8559453,
-    "seen": 1793921493.6731508,
-    "ast_hash": "078d601cf8f24bbda13f78bbbaeffb47",
+    "mtime": 1794188969.0437202,
+    "seen": 1794207583.1058147,
+    "ast_hash": "9fa692aa80ab8dc30008b77a0f111643",
     "semantic_hash": ""
   },
   "docs/raybox-unification/CONTRACT.md": {
-    "mtime": 1793910816.8564591,
-    "seen": 1793921493.6731508,
-    "ast_hash": "9c89aec8964d59c8a0dc838372868554",
+    "mtime": 1794207616.387102,
+    "seen": 1794207695.9101458,
+    "ast_hash": "0eb87b0208eff52a746e81ef7b056d71",
     "semantic_hash": ""
   },
   "docs/raybox-unification/PLAN.md": {
-    "mtime": 1793909926.590866,
-    "seen": 1793921493.6731508,
-    "ast_hash": "ab4f89b6fb2132d2a9a33e2ddad5881b",
+    "mtime": 1794188969.0437202,
+    "seen": 1794207583.1058147,
+    "ast_hash": "5859cf8713f77034fcec1908c2db6eb4",
     "semantic_hash": ""
   },
   "docs/raybox-unification/README.md": {
-    "mtime": 1793909178.4163232,
-    "seen": 1793921493.6731508,
-    "ast_hash": "9df895c11398ae5a0705e7bc167c70a4",
+    "mtime": 1794188969.0437202,
+    "seen": 1794207583.1058147,
+    "ast_hash": "d895136b08d94e2bd7c21b62599544ca",
     "semantic_hash": ""
   },
   "docs/raybox-unification/STATUS.md": {
-    "mtime": 1794186121.8653374,
-    "seen": 1794188703.5518985,
-    "ast_hash": "f5c4447cbef8b8910ad9c21e35966205",
+    "mtime": 1794207690.969394,
+    "seen": 1794207695.9101458,
+    "ast_hash": "bbd6c550cf857141731ad655cd420456",
     "semantic_hash": ""
   },
   "kunbox-electron/src/renderer/index.html": {
@@ -912,15 +912,33 @@
     "semantic_hash": ""
   },
   "kunbox-electron/test.mjs": {
-    "mtime": 1794121644.3397994,
-    "seen": 1794121825.9702513,
-    "ast_hash": "b655edde675005fbd387dd96286ed55c",
+    "mtime": 1794188969.0603144,
+    "seen": 1794207583.1058147,
+    "ast_hash": "762b7a1d0ebf3736bc758b1b2e6f234c",
     "semantic_hash": ""
   },
   "scripts/fetch-raybox.ps1": {
-    "mtime": 1794151384.3682573,
-    "seen": 1794151956.9517238,
-    "ast_hash": "3c5e69e760f33b7af0898a8dbd24f0df",
+    "mtime": 1794188969.0603144,
+    "seen": 1794207583.1058147,
+    "ast_hash": "630ef694661635f5cc68d16d0d841949",
+    "semantic_hash": ""
+  },
+  "kunbox-electron/src/renderer/components/kernel-version.test.ts": {
+    "mtime": 1794207518.7104933,
+    "seen": 1794207583.0936542,
+    "ast_hash": "7742c202fbc7f07c809ea434aba56a33",
+    "semantic_hash": ""
+  },
+  "kunbox-electron/src/renderer/components/kernel-version.ts": {
+    "mtime": 1794207518.6462739,
+    "seen": 1794207583.0936542,
+    "ast_hash": "3e41a007094514e640665949ec64c1d9",
+    "semantic_hash": ""
+  },
+  "src-tauri/src/commands/kernel/update.rs": {
+    "mtime": 1794207285.6677537,
+    "seen": 1794207583.1058147,
+    "ast_hash": "045365ca87d0f3b42d98cea087c9ea63",
     "semantic_hash": ""
   }
 }

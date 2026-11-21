@@ -3,7 +3,7 @@
 ## 来源与本地候选
 
 - 唯一仓库 `roseforljh/RayBox-rx`，正式提交必须为40位小写十六进制 SHA。
-- Android、Windows、server 分别使用 `android-<SHA>`、`windows-<SHA>`、`server-<SHA>`；实际 Git ref 解引用后的 commit 必须等于 lock，不接受只有标签名字匹配。
+- 新正式标签分别使用 `android-vX.Y.Z`、`windows-vX.Y.Z`、`server-vX.Y.Z`；兼容已有 `<平台>-<SHA>` 历史工件。实际 Git ref（包括 annotated tag）解引用后的 commit 必须等于 manifest/构建 lock，不接受只有标签名字匹配。
 - 正式构建必须干净；`dirty=true` 候选仅用于本地验证，tag 为空，不消费到正式下载路径。构建前后核对 HEAD、dirty 与源码摘要，发生并发源码变化直接失败。
 - 本地候选独立输出，不覆盖现有工件；新正式 SHA 需要经用户明确授权提交后才能固定，不假造提交，不将 dirty 代码标成旧 HEAD。
 - manifest 至少含 `schemaVersion/repository/commit`、真实版本、工具链、架构、资产名字/size/sha256。Android 保留既有 `outputs[]`，server 保留 `assets`，平台扩展不要求无意义的 JSON 统一。
@@ -22,6 +22,10 @@
 
 - Windows x64 原生 `sing-box/cmd/sing-box` 外壳，包含内嵌 Xray；不把 `Xray-core/main` 的 server executable 当客户端核心。
 - 保持 `version/check -c/run -c` 与回环 Clash API。manifest验证PE machine=0x8664、size/hash、实际双核版本、tags和完整来源。
+- 正式启动和测速不依赖产品版本号推断配置能力；Windows 工具链可升级，但须保持 manifest 与实际 `version` 的环境、tags 一致，并通过当前客户端代表配置的 `check -c`（现代 DNS、Clash API、native Xray）。
+- 构建继续由 bundled lock 固定版本；应用内独立查询官方 releases，分页筛选 `windows-vX.Y.Z` 并按数值排序，不使用混平台的 `/releases/latest`。无效正式资产、限流或网络错误必须报错，不能以旧固定版本伪装最新。
+- 下载仅接收标签，后端重新绑定官方 Git ref commit、release asset digest 和 manifest；限制官方 HTTPS/CDN、单层安全文件名、文件数量及大小。经验证的来源记录随 EXE/manifest/许可证整目录备份，启动时重验；来源记录不是数字签名，不能抵御官方仓库失陷或本地攻击者同时改写工件和记录。
+- 下载和兼容检查在暂存目录进行，通过后才独占生命周期锁并替换；首次从 bundled 升级也保留完整备份。运行中更新先停受管内核，成功后恢复连接，启动失败恢复旧工件并保持停止；手动回退要求先停止连接。
 - 不添加 FFI/DLL 控制层；有实际Naive依赖再纳入匹配的支持文件，不能凭空声明已有。
 - 原生出站接入需同时改正式连接和测速；单个受管 RayBox 核心进程，无遗留独立 Xray bridge。停止只作用自有 PID/句柄，保留系统代理/PAC恢复。
 

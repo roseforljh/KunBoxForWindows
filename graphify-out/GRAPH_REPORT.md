@@ -1,16 +1,16 @@
 # Graph Report - KunBoxForWindows  (2026-11-08)
 
 ## Corpus Check
-- 106 files · ~103,553 words
+- 109 files · ~106,655 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1699 nodes · 4331 edges · 81 communities (71 shown, 10 thin omitted)
-- Extraction: 97% EXTRACTED · 3% INFERRED · 0% AMBIGUOUS · INFERRED: 145 edges (avg confidence: 0.85)
+- 1767 nodes · 4566 edges · 80 communities (70 shown, 10 thin omitted)
+- Extraction: 96% EXTRACTED · 4% INFERRED · 0% AMBIGUOUS · INFERRED: 167 edges (avg confidence: 0.85)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `9653dce6`
+- Built from commit: `331cd790`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -33,7 +33,7 @@
 - tauri.conf.json
 - VPN 与测速并发协调计划
 - manual-node.ts
-- DomainRules.tsx
+- singbox_start_locked
 - settings.rs
 - Issue #1 规则集仓库下载修复计划
 - App.tsx
@@ -46,8 +46,8 @@
 - LatencyProbeError
 - Option
 - nodesStore.ts
-- singbox_start_impl
-- Profiles.tsx
+- bounded_selector_probe_stream
+- Select.tsx
 - dependencies
 - export_node_to_link
 - devDependencies
@@ -69,9 +69,9 @@
 - KunBox-Windows 项目指南
 - compilerOptions
 - 工件与配置共同契约
-- ErrorBoundary
+- main.tsx
 - default.json
-- bounded_selector_probe_stream
+- @radix-ui/react-tabs
 - 迁移现场基线（2026-11-05）
 - package.json
 - scripts
@@ -82,7 +82,6 @@
 - eslint
 - @radix-ui/react-tooltip
 - test.mjs
-- lucide-react
 - typescript
 - vite
 - vite.config.ts
@@ -90,9 +89,9 @@
 - react
 
 ## God Nodes (most connected - your core abstractions)
-1. `AppState` - 167 edges
+1. `AppState` - 169 edges
 2. `unique_test_dir()` - 39 edges
-3. `singbox_start_impl()` - 38 edges
+3. `singbox_start_locked()` - 38 edges
 4. `generate_config_with_settings_and_native()` - 36 edges
 5. `write_json_file()` - 36 edges
 6. `generate_config()` - 33 edges
@@ -116,7 +115,7 @@
 ## Import Cycles
 - None detected.
 
-## Communities (81 total, 10 thin omitted)
+## Communities (80 total, 10 thin omitted)
 
 ### Community 0 - "AppState"
 Cohesion: 0.08
@@ -127,8 +126,8 @@ Cohesion: 0.26
 Nodes (15): App, Box, append_startup_diagnostic(), configure_desktop_webview(), get_data_dir(), read_settings_sync(), AppHandle, AppSettings (+7 more)
 
 ### Community 2 - "kernel.rs"
-Cohesion: 0.11
-Nodes (69): Response, clear_kernel_cache_targets(), clears_actual_cache_db_and_ruleset_cache(), download_kernel_archive_to_path(), failed_replacement_restores_previous_kernel_and_backup(), get_bundle_kernel_dir(), get_data_kernel_dir(), get_dir_size() (+61 more)
+Cohesion: 0.06
+Nodes (122): Duration, JoinHandle, RemoteRelease, Response, clear_kernel_cache_targets(), clears_actual_cache_db_and_ruleset_cache(), download_kernel_archive_to_path(), ensure_initial_raybox_backup() (+114 more)
 
 ### Community 3 - ".new"
 Cohesion: 0.15
@@ -136,15 +135,15 @@ Nodes (49): Serialize, cancel_health_monitor_cancels_existing_token(), collect_h
 
 ### Community 4 - "singbox.rs"
 Cohesion: 0.08
-Nodes (33): backup_probe_candidates_rotate_past_previously_checked_prefix(), build_native_xray_outbound(), build_xray_plugin_config(), build_xray_plugin_config_hoists_legacy_xhttp_extra_encryption(), build_xray_plugin_config_preserves_vless_xhttp_transport(), build_xray_plugin_config_routes_remote_outbound_through_front_proxy(), config_file_has_outbound_type(), config_value_has_outbound_type() (+25 more)
+Nodes (36): backup_probe_candidates_rotate_past_previously_checked_prefix(), build_dns_bootstrap_server(), build_dns_server(), build_dns_server_with_resolver(), build_native_xray_outbound(), build_xray_plugin_config(), build_xray_plugin_config_hoists_legacy_xhttp_extra_encryption(), build_xray_plugin_config_preserves_vless_xhttp_transport() (+28 more)
 
 ### Community 5 - "git_proxy.rs"
 Cohesion: 0.15
-Nodes (30): Command, Output, RefCell, clear_git_proxy_snapshot(), connection_preserves_remote_git_proxy(), connection_sync_is_restored_after_disconnect(), disconnect_preserves_git_proxy_changed_by_user(), git_cli_backend_reads_writes_and_clears_isolated_global_proxy() (+22 more)
+Nodes (30): Command, RefCell, clear_git_proxy_snapshot(), connection_preserves_remote_git_proxy(), connection_sync_is_restored_after_disconnect(), disconnect_preserves_git_proxy_changed_by_user(), git_cli_backend_reads_writes_and_clears_isolated_global_proxy(), git_proxy_plan() (+22 more)
 
 ### Community 6 - "types.ts"
 Cohesion: 0.09
-Nodes (24): App(), HEALTH_EVENT_TOAST_TYPES, initApp(), ConnectionState, HealthToastType, defaultSettings, mockApi, mockNodes (+16 more)
+Nodes (29): HEALTH_EVENT_TOAST_TYPES, AddProfileModalProps, NodeDetailModalProps, ConnectionState, HealthToastType, defaultSettings, kernelCompleteListeners, kernelErrorListeners (+21 more)
 
 ### Community 7 - "NodeDetailModal.tsx"
 Cohesion: 0.08
@@ -152,11 +151,11 @@ Nodes (39): applyNodePolicies(), DEFAULT_MULTIPLEX, durationMilliseconds(), enab
 
 ### Community 8 - "String"
 Cohesion: 0.12
-Nodes (52): allocate_clash_api_port(), allowed_xray_keys(), apply_system_proxy(), clear_persisted_proxy_snapshot(), clear_proxy_session_marker(), decode_windows_output(), delete_registry_value(), detect_foreign_wintun_aliases() (+44 more)
+Nodes (50): allocate_clash_api_port(), allowed_xray_keys(), apply_system_proxy(), clear_persisted_proxy_snapshot(), clear_proxy_session_marker(), decode_windows_output(), delete_registry_value(), detect_foreign_wintun_aliases() (+42 more)
 
 ### Community 9 - "RuleSets.tsx"
-Cohesion: 0.13
-Nodes (19): builtInHubRules, defaultRuleSets, fastTransition, buildHubRuleSets(), HubRuleSet, HubTreeEntry, isHubFormatAvailable(), officialRawUrl() (+11 more)
+Cohesion: 0.08
+Nodes (36): DOMAIN_TYPE_OPTIONS, DomainRules(), isBuiltInDomainRule(), OUTBOUND_MODE_OPTIONS, RoutingModeNotice(), builtInHubRules, defaultRuleSets, fastTransition (+28 more)
 
 ### Community 10 - "types.rs"
 Cohesion: 0.09
@@ -190,9 +189,9 @@ Nodes (35): 1. AppState 增加测速生命周期闸门, 1. 连接操作先取消
 Cohesion: 0.08
 Nodes (34): AddProfileModal(), DNS_SERVERS, IMPORT_TYPES, ImportType, ProfileSettings, buildManualNodeLink(), createManualNodeDraft(), credentials() (+26 more)
 
-### Community 20 - "DomainRules.tsx"
-Cohesion: 0.16
-Nodes (15): DOMAIN_TYPE_OPTIONS, DomainRules(), isBuiltInDomainRule(), OUTBOUND_MODE_OPTIONS, RoutingModeNotice(), RuleSets(), getRuleNodeValue(), NodeRule (+7 more)
+### Community 20 - "singbox_start_locked"
+Cohesion: 0.12
+Nodes (38): append_startup_diagnostic(), build_foreign_wintun_warning(), cancel_health_monitor(), close_stale_selector_connections(), get_clash_api_port(), is_running_as_admin(), local_clash_api_client(), native_xray_runtime_available() (+30 more)
 
 ### Community 21 - "settings.rs"
 Cohesion: 0.14
@@ -204,7 +203,7 @@ Nodes (33): 1. 真实格式驱动, 2. 官方地址优先，备用地址受控, 3
 
 ### Community 23 - "App.tsx"
 Cohesion: 0.07
-Nodes (31): AboutIcon, AnimatedIconProps, AppContent(), defaultTransition, FileTextIcon, FolderIcon, footerItems, GaugeIcon (+23 more)
+Nodes (30): AboutIcon, AnimatedIconProps, AppContent(), defaultTransition, FileTextIcon, FolderIcon, footerItems, GaugeIcon (+22 more)
 
 ### Community 24 - "subscription/tests.rs"
 Cohesion: 0.08
@@ -215,16 +214,16 @@ Cohesion: 0.06
 Nodes (32): Health Failover Monitor Implementation Plan, Task 1: 增加健康监控类型和设置, Task 2: 增加 Health Monitor 状态容器, Task 3: 抽取 selector 和固定节点监控目标, Task 4: 实现低开销探针引擎, Task 5: 实现 selector 备用池和切换决策, Task 6: 接入 sing-box 生命周期, Task 7: 添加前端事件和提示 (+24 more)
 
 ### Community 26 - "Dashboard.tsx"
-Cohesion: 0.10
-Nodes (24): About(), DownloadProgress, UpdateInfo, Dashboard(), formatHealthStatus(), formatSelectorNodeName(), HEALTH_STATUS_LABELS, HealthToastType (+16 more)
+Cohesion: 0.09
+Nodes (25): About(), DownloadProgress, UpdateInfo, Dashboard(), formatHealthStatus(), formatSelectorNodeName(), HEALTH_STATUS_LABELS, HealthToastType (+17 more)
 
 ### Community 27 - "节点运行态污染修复计划"
 Cohesion: 0.06
 Nodes (31): 1. 建立唯一的运行态字段表, 2. 后端读取边界清洗, 3. 后端保存边界清洗, 4. 启动迁移历史数据, 5. 前端编辑器隔离, GSTACK REVIEW REPORT, Rust, TODO 处理 (+23 more)
 
 ### Community 28 - "Value"
-Cohesion: 0.08
-Nodes (53): active_or_first_node(), allocate_unique_outbound_tag(), apply_outbound_domain_resolver(), apply_route_target(), build_dns_bootstrap_server(), build_dns_server(), build_dns_server_with_resolver(), collect_health_eligible_node_tags() (+45 more)
+Cohesion: 0.09
+Nodes (49): active_or_first_node(), allocate_unique_outbound_tag(), apply_outbound_domain_resolver(), apply_route_target(), collect_health_eligible_node_tags(), collect_health_targets(), collect_node_detour_references(), collect_referenced_profile_selector_tags() (+41 more)
 
 ### Community 29 - "compilerOptions"
 Cohesion: 0.07
@@ -236,23 +235,23 @@ Nodes (7): LatencyProbeError, CancellationToken, Result, test_latency_via_clash_
 
 ### Community 31 - "Option"
 Cohesion: 0.09
-Nodes (42): HealthEvent, HealthStatus, decide_health_action(), execute_health_action(), fetch_selector_health(), fixed_node_failure_action_builds_fixed_node_event(), fixed_node_failure_is_not_reported_again_before_next_probe(), fixed_node_failure_never_returns_switch_action() (+34 more)
+Nodes (41): HealthEvent, HealthStatus, decide_health_action(), execute_health_action(), extract_singbox_fatal_error(), fetch_selector_health(), fixed_node_failure_action_builds_fixed_node_event(), fixed_node_failure_is_not_reported_again_before_next_probe() (+33 more)
 
 ### Community 32 - "nodesStore.ts"
-Cohesion: 0.11
-Nodes (26): NodeItem, SORT_OPTIONS, AddNodeModal(), AddNodeModalProps, AddNodeTarget, SUPPORTED_PROTOCOLS, AddProfileModalProps, NodeDetailModalProps (+18 more)
+Cohesion: 0.12
+Nodes (22): NodeItem, SORT_OPTIONS, AddNodeModal(), AddNodeModalProps, AddNodeTarget, SUPPORTED_PROTOCOLS, FILTER_MODES, NodeFilterModal() (+14 more)
 
-### Community 33 - "singbox_start_impl"
+### Community 33 - "bounded_selector_probe_stream"
+Cohesion: 0.25
+Nodes (8): AtomicUsize, I, Item, bounded_selector_probe_stream(), bounded_selector_probe_stream_yields_before_all_probes_finish(), F, update_max(), Stream
+
+### Community 34 - "Select.tsx"
 Cohesion: 0.13
-Nodes (32): append_startup_diagnostic(), build_foreign_wintun_warning(), cancel_health_monitor(), close_stale_selector_connections(), extract_singbox_fatal_error(), get_clash_api_port(), is_running_as_admin(), local_clash_api_client() (+24 more)
-
-### Community 34 - "Profiles.tsx"
-Cohesion: 0.17
-Nodes (12): Profiles(), ConfirmModal(), ConfirmModalProps, DNS_SERVERS, EditProfileModal(), EditProfileModalProps, ProfileSettings, Modal (+4 more)
+Nodes (15): ConfirmModal(), ConfirmModalProps, DNS_SERVERS, EditProfileModal(), EditProfileModalProps, ProfileSettings, Modal, ModalButton() (+7 more)
 
 ### Community 35 - "dependencies"
 Cohesion: 0.08
-Nodes (25): class-variance-authority, clsx, framer-motion, dependencies, class-variance-authority, clsx, framer-motion, @radix-ui/react-dialog (+17 more)
+Nodes (25): class-variance-authority, clsx, framer-motion, dependencies, class-variance-authority, clsx, framer-motion, lucide-react (+17 more)
 
 ### Community 36 - "export_node_to_link"
 Cohesion: 0.24
@@ -264,7 +263,7 @@ Nodes (25): autoprefixer, eslint-plugin-react-hooks, devDependencies, autoprefix
 
 ### Community 38 - "Settings.tsx"
 Cohesion: 0.10
-Nodes (14): KernelCapabilities, KernelSettings(), KernelVersion, RemoteRelease, FIXED_NODE_HEALTH_NOTE, healthSettingsPatch, HEALTH_SETTING_KEYS, Settings() (+6 more)
+Nodes (13): isNewerRelease(), off, phases, KernelCapabilities, KernelSettings(), KernelVersion, RemoteRelease, FIXED_NODE_HEALTH_NOTE (+5 more)
 
 ### Community 39 - "start_temp_singbox"
 Cohesion: 0.15
@@ -330,17 +329,13 @@ Nodes (9): compilerOptions, allowSyntheticDefaultImports, composite, module, mod
 Cohesion: 0.25
 Nodes (7): Android, Windows, 发布, 工件与配置共同契约, 服务端, 来源与本地候选, 节点与配置
 
-### Community 56 - "ErrorBoundary"
-Cohesion: 0.25
-Nodes (3): ErrorBoundary, ErrorBoundaryProps, ErrorBoundaryState
+### Community 56 - "main.tsx"
+Cohesion: 0.20
+Nodes (5): App(), ErrorBoundary, ErrorBoundaryProps, ErrorBoundaryState, initApp()
 
 ### Community 57 - "default.json"
 Cohesion: 0.25
 Nodes (7): core:default, main, description, identifier, permissions, $schema, windows
-
-### Community 58 - "bounded_selector_probe_stream"
-Cohesion: 0.25
-Nodes (8): AtomicUsize, I, Item, bounded_selector_probe_stream(), bounded_selector_probe_stream_yields_before_all_probes_finish(), F, update_max(), Stream
 
 ### Community 59 - "迁移现场基线（2026-11-05）"
 Cohesion: 0.29
@@ -367,28 +362,28 @@ Cohesion: 0.40
 Nodes (4): RayBox 统一迁移总计划, 不得丢失的现有行为, 必须建立, 硬阻塞
 
 ### Community 65 - "迁移过程状态"
-Cohesion: 0.25
-Nodes (7): 2026-11-05, 2026-11-05 的历史阻塞, 2026-11-08 HK 全协议真机巡检（Windows）, 2026-11-08 Windows UI 与 RayBox 语义版本更新, 下一阶段, 最新验证（2026-11-05）, 迁移过程状态
+Cohesion: 0.20
+Nodes (9): 2026-11-05, 2026-11-05 的历史阻塞, 2026-11-08 HK 全协议真机巡检（Windows）, 2026-11-08 Windows UI 与 RayBox 语义版本更新, Windows 独立内核更新补齐（2026-11-08）, 下一阶段, 当前交付状态（2026-11-08）, 最新验证（2026-11-05） (+1 more)
 
 ## Knowledge Gaps
-- **407 isolated node(s):** `name`, `version`, `type`, `description`, `author` (+402 more)
+- **414 isolated node(s):** `name`, `version`, `type`, `description`, `author` (+409 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **10 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `AppState` connect `AppState` to `singbox_start_impl`, `kernel.rs`, `.new`, `singbox.rs`, `git_proxy.rs`, `start_temp_singbox`, `String`, `begin_latency_lifecycle`, `latency.rs`, `rules.rs`, `latency/tests.rs`, `rulesets.rs`, `resolve_available_inbound_ports`, `settings.rs`, `Value`, `Option`?**
-  _High betweenness centrality (0.178) - this node is a cross-community bridge._
+- **Why does `AppState` connect `AppState` to `kernel.rs`, `.new`, `singbox.rs`, `git_proxy.rs`, `start_temp_singbox`, `String`, `begin_latency_lifecycle`, `latency.rs`, `rules.rs`, `latency/tests.rs`, `rulesets.rs`, `resolve_available_inbound_ports`, `singbox_start_locked`, `settings.rs`, `Value`, `Option`?**
+  _High betweenness centrality (0.190) - this node is a cross-community bridge._
 - **Why does `parse_node_link()` connect `parse_node_link` to `AppState`, `export_node_to_link`, `subscription.rs`, `parse_vless_link`, `parse_hysteria2_link`, `subscription/tests.rs`?**
-  _High betweenness centrality (0.042) - this node is a cross-community bridge._
-- **Why does `start_temp_singbox()` connect `start_temp_singbox` to `AppState`, `types.rs`, `generate_temp_config_with_native_xray_raw`, `latency.rs`, `latency/tests.rs`, `prepare_temp_nodes_with_detours`?**
-  _High betweenness centrality (0.028) - this node is a cross-community bridge._
+  _High betweenness centrality (0.027) - this node is a cross-community bridge._
+- **Why does `make_test_state()` connect `latency/tests.rs` to `AppState`, `begin_latency_lifecycle`, `start_temp_singbox`?**
+  _High betweenness centrality (0.015) - this node is a cross-community bridge._
 - **What connects `name`, `version`, `type` to the rest of the system?**
-  _407 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _414 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `AppState` be split into smaller, more focused modules?**
   _Cohesion score 0.07972367438386856 - nodes in this community are weakly interconnected._
 - **Should `kernel.rs` be split into smaller, more focused modules?**
-  _Cohesion score 0.10524256651017215 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.05899262592175978 - nodes in this community are weakly interconnected._
 - **Should `.new` be split into smaller, more focused modules?**
   _Cohesion score 0.14857142857142858 - nodes in this community are weakly interconnected._

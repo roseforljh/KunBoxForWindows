@@ -1,4 +1,4 @@
-// Mock API for browser-only environments (dev/QA testing without Tauri/Electron)
+// Mock API for browser-only environments (dev/QA testing without Electron)
 import type { AppSettings, Profile, SingBoxOutbound, TrafficStats, LogEntry, DomainRule, CustomRules, NodeWithProfile, NodeLatencyResult, HealthEvent, CustomProfileNodeSelection } from './types'
 
 const noop = () => {}
@@ -59,6 +59,12 @@ const mockNodes: SingBoxOutbound[] = [
 let mockActiveProfileId: string | null = 'mock-profile-1'
 let mockActiveNodeTag: string | null = mockNodes[0]?.tag ?? null
 let mockSettings: AppSettings = { ...defaultSettings }
+let mockKernelVersion = '0.0.1'
+let mockKernelBackup: string | null = null
+type KernelProgress = { phase?: 'downloading' | 'verifying' | 'installing'; downloaded: number; total: number; percent: number }
+const kernelProgressListeners = new Set<(progress: KernelProgress) => void>()
+const kernelCompleteListeners = new Set<() => void>()
+const kernelErrorListeners = new Set<(error: string) => void>()
 
 const mockNodesWithProfile: NodeWithProfile[] = mockNodes.map((n) => ({
   ...n,
@@ -187,40 +193,68 @@ export const mockApi = {
 
   kernel: {
     getLocalVersion: async () => ({
-      version: '0.0.1',
-      versionDetail: 'RayBox version 0.0.1 (mock)',
+      version: mockKernelVersion,
+      versionDetail: `RayBox version ${mockKernelVersion} (mock)`,
       isAlpha: false,
     }),
     getInstalledVersions: () =>
       Promise.resolve([
-        { version: '0.0.1', versionDetail: 'RayBox version 0.0.1', isBackup: false, path: '/mock/path' },
+        { version: mockKernelVersion, versionDetail: `RayBox version ${mockKernelVersion}`, isBackup: false, path: '/mock/path' },
+        ...(mockKernelBackup ? [{ version: mockKernelBackup, versionDetail: `RayBox version ${mockKernelBackup}`, isBackup: true, path: '/mock/backup' }] : []),
       ]),
     getCapabilities: () =>
       Promise.resolve({
-        version: '0.0.1',
+        version: mockKernelVersion,
         supportsNaive: false,
         supportsIcmpProxy: true,
         supportsBypassAction: true,
       }),
     getRemoteReleases: async (_includePrerelease?: boolean) => [
       {
-        version: '0.0.1',
-        tagName: 'windows-v0.0.1',
+        version: '0.0.2',
+        tagName: 'windows-v0.0.2',
         publishedAt: new Date().toISOString(),
         isPrerelease: false,
-        downloadUrl: 'https://example.com/release',
+        downloadUrl: 'https://github.com/roseforljh/RayBox-rx/releases/download/windows-v0.0.2/raybox-windows-amd64.exe',
         assetName: 'raybox-windows-amd64.exe',
       },
     ],
-    download: (_tagName: string) => Promise.resolve({ success: true }),
-    rollback: (_isAlpha?: boolean) => Promise.resolve({ success: true }),
-    canRollback: (_isAlpha?: boolean) => Promise.resolve(false),
+    download: async (tagName: string) => {
+      if (tagName !== 'windows-v0.0.2') {
+        kernelErrorListeners.forEach(callback => callback('版本不存在'))
+        throw new Error('版本不存在')
+      }
+      for (const phase of ['downloading', 'verifying', 'installing'] as const) {
+        kernelProgressListeners.forEach(callback => callback({ phase, downloaded: 100, total: 100, percent: 100 }))
+        await new Promise(resolve => setTimeout(resolve, 100))
+      }
+      mockKernelBackup = mockKernelVersion
+      mockKernelVersion = '0.0.2'
+      kernelCompleteListeners.forEach(callback => callback())
+      return { success: true }
+    },
+    rollback: async (_isAlpha?: boolean) => {
+      if (!mockKernelBackup) return { success: false }
+      mockKernelVersion = mockKernelBackup
+      mockKernelBackup = null
+      return { success: true }
+    },
+    canRollback: (_isAlpha?: boolean) => Promise.resolve(mockKernelBackup !== null),
     clearCache: () => Promise.resolve({ success: true, freedBytes: 0 }),
     openReleasesPage: () => Promise.resolve(),
     openDirectory: () => Promise.resolve(),
-    onDownloadProgress: (_callback: (progress: { downloaded: number; contentLength: number }) => void) => noopUnlisten(),
-    onDownloadComplete: (_callback: () => void) => noopUnlisten(),
-    onDownloadError: (_callback: (error: string) => void) => noopUnlisten(),
+    onDownloadProgress: (callback: (progress: KernelProgress) => void) => {
+      kernelProgressListeners.add(callback)
+      return () => { kernelProgressListeners.delete(callback) }
+    },
+    onDownloadComplete: (callback: () => void) => {
+      kernelCompleteListeners.add(callback)
+      return () => { kernelCompleteListeners.delete(callback) }
+    },
+    onDownloadError: (callback: (error: string) => void) => {
+      kernelErrorListeners.add(callback)
+      return () => { kernelErrorListeners.delete(callback) }
+    },
   },
 
   ruleset: {

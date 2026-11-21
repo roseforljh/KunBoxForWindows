@@ -20,7 +20,7 @@ Thumbs.db
 npm-debug.log*
 
 # TypeScript
-tsconfig.tsbuildinfo
+*.tsbuildinfo
 
 # Environment
 .env

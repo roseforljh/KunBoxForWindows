@@ -1,0 +1,58 @@
+appId: com.kunbox.app
+productName: KunBox
+copyright: Copyright © 2024-2026 KunBox
+
+directories:
+  buildResources: build
+  output: dist
+
+files:
+  - "out/**/*"
+  - "!out/**/*.map"
+
+extraResources:
+  - from: "resources/"
+    to: "resources/"
+    filter:
+      - "**/*"
+  - from: "build/icon.png"
+    to: "icon.png"
+
+win:
+  icon: build/icon.ico
+  sign: null
+  signAndEditExecutable: false
+  target:
+    - target: dir
+      arch:
+        - x64
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+  artifactName: "${productName}-${version}-${arch}.${ext}"
+  requestedExecutionLevel: asInvoker
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: KunBox
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  installerHeaderIcon: build/icon.ico
+  license: LICENSE
+
+portable:
+  artifactName: "${productName}-${version}-portable.${ext}"
+
+publish:
+  provider: github
+  owner: kunbox
+  repo: kunbox-windows
+  releaseType: release
