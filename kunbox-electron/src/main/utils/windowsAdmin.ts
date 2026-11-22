@@ -1,5 +1,7 @@
 import { execFile } from 'node:child_process'
-import { join } from 'node:path'
+import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import net from 'node:net'
+import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
@@ -62,4 +64,66 @@ if ($previous) {
 }
 exit 0
 `, (timeoutSeconds + 5) * 1000)
+}
+
+// 通过本地回环端口绕过 Windows UIPI，允许普通权限进程唤醒管理员权限运行的主窗口
+export function startActivationServer(portFilePath: string, onActivate: () => void): () => void {
+  const server = net.createServer((socket) => {
+    socket.destroy()
+    onActivate()
+  })
+
+  server.on('error', () => {
+    // 忽略唤醒服务监听异常，避免影响主进程启动
+  })
+
+  server.listen(0, '127.0.0.1', () => {
+    const address = server.address()
+    if (address && typeof address === 'object') {
+      try {
+        mkdirSync(dirname(portFilePath), { recursive: true })
+        writeFileSync(portFilePath, String(address.port), 'utf-8')
+      } catch {
+        // 忽略端口文件写入失败
+      }
+    }
+  })
+
+  return () => {
+    server.close()
+    try {
+      unlinkSync(portFilePath)
+    } catch {
+      // 忽略清理失败
+    }
+  }
+}
+
+export function notifyRunningInstance(portFilePath: string, timeoutMs = 1000): Promise<boolean> {
+  let port = 0
+  try {
+    port = Number(readFileSync(portFilePath, 'utf-8').trim())
+  } catch {
+    return Promise.resolve(false)
+  }
+
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return Promise.resolve(false)
+  }
+
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (ok: boolean) => {
+      if (settled) return
+      settled = true
+      socket.destroy()
+      resolve(ok)
+    }
+
+    const socket = net.createConnection({ host: '127.0.0.1', port }, () => {
+      finish(true)
+    })
+    socket.setTimeout(timeoutMs, () => finish(false))
+    socket.on('error', () => finish(false))
+  })
 }

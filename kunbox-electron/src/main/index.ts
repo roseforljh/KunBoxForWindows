@@ -4,7 +4,7 @@ import { existsSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import log from 'electron-log'
 import { getDataDir } from './utils/paths'
-import { requestStartupElevation, waitForAdminRestart } from './utils/windowsAdmin'
+import { notifyRunningInstance, requestStartupElevation, startActivationServer, waitForAdminRestart } from './utils/windowsAdmin'
 
 // 将 Electron userData 统一指向 D:\KunBoxData（无 D 盘时回退 %APPDATA%\KunBox）
 app.setPath('userData', getDataDir())
@@ -19,6 +19,15 @@ import { initUpdaterHandlers } from './ipc/updater'
 import { createTray, destroyTray, updateTrayStatus } from './tray'
 
 let mainWindow: BrowserWindow | null = null
+let stopActivationServer: (() => void) | null = null
+const activationPortFile = join(getDataDir(), 'instance.port')
+
+function showMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  if (!mainWindow.isVisible()) mainWindow.show()
+  mainWindow.focus()
+}
 
 function getIconPath(): string {
   // Windows 优先使用多尺寸 icon.ico（含 16/24/32/48/64/256），高分屏下由系统原生匹配清晰尺寸
@@ -100,14 +109,11 @@ try {
 const gotTheLock = app.requestSingleInstanceLock()
 
 if (!gotTheLock) {
+  await notifyRunningInstance(activationPortFile)
   app.quit()
 } else {
   app.on('second-instance', () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore()
-      if (!mainWindow.isVisible()) mainWindow.show()
-      mainWindow.focus()
-    }
+    showMainWindow()
   })
 
   app.whenReady().then(async () => {
@@ -120,6 +126,7 @@ if (!gotTheLock) {
       log.warn('启动时未取得管理员权限，继续以普通权限运行', error)
     }
 
+    stopActivationServer = startActivationServer(activationPortFile, showMainWindow)
     electronApp.setAppUserModelId('com.kunbox')
 
     app.on('browser-window-created', (_, window) => {
@@ -152,6 +159,8 @@ if (!gotTheLock) {
       ;(app as any).isQuitting = true
 
       log.info('App quitting, performing cleanup...')
+      stopActivationServer?.()
+      stopActivationServer = null
       stopTempSingbox()
       await cleanupBeforeQuit()
       destroyTray()

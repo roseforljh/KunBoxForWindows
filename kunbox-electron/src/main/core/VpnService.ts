@@ -44,8 +44,10 @@ export class VpnService extends EventEmitter {
     this.singbox.on('stateChange', (newState: ServiceState, oldState: ServiceState) => {
       this.emit('stateChange', newState, oldState)
 
-      if (newState === 'running' && this.autoSystemProxy) {
-        this.systemProxy.enable('127.0.0.1', this.config.proxyPort)
+      if (newState === 'running') {
+        if (this.autoSystemProxy) {
+          this.systemProxy.enable('127.0.0.1', this.config.proxyPort)
+        }
         this.trafficMonitor.start()
       } else if (newState === 'idle' || newState === 'error') {
         if (this.autoSystemProxy) {
