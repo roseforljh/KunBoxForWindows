@@ -499,15 +499,9 @@ function ProxyToggle({
       <AnimatePresence>
         {isOn && (
           <motion.button
-            initial={{ opacity: 0, scale: 0.8, x: 10 }}
+            initial={{ opacity: 0, scale: 0.85, x: 8 }}
             animate={{ opacity: 1, scale: 1, x: 0 }}
-            exit={{ opacity: 0, scale: 0.8, x: 10 }}
-            transition={{ 
-              type: 'spring',
-              stiffness: 400,
-              damping: 25,
-              mass: 0.8
-            }}
+            exit={{ opacity: 0, scale: 0.85, x: 8 }}
             onClick={handleRestart}
             disabled={isLoading || isRestarting}
             whileHover={{ scale: 1.03 }}

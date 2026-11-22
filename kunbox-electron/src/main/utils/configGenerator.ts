@@ -182,30 +182,34 @@ function buildDnsConfig(settings: AppSettings, ruleSets: RuleSetItem[], domainRu
     }
   }
 
-  // DNS 规则仅允许域名类规则集，排除 geoip 等 IP 规则集，避免触发 sing-box 1.14 Legacy Address Filter 报错
+  // 按规则集顺序逐条生成 DNS 规则（自定义业务规则集优先于内置通用规则集，且排除 geoip 类 IP 规则集）
   const isDomainRuleSet = (r: RuleSetItem) => !r.tag.toLowerCase().includes('geoip')
+  const orderedRuleSets = [
+    ...ruleSets.filter((rs) => !rs.isBuiltIn),
+    ...ruleSets.filter((rs) => rs.isBuiltIn)
+  ]
+  for (const rs of orderedRuleSets) {
+    if (!rs.enabled || !isDomainRuleSet(rs)) continue
+    if (rs.type === 'remote' && !isRuleSetLocal(rs.tag)) continue
 
-  const cnRuleSets = ruleSets.filter(r =>
-    r.enabled && r.outboundMode === 'direct' && r.tag.includes('cn') && isDomainRuleSet(r) &&
-    (r.type !== 'remote' || isRuleSetLocal(r.tag))
-  )
-  if (cnRuleSets.length > 0) {
-    rules.push({
-      rule_set: cnRuleSets.map(r => r.tag),
-      action: 'route',
-      server: 'local-dns'
-    })
-  }
-
-  const blockRuleSets = ruleSets.filter(r =>
-    r.enabled && r.outboundMode === 'block' && isDomainRuleSet(r) &&
-    (r.type !== 'remote' || isRuleSetLocal(r.tag))
-  )
-  if (blockRuleSets.length > 0) {
-    rules.push({
-      rule_set: blockRuleSets.map(r => r.tag),
-      action: 'reject'
-    })
+    if (rs.outboundMode === 'block') {
+      rules.push({
+        rule_set: [rs.tag],
+        action: 'reject'
+      })
+    } else if (rs.outboundMode === 'direct') {
+      rules.push({
+        rule_set: [rs.tag],
+        action: 'route',
+        server: 'local-dns'
+      })
+    } else {
+      rules.push({
+        rule_set: [rs.tag],
+        action: 'route',
+        server: settings.fakeDns ? 'fakeip-dns' : 'remote-dns'
+      })
+    }
   }
 
   if (settings.fakeDns) {
@@ -550,9 +554,8 @@ function buildRouteConfig(
 ): object {
   const rules: object[] = []
 
-  if (settings.tunEnabled) {
-    rules.push({ inbound: ['tun-in'], action: 'sniff' })
-  }
+  // 全局启用协议嗅探（覆盖 mixed-in / socks-in / tun-in），避免 IP 直连或未带域名连接误落 geoip-cn 直连被重置
+  rules.push({ action: 'sniff' })
 
   rules.push({
     protocol: ['dns'],
@@ -584,8 +587,12 @@ function buildRouteConfig(
     }
   }
 
-  // Filter available rule sets
-  const availableRuleSets = ruleSets.filter(r => {
+  // 用户自定义业务规则集始终优先于内置通用规则集（geosite-cn / geoip-cn / 广告拦截），防止被内置大合集误拦截或误直连
+  const orderedRuleSets = [
+    ...ruleSets.filter((rs) => !rs.isBuiltIn),
+    ...ruleSets.filter((rs) => rs.isBuiltIn)
+  ]
+  const availableRuleSets = orderedRuleSets.filter(r => {
     if (!r.enabled) return false
     if (r.type === 'remote') {
       return isRuleSetLocal(r.tag)

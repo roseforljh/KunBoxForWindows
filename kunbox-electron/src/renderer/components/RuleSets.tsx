@@ -595,9 +595,14 @@ export default function RuleSets() {
         const result = await window.api.ruleset.download(nextRule, sourceChanged || !editingRuleSet)
         if (!result.success) throw new Error(result.error || '下载失败')
       }
+      const insertBeforeBuiltIn = (list: RuleSetItem[], item: RuleSetItem) => {
+        if (item.outboundMode === 'block') return [...list, item]
+        const builtInIndex = list.findIndex((rs) => rs.isBuiltIn)
+        return builtInIndex === -1 ? [...list, item] : [...list.slice(0, builtInIndex), item, ...list.slice(builtInIndex)]
+      }
       const next = editingRuleSet
         ? ruleSets.map(rs => rs.id === nextRule.id ? nextRule : rs)
-        : [...ruleSets, nextRule]
+        : insertBeforeBuiltIn(ruleSets, nextRule)
       if (await persistRuleSets(next, `规则集「${nextRule.name}」已保存`)) setShowAddDialog(false)
     } catch (error) {
       toast.error(`保存规则集失败: ${String(error)}`)
@@ -630,7 +635,11 @@ export default function RuleSets() {
     try {
       const result = await window.api.ruleset.download(newRuleSet, true)
       if (!result.success) throw new Error(result.error || '下载失败')
-      if (await persistRuleSets([...ruleSets, newRuleSet], `规则集「${hub.name}」已添加`)) {
+      const builtInIndex = ruleSets.findIndex((rs) => rs.isBuiltIn)
+      const nextList = builtInIndex === -1
+        ? [...ruleSets, newRuleSet]
+        : [...ruleSets.slice(0, builtInIndex), newRuleSet, ...ruleSets.slice(builtInIndex)]
+      if (await persistRuleSets(nextList, `规则集「${hub.name}」已添加`)) {
         setShowHubAddConfirm(false)
         setHubAddTarget(null)
       }
