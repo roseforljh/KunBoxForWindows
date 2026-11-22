@@ -75,7 +75,7 @@ export interface OutboundTransport {
   type?: string
   path?: string
   headers?: Record<string, string | string[]>
-  host?: string[]
+  host?: string | string[]
   service_name?: string
   max_early_data?: number
   early_data_header_name?: string
@@ -253,7 +253,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   bypassLan: true,
   routingMode: 'rule',
   defaultRule: 'proxy',
-  latencyTestUrl: 'https://www.gstatic.com/generate_204',
+  latencyTestUrl: 'http://cp.cloudflare.com/generate_204',
   latencyTestTimeout: 3000,
   healthMonitorEnabled: true,
   mainNodeAutoFailover: false,

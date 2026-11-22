@@ -48,9 +48,10 @@
     --glass-border: rgba(255, 255, 255, 0.08);
     --glass-border-hover: rgba(255, 255, 255, 0.12);
     --glass-blur: 12px;
-    --floating-surface-bg: rgba(7, 13, 12, 0.38);
-    --floating-surface-glint: rgba(255, 255, 255, 0.08);
-    --floating-surface-shadow: 0 20px 56px rgba(0, 0, 0, 0.42);
+    --floating-surface-bg: rgba(18, 22, 24, 0.92);
+    --floating-surface-border: rgba(255, 255, 255, 0.14);
+    --floating-surface-glint: rgba(255, 255, 255, 0.06);
+    --floating-surface-shadow: 0 20px 56px rgba(0, 0, 0, 0.58);
     --floating-search-bg: rgba(255, 255, 255, 0.07);
     
     /* Shadows */
@@ -130,9 +131,10 @@
     --glass-border: rgba(180, 175, 165, 0.12);
     --glass-border-hover: rgba(140, 155, 145, 0.18);
     --glass-blur: 20px;
-    --floating-surface-bg: rgba(247, 245, 240, 0.42);
-    --floating-surface-glint: rgba(255, 255, 255, 0.34);
-    --floating-surface-shadow: 0 20px 48px rgba(89, 82, 70, 0.18);
+    --floating-surface-bg: rgba(248, 246, 242, 0.94);
+    --floating-surface-border: rgba(120, 115, 105, 0.18);
+    --floating-surface-glint: rgba(255, 255, 255, 0.45);
+    --floating-surface-shadow: 0 20px 48px rgba(89, 82, 70, 0.22);
     --floating-search-bg: rgba(255, 255, 255, 0.34);
     
     /* Shadows - Neumorphic style */
@@ -284,11 +286,11 @@
   /* 统一悬浮面板：下拉菜单与卡片操作菜单共用 */
   .floating-surface {
     background:
-      linear-gradient(135deg, var(--floating-surface-glint), transparent 48%),
+      linear-gradient(135deg, var(--floating-surface-glint), transparent 55%),
       var(--floating-surface-bg);
-    backdrop-filter: blur(42px) saturate(165%);
-    -webkit-backdrop-filter: blur(42px) saturate(165%);
-    border: 0;
+    backdrop-filter: blur(28px) saturate(165%);
+    -webkit-backdrop-filter: blur(28px) saturate(165%);
+    border: 1px solid var(--floating-surface-border);
     border-radius: 12px;
     box-shadow: var(--floating-surface-shadow);
     will-change: backdrop-filter;

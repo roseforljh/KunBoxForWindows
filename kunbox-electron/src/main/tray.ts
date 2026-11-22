@@ -1,16 +1,33 @@
 import { Tray, Menu, nativeImage, app, BrowserWindow, shell } from 'electron'
 import log from 'electron-log'
 import { getServiceInstance } from './ipc/singbox'
+import { settingsStore } from './ipc/settings'
 
 let tray: Tray | null = null
 let isConnected = false
 let currentWindow: BrowserWindow | null = null
-let systemProxyEnabled = true
+let systemProxyEnabled = false
 let tunModeEnabled = false
 let currentMode: 'rule' | 'global' | 'direct' = 'rule'
 
+function routingModeToTrayMode(routingMode?: string): 'rule' | 'global' | 'direct' {
+  if (routingMode === 'global-proxy') return 'global'
+  if (routingMode === 'global-direct') return 'direct'
+  return 'rule'
+}
+
+function trayModeToRoutingMode(mode: 'rule' | 'global' | 'direct'): 'rule' | 'global-proxy' | 'global-direct' {
+  if (mode === 'global') return 'global-proxy'
+  if (mode === 'direct') return 'global-direct'
+  return 'rule'
+}
+
 export function createTray(mainWindow: BrowserWindow, iconPath: string): Tray {
   currentWindow = mainWindow
+  const initialSettings = settingsStore.get('settings')
+  systemProxyEnabled = Boolean(initialSettings.systemProxy)
+  tunModeEnabled = Boolean(initialSettings.tunEnabled)
+  currentMode = routingModeToTrayMode(initialSettings.routingMode)
 
   // Windows 下直接传入多尺寸 .ico 路径由系统按 DPI 选图，禁止压成 16x16 导致高分屏发糊
   if (process.platform === 'win32' && iconPath.toLowerCase().endsWith('.ico')) {
@@ -88,6 +105,8 @@ function updateContextMenu(): void {
             currentMode = 'rule'
             const service = getServiceInstance()
             service?.setMode('rule')
+            const cur = settingsStore.get('settings')
+            settingsStore.set('settings', { ...cur, routingMode: trayModeToRoutingMode('rule') })
             updateContextMenu()
           }
         },
@@ -99,6 +118,8 @@ function updateContextMenu(): void {
             currentMode = 'global'
             const service = getServiceInstance()
             service?.setMode('global')
+            const cur = settingsStore.get('settings')
+            settingsStore.set('settings', { ...cur, routingMode: trayModeToRoutingMode('global') })
             updateContextMenu()
           }
         },
@@ -110,6 +131,8 @@ function updateContextMenu(): void {
             currentMode = 'direct'
             const service = getServiceInstance()
             service?.setMode('direct')
+            const cur = settingsStore.get('settings')
+            settingsStore.set('settings', { ...cur, routingMode: trayModeToRoutingMode('direct') })
             updateContextMenu()
           }
         }

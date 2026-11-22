@@ -75,8 +75,13 @@ export function validateNodeForSave(node: SingBoxOutbound): string | null {
   if (!node.type?.trim()) return '节点协议无效'
   if (node.type !== 'wireguard') {
     if (!node.server?.trim()) return '请输入服务器地址'
-    const hopping = node.type === 'hysteria2' && !!node.server_ports?.length
-    if (hopping && !node.server_ports?.every((value) => {
+    const serverPorts = Array.isArray(node.server_ports)
+      ? node.server_ports
+      : node.server_ports
+        ? [node.server_ports]
+        : []
+    const hopping = node.type === 'hysteria2' && serverPorts.length > 0
+    if (hopping && !serverPorts.every((value) => {
       if (!/^\d+(?::\d+)?$/.test(String(value))) return false
       const ports = String(value).split(':').map(Number)
       return ports.length <= 2 && ports.every((port) => Number.isInteger(port) && port >= 1 && port <= 65535)

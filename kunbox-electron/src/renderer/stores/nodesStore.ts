@@ -226,7 +226,7 @@ export const useNodesStore = create<NodesState>()(
         try {
           await window.api.node.beginLatencyTests(runId)
 
-          const CONCURRENCY = 8
+          const CONCURRENCY = 6
           let nextQueueIndex = 0
 
           const testNextNode = async () => {
@@ -258,7 +258,6 @@ export const useNodesStore = create<NodesState>()(
                     ? { ...node, ...normalized, isTesting: false }
                     : node
                   ),
-                  latencyCache: { ...state.latencyCache, ...batchLatencyCache },
                   testProgress: Math.min(state.testProgress + 1, queue.length)
                 }
               })

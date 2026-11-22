@@ -8,9 +8,9 @@ import { notifyRunningInstance, requestStartupElevation, startActivationServer, 
 
 // 将 Electron userData 统一指向 D:\KunBoxData（无 D 盘时回退 %APPDATA%\KunBox）
 app.setPath('userData', getDataDir())
-import { initSingBoxHandlers, cleanupBeforeQuit } from './ipc/singbox'
+import { initSingBoxHandlers, cleanupBeforeQuit, getServiceInstance } from './ipc/singbox'
 import { initProfileHandlers, stopTempSingbox } from './ipc/profiles'
-import { initSettingsHandlers, settingsStore } from './ipc/settings'
+import { applyAutoStartSetting, initSettingsHandlers, settingsStore } from './ipc/settings'
 import { initKernelHandlers } from './ipc/kernel'
 import { initRuleSetsHandlers } from './ipc/rulesets'
 import { initRulesHandlers } from './ipc/rules'
@@ -68,8 +68,11 @@ function createWindow(): void {
     }
   })
 
+  const shouldStartSilently = Boolean(settingsStore.get('settings').silentStart)
   mainWindow.on('ready-to-show', () => {
-    mainWindow?.show()
+    if (!shouldStartSilently) {
+      mainWindow?.show()
+    }
   })
 
   mainWindow.on('close', (event) => {
@@ -78,6 +81,12 @@ function createWindow(): void {
       mainWindow?.hide()
     }
   })
+
+  // 窗口隐藏或最小化时暂停后台流量轮询，恢复可见时立即继续
+  mainWindow.on('hide', () => getServiceInstance()?.pauseTrafficMonitor())
+  mainWindow.on('minimize', () => getServiceInstance()?.pauseTrafficMonitor())
+  mainWindow.on('show', () => getServiceInstance()?.resumeTrafficMonitor())
+  mainWindow.on('restore', () => getServiceInstance()?.resumeTrafficMonitor())
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
@@ -127,6 +136,9 @@ if (!gotTheLock) {
     }
 
     stopActivationServer = startActivationServer(activationPortFile, showMainWindow)
+    if (settingsStore.get('settings').startWithWindows) {
+      void applyAutoStartSetting(true)
+    }
     electronApp.setAppUserModelId('com.kunbox')
 
     app.on('browser-window-created', (_, window) => {

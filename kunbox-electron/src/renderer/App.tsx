@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, forwardRef, useImperativeHandle, useRef, memo } from 'react'
 import { motion, AnimatePresence, useAnimation } from 'framer-motion'
 import { Minus, Square, X, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
+import { useShallow } from 'zustand/react/shallow'
 import { useConnectionStore } from './stores/connectionStore'
 import { subscribeRuntimeLogs } from './stores/logsStore'
 import { ToastProvider, useToast } from './components/ui/Toast'
@@ -450,7 +451,15 @@ export default function App() {
 function AppContent() {
   const [currentPage, setCurrentPage] = useState<Page>('dashboard')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const { state, setState, setTraffic, connect, disconnect } = useConnectionStore()
+  const { state, setState, setTraffic, connect, disconnect } = useConnectionStore(
+    useShallow((s) => ({
+      state: s.state,
+      setState: s.setState,
+      setTraffic: s.setTraffic,
+      connect: s.connect,
+      disconnect: s.disconnect
+    }))
+  )
   const stateRef = useRef(state)
   const connectRef = useRef(connect)
   const disconnectRef = useRef(disconnect)
@@ -480,11 +489,14 @@ function AppContent() {
     const checkAutoConnect = async () => {
       let startupWarning: string | undefined
       try {
-        const settings = await window.api.settings.get()
+        const [settings, autoStartLaunch] = await Promise.all([
+          window.api.settings.get(),
+          window.api.settings.isAutoStartLaunch()
+        ])
         if (settings?.autoConnect) {
-          // Give Windows startup launches time to initialize the network.
-          const startupDelay = settings.startWithWindows ? 8000 : 1000
-          if (settings.startWithWindows) {
+          // 仅在真正通过开机自启参数拉起时延迟 8 秒等待系统网络就绪，手动打开直接连接
+          const startupDelay = autoStartLaunch ? 8000 : 1000
+          if (autoStartLaunch) {
             warning('检测到开机自启，已延迟自动连接 8 秒以避免首启失败')
           }
           await new Promise(resolve => setTimeout(resolve, startupDelay))
@@ -536,6 +548,10 @@ function AppContent() {
     })
 
     const unsubTraffic = window.api.singbox.onTraffic((stats: any) => {
+      if (useConnectionStore.getState().state === 'idle') {
+        setState('connected')
+        window.api.tray.updateStatus(true)
+      }
       setTraffic(stats)
     })
 

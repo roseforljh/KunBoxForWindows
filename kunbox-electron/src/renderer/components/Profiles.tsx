@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Plus, RefreshCw, Trash2, Check, Loader2, FolderOpen, MoreVertical, Edit3, ToggleLeft, ToggleRight } from 'lucide-react'
+import { Plus, RefreshCw, Trash2, Check, Loader2, FolderOpen, MoreVertical, Edit3, ToggleLeft, ToggleRight, Search } from 'lucide-react'
 import type { CustomProfileNodeSelection, NodeWithProfile, Profile } from '@shared/types'
 import { ConfirmModal } from './ui/ConfirmModal'
 import { EditProfileModal } from './ui/EditProfileModal'
@@ -28,6 +28,7 @@ export default function Profiles() {
   const [isEditing, setIsEditing] = useState(false)
 
   const [updatingIds, setUpdatingIds] = useState<Set<string>>(new Set())
+  const [searchQuery, setSearchQuery] = useState('')
 
   const openAddModal = async () => {
     setAddModalOpen(true)
@@ -234,13 +235,25 @@ export default function Profiles() {
           <h2 className="text-3xl font-bold tracking-tight text-[var(--text-primary)]">订阅管理</h2>
           <p className="text-[var(--text-muted)] text-sm font-medium">管理代理订阅与配置文件</p>
         </div>
-        <button
-          onClick={openAddModal}
-          className="glass-btn glass-btn-primary h-11 px-6 rounded-xl font-bold text-sm flex items-center gap-2"
-        >
-          <Plus className="w-4 h-4" />
-          添加订阅
-        </button>
+        <div className="flex items-center gap-3">
+          <div className="glass-card flex items-center gap-2 px-4 py-2.5 rounded-xl">
+            <Search className="w-4 h-4 text-[var(--text-muted)]" />
+            <input
+              type="text"
+              placeholder="搜索订阅..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="bg-transparent border-none outline-none text-sm text-[var(--text-primary)] placeholder:text-[var(--text-faint)] w-40"
+            />
+          </div>
+          <button
+            onClick={openAddModal}
+            className="glass-btn glass-btn-primary h-11 px-6 rounded-xl font-bold text-sm flex items-center gap-2"
+          >
+            <Plus className="w-4 h-4" />
+            添加订阅
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 overflow-auto">
@@ -254,7 +267,13 @@ export default function Profiles() {
           </div>
         ) : (
           <div className="space-y-4">
-            {profiles.map((profile) => {
+            {profiles
+              .filter((profile) => {
+                const q = searchQuery.trim().toLowerCase()
+                if (!q) return true
+                return profile.name.toLowerCase().includes(q) || (profile.url || '').toLowerCase().includes(q)
+              })
+              .map((profile) => {
               const isUpdating = updatingIds.has(profile.id)
               const isDisabled = !profile.enabled
 

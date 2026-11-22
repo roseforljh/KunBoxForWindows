@@ -167,6 +167,18 @@ export class VpnService extends EventEmitter {
     return this.singbox.getApiUrl()
   }
 
+  getApiPort(): number {
+    return this.singbox.getApiPort()
+  }
+
+  pauseTrafficMonitor(): void {
+    this.trafficMonitor.pause()
+  }
+
+  resumeTrafficMonitor(): void {
+    this.trafficMonitor.resume()
+  }
+
   async cleanup(): Promise<void> {
     this.log('Performing cleanup...')
     this.trafficMonitor.stop()

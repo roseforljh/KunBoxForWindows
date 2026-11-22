@@ -112,8 +112,8 @@ const api = {
     delete: (tag: string): Promise<void> => ipcRenderer.invoke('node:delete', tag),
     update: (profileId: string, originalTag: string, node: SingBoxOutbound): Promise<SingBoxOutbound> =>
       ipcRenderer.invoke('node:update', profileId, originalTag, node),
-    export: (tag: string, _node?: SingBoxOutbound): Promise<string> =>
-      ipcRenderer.invoke('node:export', tag),
+    export: (tag: string, node?: SingBoxOutbound): Promise<string> =>
+      ipcRenderer.invoke('node:export', tag, node),
     listAll: (includeDisabled?: boolean): Promise<NodeWithProfile[]> =>
       ipcRenderer.invoke('node:list-all', includeDisabled)
   },
@@ -123,6 +123,7 @@ const api = {
     set: (settings: Partial<AppSettings>): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_SET, settings),
     onChange: (callback: (settings: AppSettings) => void) =>
       onEvent(IPC_CHANNELS.SETTINGS_CHANGED, callback),
+    isAutoStartLaunch: (): Promise<boolean> => ipcRenderer.invoke('settings:is-autostart-launch'),
     randomAvailablePorts: (): Promise<[number, number]> => ipcRenderer.invoke('settings:random-available-ports')
   },
 

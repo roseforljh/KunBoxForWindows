@@ -5,12 +5,13 @@ import log from 'electron-log'
 import { CLASH_API_PORT, IPC_CHANNELS } from '../../shared/constants'
 import { DEFAULT_SETTINGS, type ProxyState, type TrafficStats, type LogEntry, type LogLevel, type SingBoxOutbound } from '../../shared/types'
 import { generateConfig } from '../utils/configGenerator'
-import { resolveProxyPorts } from '../utils/proxyPorts'
+import { resolveApiPort, resolveProxyPorts } from '../utils/proxyPorts'
 import { loadRuleSets } from './rulesets'
 import { downloadAllRuleSets, checkRuleSetsReady } from '../utils/ruleSetManager'
 import { settingsStore } from './settings'
 import { VpnService, VpnServiceConfig, ServiceState } from '../core'
 import { getKernelManager } from './kernel'
+import { stopTempSingbox } from './profiles'
 
 import { getDataDir } from '../utils/paths'
 
@@ -137,6 +138,7 @@ function loadProfileNodes(profileId: string): SingBoxOutbound[] {
 export async function startConfiguredVpn(execPath: string, restart = false): Promise<{
   success: boolean; error?: string; warning?: string
 }> {
+  stopTempSingbox()
   const service = getVpnService()
   if (!restart && service.isRunning()) return { success: true }
 
@@ -153,8 +155,17 @@ export async function startConfiguredVpn(execPath: string, restart = false): Pro
 
   const prepareConfig = async () => {
     const previous = settings
-    const ports = await resolveProxyPorts(previous, CLASH_API_PORT)
-    const config = generateConfig({ settings: { ...previous, ...ports }, outbounds: nodes, activeNodeTag: activeNodeTag || nodes[0]?.tag })
+    const apiPort = await resolveApiPort(CLASH_API_PORT)
+    const ports = await resolveProxyPorts(previous, apiPort)
+    service.updateConfig({
+      core: { execPath, configDir: CONFIG_DIR, workDir: CONFIG_DIR, apiHost: '127.0.0.1', apiPort, apiSecret: '' }
+    })
+    const config = generateConfig({
+      settings: { ...previous, ...ports },
+      outbounds: nodes,
+      activeNodeTag: activeNodeTag || nodes[0]?.tag,
+      clashApiPort: apiPort
+    })
     return {
       content: JSON.stringify(config, null, 2),
       onStarted: () => {
@@ -227,17 +238,28 @@ export function initSingBoxHandlers(): void {
 
   ipcMain.handle('singbox:enable-system-proxy', async (_, port?: number) => {
     const ok = await service.enableSystemProxy('127.0.0.1', port)
+    if (ok) {
+      service.setAutoSystemProxy(true)
+      const current = settingsStore.get('settings')
+      if (!current.systemProxy) settingsStore.set('settings', { ...current, systemProxy: true })
+    }
     return { success: ok }
   })
 
   ipcMain.handle('singbox:disable-system-proxy', async () => {
     const ok = await service.disableSystemProxy()
+    if (ok) {
+      service.setAutoSystemProxy(false)
+      const current = settingsStore.get('settings')
+      if (current.systemProxy) settingsStore.set('settings', { ...current, systemProxy: false })
+    }
     return { success: ok }
   })
 
   ipcMain.handle(IPC_CHANNELS.SINGBOX_SWITCH_NODE, async (_, nodeTag: string) => {
+    // VPN 未运行时无需通知内核热切换，由前端继续保存选中节点供下次连接使用
     if (!service.isRunning()) {
-      return { success: false, error: 'VPN not running' }
+      return { success: true }
     }
 
     try {
@@ -246,7 +268,7 @@ export function initSingBoxHandlers(): void {
         const data = JSON.stringify({ name: nodeTag })
         const req = http.request({
           host: '127.0.0.1',
-          port: 9090,
+          port: service.getApiPort(),
           path: '/proxies/PROXY',
           method: 'PUT',
           headers: {
@@ -279,14 +301,14 @@ export function initSingBoxHandlers(): void {
   ipcMain.handle('singbox:test-selector-latency', async (_, selectorTag: string, testUrl?: string) => {
     try {
       const http = await import('http')
-      const targetUrl = testUrl || 'https://www.gstatic.com/generate_204'
+      const targetUrl = testUrl || settingsStore.get('settings').latencyTestUrl || 'http://cp.cloudflare.com/generate_204'
       const encodedSelector = encodeURIComponent(selectorTag || 'PROXY')
       const path = `/group/${encodedSelector}/delay?url=${encodeURIComponent(targetUrl)}&timeout=5000`
 
       return new Promise((resolve) => {
         const req = http.request({
           host: '127.0.0.1',
-          port: 9090,
+          port: service.getApiPort(),
           path,
           method: 'GET',
           timeout: 6000

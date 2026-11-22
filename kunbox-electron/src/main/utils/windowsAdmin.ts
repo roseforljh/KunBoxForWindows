@@ -6,6 +6,8 @@ import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
 const waitArg = '--kunbox-wait-for-exit='
+export const AUTOSTART_ARG = '--autostart'
+export const AUTOSTART_TASK_NAME = 'KunBoxAutoStart'
 
 function runPowerShell(script: string, timeout?: number) {
   const executable = join(process.env.SystemRoot || 'C:\\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe')
@@ -14,6 +16,10 @@ function runPowerShell(script: string, timeout?: number) {
     windowsHide: true,
     timeout
   })
+}
+
+export function isAutoStartLaunch(argv = process.argv): boolean {
+  return argv.includes(AUTOSTART_ARG)
 }
 
 export async function isRunningAsAdmin(): Promise<boolean> {
@@ -29,10 +35,13 @@ $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
   }
 }
 
-export async function launchAsAdmin(executable: string, appPath?: string): Promise<void> {
+export async function launchAsAdmin(executable: string, appPath?: string, argv = process.argv): Promise<void> {
   if (process.platform !== 'win32') throw new Error('管理员重启仅在 Windows 上可用')
   const quote = (value: string) => `'${value.replaceAll("'", "''")}'`
-  const args = appPath ? `"${appPath}" ${waitArg}${process.pid}` : `${waitArg}${process.pid}`
+  const extra = isAutoStartLaunch(argv) ? ` ${AUTOSTART_ARG}` : ''
+  const args = appPath
+    ? `"${appPath}" ${waitArg}${process.pid}${extra}`
+    : `${waitArg}${process.pid}${extra}`
   await runPowerShell(`Start-Process -FilePath ${quote(executable)} -ArgumentList ${quote(args)} -Verb RunAs -ErrorAction Stop`)
 }
 
@@ -126,4 +135,46 @@ export function notifyRunningInstance(portFilePath: string, timeoutMs = 1000): P
     socket.setTimeout(timeoutMs, () => finish(false))
     socket.on('error', () => finish(false))
   })
+}
+
+export type AutoStartStrategy = 'task' | 'registry' | 'disabled'
+
+function runSchtasks(args: string[]): Promise<void> {
+  const executable = join(process.env.SystemRoot || 'C:\\Windows', 'System32/schtasks.exe')
+  return execFileAsync(executable, args, { windowsHide: true, timeout: 8000 }).then(() => undefined)
+}
+
+/** 同步 Windows 开机自启：优先创建最高权限计划任务（开机免 UAC），无管理员权限时回退原生登录项；关闭时清理两者。 */
+export async function syncWindowsAutoStart(
+  enabled: boolean,
+  executable: string,
+  setLoginItem: (openAtLogin: boolean, args: string[]) => void,
+  execSchtasks: (args: string[]) => Promise<void> = runSchtasks
+): Promise<AutoStartStrategy> {
+  if (!enabled) {
+    setLoginItem(false, [])
+    try {
+      await execSchtasks(['/Delete', '/TN', AUTOSTART_TASK_NAME, '/F'])
+    } catch {
+      // 计划任务不存在或无权删除时忽略
+    }
+    return 'disabled'
+  }
+
+  try {
+    await execSchtasks([
+      '/Create',
+      '/F',
+      '/SC', 'ONLOGON',
+      '/RL', 'HIGHEST',
+      '/TN', AUTOSTART_TASK_NAME,
+      '/TR', `"${executable}" ${AUTOSTART_ARG}`
+    ])
+    // 已由最高权限计划任务接管，清理注册表启动项避免开机重复启动
+    setLoginItem(false, [])
+    return 'task'
+  } catch {
+    setLoginItem(true, [AUTOSTART_ARG])
+    return 'registry'
+  }
 }

@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events'
+import http from 'http'
 import type { TrafficSnapshot, ConnectionInfo } from './types'
 
 export class TrafficMonitor extends EventEmitter {
@@ -10,6 +11,7 @@ export class TrafficMonitor extends EventEmitter {
   private uploadTotal = 0
   private downloadTotal = 0
   private running = false
+  private polling = false
   private logger: (msg: string) => void
 
   constructor(apiUrl: string, logger?: (msg: string) => void) {
@@ -72,15 +74,16 @@ export class TrafficMonitor extends EventEmitter {
   }
 
   private async poll(): Promise<void> {
+    if (this.polling) return
+    this.polling = true
     try {
-      const http = await import('http')
       let connections = 0
       let totalUp = 0
       let totalDown = 0
       let gotTraffic = false
       
       try {
-        const connData = await this.httpGet(http, '/connections')
+        const connData = await this.httpGet('/connections')
         if (connData) {
           const parsed = JSON.parse(connData)
           connections = parsed.connections?.length || 0
@@ -118,10 +121,12 @@ export class TrafficMonitor extends EventEmitter {
       }
     } catch {
       // ignore
+    } finally {
+      this.polling = false
     }
   }
 
-  private httpGet(http: typeof import('http'), path: string): Promise<string | null> {
+  private httpGet(path: string): Promise<string | null> {
     return new Promise((resolve) => {
       let parsedUrl: URL
       try {
@@ -152,8 +157,7 @@ export class TrafficMonitor extends EventEmitter {
 
   async getConnections(): Promise<ConnectionInfo[]> {
     try {
-      const http = await import('http')
-      const data = await this.httpGet(http, '/connections')
+      const data = await this.httpGet('/connections')
       if (!data) return []
       
       const parsed = JSON.parse(data)

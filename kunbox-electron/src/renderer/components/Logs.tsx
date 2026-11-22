@@ -1,11 +1,22 @@
-import { useEffect, useRef } from 'react'
-import { Trash2, FileText } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Trash2, FileText, Search } from 'lucide-react'
 import { useLogsStore } from '../stores/logsStore'
 
 export default function Logs() {
   const { logs, logsEnabled, clearLogs } = useLogsStore()
+  const [searchQuery, setSearchQuery] = useState('')
   const containerRef = useRef<HTMLDivElement>(null)
   const shouldAutoScrollRef = useRef(true)
+
+  const filteredLogs = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase()
+    if (!q) return logs
+    return logs.filter((log) =>
+      log.message.toLowerCase().includes(q) ||
+      log.tag.toLowerCase().includes(q) ||
+      log.level.toLowerCase().includes(q)
+    )
+  }, [logs, searchQuery])
 
   useEffect(() => {
     const container = containerRef.current
@@ -52,13 +63,25 @@ export default function Logs() {
             {logsEnabled ? '查看代理核心运行日志' : '日志记录已关闭，已保留现有日志'}
           </p>
         </div>
-        <button
-          onClick={clearLogs}
-          className="glass-btn h-11 px-5 rounded-xl text-sm font-medium flex items-center gap-2"
-        >
-          <Trash2 className="w-4 h-4" />
-          清空
-        </button>
+        <div className="flex items-center gap-3">
+          <div className="glass-card flex items-center gap-2 px-4 py-2.5 rounded-xl">
+            <Search className="w-4 h-4 text-[var(--text-muted)]" />
+            <input
+              type="text"
+              placeholder="搜索日志..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="bg-transparent border-none outline-none text-sm text-[var(--text-primary)] placeholder:text-[var(--text-faint)] w-44"
+            />
+          </div>
+          <button
+            onClick={clearLogs}
+            className="glass-btn h-11 px-5 rounded-xl text-sm font-medium flex items-center gap-2"
+          >
+            <Trash2 className="w-4 h-4" />
+            清空
+          </button>
+        </div>
       </div>
 
       <div
@@ -72,16 +95,16 @@ export default function Logs() {
             </div>
             <p className="text-[var(--text-faint)] font-sans text-sm">日志记录已关闭（可在设置 {'>'} 系统中开启）</p>
           </div>
-        ) : logs.length === 0 ? (
+        ) : filteredLogs.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center">
             <div className="w-16 h-16 rounded-2xl bg-[var(--bg-elevated)] flex items-center justify-center mb-3">
               <FileText className="w-7 h-7 text-[var(--text-faint)]" />
             </div>
-            <p className="text-[var(--text-faint)] font-sans text-sm">暂无日志</p>
+            <p className="text-[var(--text-faint)] font-sans text-sm">{searchQuery.trim() ? '未找到匹配日志' : '暂无日志'}</p>
           </div>
         ) : (
-          logs.map((log) => (
-            <div key={`${log.timestamp}-${log.tag}-${log.message}`} className="py-1.5 flex gap-3 hover:bg-[var(--bg-hover)] rounded px-2 -mx-2">
+          filteredLogs.map((log, index) => (
+            <div key={`${log.timestamp}-${index}-${log.tag}`} className="py-1.5 flex gap-3 hover:bg-[var(--bg-hover)] rounded px-2 -mx-2">
               <span className="text-[var(--text-faint)] shrink-0">{formatTime(log.timestamp)}</span>
               <span className={`shrink-0 uppercase font-bold ${getLevelColor(log.level)}`}>
                 [{log.level.padEnd(5)}]

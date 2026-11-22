@@ -81,7 +81,7 @@ export function AppSelect({
           position="popper"
           sideOffset={6}
           collisionPadding={12}
-          className="floating-surface z-[100] min-w-[var(--radix-select-trigger-width)] max-w-[calc(100vw-24px)] overflow-hidden p-2"
+          className="floating-surface z-[200] min-w-[var(--radix-select-trigger-width)] max-w-[calc(100vw-24px)] overflow-hidden p-2"
           style={{
             maxHeight: 'min(26rem, var(--radix-select-content-available-height))',
           }}

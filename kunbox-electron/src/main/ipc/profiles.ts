@@ -1,21 +1,75 @@
 import { ipcMain } from 'electron'
 import { join } from 'path'
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs'
 import { randomUUID } from 'crypto'
-import type { ChildProcess } from 'child_process'
+import { spawn, type ChildProcess } from 'child_process'
+import { isIP } from 'net'
+import { resolve4 } from 'dns/promises'
+import http from 'http'
 import axios from 'axios'
 import { load as loadYaml } from 'js-yaml'
 import log from 'electron-log'
-import { IPC_CHANNELS } from '../../shared/constants'
+import { CLASH_API_PORT, IPC_CHANNELS } from '../../shared/constants'
 import type { Profile, SingBoxOutbound, NodeWithProfile, CustomProfileNodeSelection, NodeLatencyResult } from '../../shared/types'
 import { parseShareLink } from './shareLink'
 import { getDataDir } from '../utils/paths'
+import { generateLatencyTestConfig } from '../utils/configGenerator'
+import { findAvailablePort } from '../utils/proxyPorts'
+import { getKernelManager } from './kernel'
+import { getServiceInstance } from './singbox'
+import { settingsStore } from './settings'
 
 const DATA_DIR = getDataDir()
 const PROFILES_FILE = join(DATA_DIR, 'profiles.json')
 const CONFIGS_DIR = join(DATA_DIR, 'configs')
+const TEMP_LATENCY_CONFIG_FILE = join(DATA_DIR, 'temp-latency-config.json')
+const TEMP_SINGBOX_IDLE_MS = 15000
 
 let tempSingboxProcess: ChildProcess | null = null
+let tempSingboxPort = 0
+let tempSingboxConfigKey = ''
+let tempSingboxReadyPromise: Promise<number> | null = null
+let tempSingboxIdleTimer: NodeJS.Timeout | null = null
+let activeTempLatencyRequests = 0
+let cachedLatencyNodes: { profileId: string; nodes: SingBoxOutbound[]; loadedAt: number } | null = null
+let autoUpdateTimer: NodeJS.Timeout | null = null
+
+function dedupeNodeTags(nodes: SingBoxOutbound[]): SingBoxOutbound[] {
+  const used = new Set<string>()
+  return nodes.map((node) => {
+    let tag = node.tag?.trim() || `${node.type || 'node'}`
+    if (used.has(tag)) {
+      let idx = 2
+      while (used.has(`${tag} (${idx})`)) idx += 1
+      tag = `${tag} (${idx})`
+    }
+    used.add(tag)
+    return tag === node.tag ? node : { ...node, tag }
+  })
+}
+
+// 订阅开启 DNS 预解析时，将节点域名预先解析为 IP，并保留原域名作为 TLS SNI 避免证书校验失败
+async function preResolveNodesDns(nodes: SingBoxOutbound[]): Promise<SingBoxOutbound[]> {
+  const cache = new Map<string, string | null>()
+  return Promise.all(nodes.map(async (node) => {
+    const host = node.server?.trim()
+    if (!host || isIP(host)) return node
+    if (!cache.has(host)) {
+      try {
+        const ips = await resolve4(host)
+        cache.set(host, ips[0] || null)
+      } catch {
+        cache.set(host, null)
+      }
+    }
+    const ip = cache.get(host)
+    if (!ip) return node
+    const tls = node.tls?.enabled && !node.tls.server_name
+      ? { ...node.tls, server_name: host }
+      : node.tls
+    return { ...node, server: ip, ...(tls ? { tls } : {}) }
+  }))
+}
 
 interface ProfilesData {
   profiles: Profile[]
@@ -64,7 +118,9 @@ export function saveProfileNodes(profileId: string, nodes: SingBoxOutbound[]) {
   try {
     mkdirSync(CONFIGS_DIR, { recursive: true })
     const configFile = join(CONFIGS_DIR, `${profileId}.json`)
-    writeFileSync(configFile, JSON.stringify(nodes, null, 2))
+    const deduped = dedupeNodeTags(nodes)
+    writeFileSync(configFile, JSON.stringify(deduped, null, 2))
+    cachedLatencyNodes = null
   } catch (error) {
     log.error(`Failed to save nodes for profile ${profileId}:`, error)
   }
@@ -161,6 +217,10 @@ function parseClashProxies(proxies: any[]): SingBoxOutbound[] {
 }
 
 export function stopTempSingbox(): void {
+  if (tempSingboxIdleTimer) {
+    clearTimeout(tempSingboxIdleTimer)
+    tempSingboxIdleTimer = null
+  }
   if (tempSingboxProcess) {
     try {
       tempSingboxProcess.kill()
@@ -169,6 +229,140 @@ export function stopTempSingbox(): void {
     }
     tempSingboxProcess = null
   }
+  tempSingboxPort = 0
+  tempSingboxConfigKey = ''
+  tempSingboxReadyPromise = null
+}
+
+function scheduleTempSingboxCleanup(): void {
+  if (tempSingboxIdleTimer) {
+    clearTimeout(tempSingboxIdleTimer)
+    tempSingboxIdleTimer = null
+  }
+  if (activeTempLatencyRequests > 0 || !tempSingboxProcess) return
+  tempSingboxIdleTimer = setTimeout(() => {
+    if (activeTempLatencyRequests === 0) {
+      stopTempSingbox()
+    }
+  }, TEMP_SINGBOX_IDLE_MS)
+}
+
+function pingClashApi(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const req = http.request({
+      host: '127.0.0.1',
+      port,
+      path: '/version',
+      method: 'GET',
+      timeout: 500
+    }, (res) => {
+      res.resume()
+      resolve((res.statusCode ?? 0) >= 200 && (res.statusCode ?? 0) < 500)
+    })
+    req.on('error', () => resolve(false))
+    req.on('timeout', () => {
+      req.destroy()
+      resolve(false)
+    })
+    req.end()
+  })
+}
+
+async function ensureTempSingbox(nodes: SingBoxOutbound[]): Promise<number> {
+  const configKey = JSON.stringify(nodes)
+  if (tempSingboxProcess && !tempSingboxProcess.killed && tempSingboxPort > 0 && tempSingboxConfigKey === configKey) {
+    return tempSingboxPort
+  }
+  if (tempSingboxReadyPromise && tempSingboxConfigKey === configKey) {
+    return tempSingboxReadyPromise
+  }
+
+  stopTempSingbox()
+  tempSingboxConfigKey = configKey
+
+  const readyPromise = (async () => {
+    const execPath = await getKernelManager().resolveKernelPath()
+    const apiPort = await findAvailablePort('127.0.0.1', [CLASH_API_PORT])
+    mkdirSync(DATA_DIR, { recursive: true })
+    writeFileSync(TEMP_LATENCY_CONFIG_FILE, JSON.stringify(generateLatencyTestConfig(nodes, apiPort), null, 2), 'utf-8')
+
+    let exited = false
+    const proc = spawn(execPath, ['run', '-c', TEMP_LATENCY_CONFIG_FILE], {
+      cwd: DATA_DIR,
+      windowsHide: true,
+      stdio: ['ignore', 'ignore', 'pipe']
+    })
+    tempSingboxProcess = proc
+    proc.on('exit', () => {
+      exited = true
+      if (tempSingboxProcess === proc) {
+        tempSingboxProcess = null
+        tempSingboxPort = 0
+        tempSingboxConfigKey = ''
+        tempSingboxReadyPromise = null
+      }
+    })
+
+    const deadline = Date.now() + 5000
+    while (Date.now() < deadline) {
+      if (exited || tempSingboxProcess !== proc) {
+        throw new Error('临时测速内核启动失败')
+      }
+      if (await pingClashApi(apiPort)) {
+        tempSingboxPort = apiPort
+        return apiPort
+      }
+      await new Promise((resolve) => setTimeout(resolve, 80))
+    }
+
+    stopTempSingbox()
+    throw new Error('临时测速内核启动超时')
+  })()
+
+  tempSingboxReadyPromise = readyPromise
+  try {
+    return await readyPromise
+  } catch (error) {
+    if (tempSingboxReadyPromise === readyPromise) {
+      tempSingboxReadyPromise = null
+      tempSingboxConfigKey = ''
+    }
+    throw error
+  }
+}
+
+function queryProxyDelay(port: number, tag: string, targetUrl: string, timeoutMs: number): Promise<NodeLatencyResult> {
+  const path = `/proxies/${encodeURIComponent(tag)}/delay?url=${encodeURIComponent(targetUrl)}&timeout=${timeoutMs}`
+  return new Promise((resolve) => {
+    const req = http.request({
+      host: '127.0.0.1',
+      port,
+      path,
+      method: 'GET',
+      timeout: timeoutMs + 1000
+    }, (res) => {
+      let body = ''
+      res.on('data', (chunk) => { body += chunk })
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(body)
+          if (typeof parsed.delay === 'number' && parsed.delay > 0) {
+            resolve({ status: 'success', latencyMs: parsed.delay })
+          } else {
+            resolve({ status: 'timeout', latencyMs: null })
+          }
+        } catch {
+          resolve({ status: 'controller_unavailable', latencyMs: null })
+        }
+      })
+    })
+    req.on('error', () => resolve({ status: 'controller_unavailable', latencyMs: null }))
+    req.on('timeout', () => {
+      req.destroy()
+      resolve({ status: 'timeout', latencyMs: null })
+    })
+    req.end()
+  })
 }
 
 export function initProfileHandlers(): void {
@@ -193,7 +387,8 @@ export function initProfileHandlers(): void {
   ipcMain.handle('profile:add', async (_, url: string, name?: string, settings?: any) => {
     load()
     const id = randomUUID()
-    const nodes = await fetchSubscription(url)
+    const rawNodes = await fetchSubscription(url)
+    const nodes = settings?.dnsPreResolve ? await preResolveNodesDns(rawNodes) : rawNodes
     const profile: Profile = {
       id,
       name: name || `订阅 ${data.profiles.length + 1}`,
@@ -219,7 +414,8 @@ export function initProfileHandlers(): void {
   ipcMain.handle('profile:import-content', async (_, name: string, content: string, settings?: any) => {
     load()
     const id = randomUUID()
-    const nodes = parseSubscriptionContent(content)
+    const rawNodes = parseSubscriptionContent(content)
+    const nodes = settings?.dnsPreResolve ? await preResolveNodesDns(rawNodes) : rawNodes
     const profile: Profile = {
       id,
       name: name || `导入 ${data.profiles.length + 1}`,
@@ -283,7 +479,8 @@ export function initProfileHandlers(): void {
     const profile = data.profiles.find(p => p.id === id)
     if (!profile) throw new Error('Profile not found')
     if (profile.url) {
-      const nodes = await fetchSubscription(profile.url)
+      const rawNodes = await fetchSubscription(profile.url)
+      const nodes = profile.dnsPreResolve ? await preResolveNodesDns(rawNodes) : rawNodes
       profile.nodeCount = nodes.length
       profile.lastUpdate = Date.now()
       saveProfileNodes(id, nodes)
@@ -300,6 +497,13 @@ export function initProfileHandlers(): void {
       data.activeNodeTag = null
     }
     save()
+    cachedLatencyNodes = null
+    try {
+      const configFile = join(CONFIGS_DIR, `${id}.json`)
+      if (existsSync(configFile)) unlinkSync(configFile)
+    } catch {
+      // 忽略孤立文件删除失败
+    }
   })
 
   ipcMain.handle('profile:edit', (_, id: string, updates: any) => {
@@ -437,47 +641,52 @@ export function initProfileHandlers(): void {
   })
 
   ipcMain.handle('node:cancel-latency-tests', () => {
+    stopTempSingbox()
     return true
   })
 
   ipcMain.handle('node:test-latency', async (_, tag: string, _runId?: number): Promise<NodeLatencyResult> => {
     try {
-      const http = await import('http')
-      const targetUrl = 'https://www.gstatic.com/generate_204'
-      const encodedTag = encodeURIComponent(tag)
-      const path = `/proxies/${encodedTag}/delay?url=${encodeURIComponent(targetUrl)}&timeout=5000`
+      const settings = settingsStore.get('settings')
+      const targetUrl = settings.latencyTestUrl || 'http://cp.cloudflare.com/generate_204'
+      const timeoutMs = settings.latencyTestTimeout || 5000
 
-      return new Promise((resolve) => {
-        const req = http.request({
-          host: '127.0.0.1',
-          port: 9090,
-          path,
-          method: 'GET',
-          timeout: 6000
-        }, (res) => {
-          let body = ''
-          res.on('data', chunk => body += chunk)
-          res.on('end', () => {
-            try {
-              const parsed = JSON.parse(body)
-              if (typeof parsed.delay === 'number' && parsed.delay > 0) {
-                resolve({ status: 'success', latencyMs: parsed.delay })
-              } else {
-                resolve({ status: 'timeout', latencyMs: null })
-              }
-            } catch {
-              resolve({ status: 'controller_unavailable', latencyMs: null })
-            }
-          })
-        })
-        req.on('error', () => resolve({ status: 'controller_unavailable', latencyMs: null }))
-        req.on('timeout', () => {
-          req.destroy()
-          resolve({ status: 'timeout', latencyMs: null })
-        })
-        req.end()
-      })
-    } catch {
+      const service = getServiceInstance()
+      if (service?.isRunning()) {
+        return await queryProxyDelay(service.getApiPort(), tag, targetUrl, timeoutMs)
+      }
+
+      // 3 秒内并发测速复用内存节点列表，避免重复同步读盘
+      const now = Date.now()
+      let nodes: SingBoxOutbound[]
+      if (cachedLatencyNodes && now - cachedLatencyNodes.loadedAt < 3000) {
+        nodes = cachedLatencyNodes.nodes
+      } else {
+        load()
+        if (!data.activeProfileId) {
+          return { status: 'local_test_failed', latencyMs: null }
+        }
+        nodes = loadProfileNodes(data.activeProfileId)
+        cachedLatencyNodes = { profileId: data.activeProfileId, nodes, loadedAt: now }
+      }
+      if (!nodes.length) {
+        return { status: 'local_test_failed', latencyMs: null }
+      }
+
+      if (tempSingboxIdleTimer) {
+        clearTimeout(tempSingboxIdleTimer)
+        tempSingboxIdleTimer = null
+      }
+      activeTempLatencyRequests += 1
+      try {
+        const port = await ensureTempSingbox(nodes)
+        return await queryProxyDelay(port, tag, targetUrl, timeoutMs)
+      } finally {
+        activeTempLatencyRequests = Math.max(0, activeTempLatencyRequests - 1)
+        scheduleTempSingboxCleanup()
+      }
+    } catch (error) {
+      log.warn(`Node latency test failed (${tag}):`, error)
       return { status: 'local_test_failed', latencyMs: null }
     }
   })
@@ -486,21 +695,70 @@ export function initProfileHandlers(): void {
     load()
     if (!data.activeProfileId) return {}
     const nodes = loadProfileNodes(data.activeProfileId)
+    const settings = settingsStore.get('settings')
+    const targetUrl = settings.latencyTestUrl || 'http://cp.cloudflare.com/generate_204'
+    const timeoutMs = settings.latencyTestTimeout || 5000
+    const service = getServiceInstance()
+    const port = service?.isRunning() ? service.getApiPort() : await ensureTempSingbox(nodes)
     const results: Record<string, number> = {}
-    for (const node of nodes) {
-      if (node.tag) {
-        results[node.tag] = 50
-      }
-    }
+    await Promise.all(nodes.map(async (node) => {
+      if (!node.tag) return
+      const res = await queryProxyDelay(port, node.tag, targetUrl, timeoutMs)
+      if (res.status === 'success' && res.latencyMs) results[node.tag] = res.latencyMs
+    }))
+    if (!service?.isRunning()) scheduleTempSingboxCleanup()
     return results
   })
 
-  ipcMain.handle('node:export', (_, tag: string) => {
-    load()
-    if (!data.activeProfileId) return ''
-    const nodes = loadProfileNodes(data.activeProfileId)
-    const node = nodes.find(n => n.tag === tag)
-    if (!node) return ''
-    return JSON.stringify(node, null, 2)
+  // 启动订阅定时自动更新检查（每分钟检查一次到达 autoUpdateInterval 的订阅）
+  if (!autoUpdateTimer) {
+    autoUpdateTimer = setInterval(async () => {
+      load()
+      const now = Date.now()
+      for (const profile of data.profiles) {
+        if (!profile.enabled || !profile.url || !profile.autoUpdateInterval || profile.autoUpdateInterval < 15) {
+          continue
+        }
+        const elapsedMinutes = (now - (profile.lastUpdate || 0)) / 60000
+        if (elapsedMinutes >= profile.autoUpdateInterval) {
+          try {
+            const nodes = await fetchSubscription(profile.url)
+            profile.nodeCount = nodes.length
+            profile.lastUpdate = Date.now()
+            saveProfileNodes(profile.id, nodes)
+            save()
+            log.info(`[AutoUpdate] Updated profile "${profile.name}" (${nodes.length} nodes)`)
+          } catch (error) {
+            log.warn(`[AutoUpdate] Failed to update profile "${profile.name}":`, error)
+          }
+        }
+      }
+    }, 60_000)
+  }
+
+  ipcMain.handle('node:export', (_, tag: string, rawNode?: SingBoxOutbound) => {
+    let target = rawNode
+    if (!target) {
+      load()
+      if (!data.activeProfileId) return ''
+      const nodes = loadProfileNodes(data.activeProfileId)
+      target = nodes.find(n => n.tag === tag)
+    }
+    if (!target) return ''
+    // 导出原节点配置：剥离前置代理引用 detour、客户端内部字段 x_* 与运行时状态字段
+    const ignoredKeys = new Set([
+      'detour',
+      'latencyMs',
+      'latencyStatus',
+      'healthStatus',
+      'isTimeout',
+      'isTesting',
+      'sourceProfileId',
+      'sourceProfileName'
+    ])
+    const cleaned = Object.fromEntries(
+      Object.entries(target).filter(([key]) => !key.startsWith('x_') && !ignoredKeys.has(key))
+    )
+    return JSON.stringify(cleaned, null, 2)
   })
 }

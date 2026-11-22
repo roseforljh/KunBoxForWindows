@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Search, RefreshCw, Check, Loader2, Zap, MoreVertical, Edit3, Share2, Trash2, Filter, Plus, X } from 'lucide-react'
+import { useShallow } from 'zustand/react/shallow'
 import { useNodesStore } from '../stores/nodesStore'
 import { cn } from '../lib/utils'
 import { ConfirmModal } from './ui/ConfirmModal'
@@ -33,8 +34,6 @@ export default function Nodes() {
     sortMode,
     nodeFilter,
     isTesting,
-    testProgress,
-    testTotal,
     setSearchText,
     setSortMode,
     setNodeFilter,
@@ -43,7 +42,24 @@ export default function Nodes() {
     cancelTestAllLatency,
     testNodeLatency,
     loadNodes
-  } = useNodesStore()
+  } = useNodesStore(
+    useShallow((s) => ({
+      nodes: s.nodes,
+      activeNodeTag: s.activeNodeTag,
+      searchText: s.searchText,
+      sortMode: s.sortMode,
+      nodeFilter: s.nodeFilter,
+      isTesting: s.isTesting,
+      setSearchText: s.setSearchText,
+      setSortMode: s.setSortMode,
+      setNodeFilter: s.setNodeFilter,
+      selectNode: s.selectNode,
+      testAllLatency: s.testAllLatency,
+      cancelTestAllLatency: s.cancelTestAllLatency,
+      testNodeLatency: s.testNodeLatency,
+      loadNodes: s.loadNodes
+    }))
+  )
 
   const [openMenuTag, setOpenMenuTag] = useState<string | null>(null)
 
@@ -308,29 +324,6 @@ export default function Nodes() {
           </button>
         ))}
       </div>
-
-      {isTesting && (
-        <motion.div
-          initial={{ opacity: 0, y: -10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="glass-card p-5 mb-6 rounded-2xl"
-        >
-          <div className="flex items-center gap-4">
-            <Loader2 className="w-6 h-6 text-[var(--accent-primary)] animate-spin" />
-            <div className="flex-1">
-              <p className="text-[var(--text-primary)] font-semibold">
-                正在测试节点 ({testProgress}/{testTotal})
-              </p>
-              <div className="mt-2 h-1.5 bg-[var(--bg-elevated)] rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-[var(--accent-primary)] transition-all rounded-full"
-                  style={{ width: `${(testProgress / testTotal) * 100}%` }}
-                />
-              </div>
-            </div>
-          </div>
-        </motion.div>
-      )}
 
       <div className="flex-1 overflow-auto">
         {filteredNodes.length === 0 ? (

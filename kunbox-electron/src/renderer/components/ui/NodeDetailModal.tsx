@@ -162,6 +162,11 @@ function lineList(value: string): string[] | undefined {
   return values.length ? values : undefined
 }
 
+function joinList(value: unknown, separator: string): string {
+  if (Array.isArray(value)) return value.join(separator)
+  return typeof value === 'string' || typeof value === 'number' ? String(value) : ''
+}
+
 function firstString(value: string | string[] | undefined): string {
   return Array.isArray(value) ? value[0] ?? '' : value ?? ''
 }
@@ -252,7 +257,7 @@ function ProtocolFields({ node, onChange, disabled }: {
     return <div className="space-y-3">
       <div className={twoColumns}>
         <Field label="密码" type="password" value={node.password ?? ''} disabled={disabled} onChange={(value) => set('password', value)} />
-        <Field label="跳跃端口（留空关闭）" value={node.server_ports?.join(', ') ?? ''} placeholder="20000:30000, 443" disabled={disabled} onChange={(value) => set('server_ports', stringList(value.replace(/-/g, ':')))} />
+        <Field label="跳跃端口（留空关闭）" value={joinList(node.server_ports, ', ')} placeholder="20000:30000, 443" disabled={disabled} onChange={(value) => set('server_ports', stringList(value.replace(/-/g, ':')))} />
         {!!node.server_ports?.length && <>
           <Field label="跳跃间隔" value={node.hop_interval ?? ''} placeholder="30s（默认）" disabled={disabled} onChange={(value) => set('hop_interval', value.trim() || undefined)} />
           <Field label="随机间隔上限（1.14+，可选）" value={node.hop_interval_max ?? ''} placeholder="留空使用固定间隔，例如 60s" disabled={disabled} onChange={(value) => set('hop_interval_max', value.trim() || undefined)} />
@@ -357,11 +362,11 @@ function ProtocolFields({ node, onChange, disabled }: {
       <Field label="私钥" type="password" value={firstString(node.private_key)} disabled={disabled} onChange={(value) => set('private_key', value ? [value] : undefined)} />
       <Field label="对端公钥" value={peer.public_key ?? ''} disabled={disabled} onChange={(value) => updatePeer({ public_key: value })} />
       <Field label="预共享密钥" type="password" value={peer.pre_shared_key ?? ''} disabled={disabled} onChange={(value) => updatePeer({ pre_shared_key: value || undefined })} />
-      <Field label="本地地址" value={node.local_address?.join(', ') ?? ''} disabled={disabled} onChange={(value) => set('local_address', stringList(value))} />
-      <Field label="允许的 IP" value={peer.allowed_ips?.join(', ') ?? ''} disabled={disabled} onChange={(value) => updatePeer({ allowed_ips: stringList(value) })} />
+      <Field label="本地地址" value={joinList(node.local_address, ', ')} disabled={disabled} onChange={(value) => set('local_address', stringList(value))} />
+      <Field label="允许的 IP" value={joinList(peer.allowed_ips, ', ')} disabled={disabled} onChange={(value) => updatePeer({ allowed_ips: stringList(value) })} />
       <Field label="保活间隔" type="number" value={String(peer.persistent_keepalive_interval ?? '')} disabled={disabled} onChange={(value) => updatePeer({ persistent_keepalive_interval: optionalNumber(value) })} />
       <Field label="MTU" type="number" value={String(node.mtu ?? 1420)} disabled={disabled} onChange={(value) => set('mtu', optionalNumber(value))} />
-      <Field label="Reserved" value={peer.reserved?.join(', ') ?? ''} disabled={disabled} onChange={(value) => updatePeer({ reserved: stringList(value)?.map(Number).filter(Number.isFinite) })} />
+      <Field label="Reserved" value={joinList(peer.reserved, ', ')} disabled={disabled} onChange={(value) => updatePeer({ reserved: stringList(value)?.map(Number).filter(Number.isFinite) })} />
     </div>
   }
 
@@ -371,7 +376,7 @@ function ProtocolFields({ node, onChange, disabled }: {
       <Field label="密码（可选）" type="password" value={node.password ?? ''} disabled={disabled} onChange={(value) => set('password', value || undefined)} />
       <Field label="私钥" value={firstString(node.private_key)} disabled={disabled} multiline onChange={(value) => set('private_key', value ? [value] : undefined)} />
       <Field label="私钥口令" type="password" value={node.private_key_passphrase ?? ''} disabled={disabled} onChange={(value) => set('private_key_passphrase', value || undefined)} />
-      <Field label="主机密钥" value={node.host_key?.join('\n') ?? ''} disabled={disabled} multiline onChange={(value) => set('host_key', lineList(value))} />
+      <Field label="主机密钥" value={joinList(node.host_key, '\n')} disabled={disabled} multiline onChange={(value) => set('host_key', lineList(value))} />
     </div>
   }
 
@@ -392,10 +397,9 @@ function TransportFields({ node, onChange, disabled }: { node: SingBoxOutbound; 
   const transport = node.transport ?? { type: 'tcp' }
   const update = (patch: Partial<OutboundTransport>) => onChange({ ...node, transport: { ...transport, ...patch } })
   const type = transport.type ?? 'tcp'
-  const hostValue = type === 'ws'
-    ? transport.headers?.Host ?? transport.headers?.host ?? ''
-    : transport.host?.join(', ') ?? ''
-  const hostText = Array.isArray(hostValue) ? hostValue.join(', ') : hostValue
+  const hostText = type === 'ws'
+    ? joinList(transport.headers?.Host ?? transport.headers?.host, ', ')
+    : joinList(transport.host, ', ')
   const updateHost = (value: string) => {
     if (type === 'ws') {
       const headers = { ...(transport.headers ?? {}) }
@@ -403,6 +407,8 @@ function TransportFields({ node, onChange, disabled }: { node: SingBoxOutbound; 
       delete headers.host
       if (value.trim()) headers.Host = value.trim()
       update({ headers: Object.keys(headers).length ? headers : undefined, host: undefined })
+    } else if (type === 'httpupgrade' || type === 'xhttp') {
+      update({ host: value.trim() || undefined })
     } else {
       update({ host: stringList(value) })
     }
@@ -455,7 +461,7 @@ function TlsFields({ node, onChange, disabled }: { node: SingBoxOutbound; onChan
     {security !== 'none' && <>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <Field label="服务器名称 SNI" value={tls.server_name ?? ''} disabled={disabled} onChange={(value) => update({ server_name: value || undefined })} />
-        {node.type !== 'naive' && <Field label="ALPN" value={tls.alpn?.join(', ') ?? ''} disabled={disabled} onChange={(value) => update({ alpn: stringList(value) })} />}
+        {node.type !== 'naive' && <Field label="ALPN" value={joinList(tls.alpn, ', ')} disabled={disabled} onChange={(value) => update({ alpn: stringList(value) })} />}
         {!['naive', 'hysteria2', 'hysteria', 'tuic'].includes(node.type ?? '') && <SelectField label="uTLS 指纹" value={tls.utls?.fingerprint ?? ''} disabled={disabled} onChange={(value) => update({ utls: value ? { enabled: true, fingerprint: value } : undefined })} options={[
           { value: '', label: '不使用' }, { value: 'chrome', label: 'Chrome' }, { value: 'firefox', label: 'Firefox' },
           { value: 'safari', label: 'Safari' }, { value: 'ios', label: 'iOS' }, { value: 'android', label: 'Android' },
@@ -464,17 +470,17 @@ function TlsFields({ node, onChange, disabled }: { node: SingBoxOutbound; onChan
         ]} />}
       </div>
       {node.type !== 'naive' && <ToggleField label="跳过证书验证" description="仅用于自签名证书" checked={tls.insecure === true} disabled={disabled} onChange={(checked) => update({ insecure: checked })} />}
-      <Field label="CA 证书 PEM" value={tls.ca?.join('\n') ?? ''} disabled={disabled} multiline onChange={(value) => update({ ca: lineList(value) })} />
+      <Field label="CA 证书 PEM" value={joinList(tls.ca, '\n')} disabled={disabled} multiline onChange={(value) => update({ ca: lineList(value) })} />
       {node.type !== 'naive' && <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <Field label="客户端证书 PEM" value={tls.certificate?.join('\n') ?? ''} disabled={disabled} multiline onChange={(value) => update({ certificate: lineList(value) })} />
-        <Field label="客户端密钥 PEM" value={tls.key?.join('\n') ?? ''} disabled={disabled} multiline onChange={(value) => update({ key: lineList(value) })} />
+        <Field label="客户端证书 PEM" value={joinList(tls.certificate, '\n')} disabled={disabled} multiline onChange={(value) => update({ certificate: lineList(value) })} />
+        <Field label="客户端密钥 PEM" value={joinList(tls.key, '\n')} disabled={disabled} multiline onChange={(value) => update({ key: lineList(value) })} />
       </div>}
       {security === 'reality' && <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <Field label="Reality 公钥" value={tls.reality?.public_key ?? ''} disabled={disabled} onChange={(value) => update({ reality: { ...(tls.reality ?? { enabled: true }), enabled: true, public_key: value } })} />
         <Field label="Reality Short ID" value={tls.reality?.short_id ?? ''} disabled={disabled} onChange={(value) => update({ reality: { ...(tls.reality ?? { enabled: true }), enabled: true, short_id: value || undefined } })} />
       </div>}
       <ToggleField label="启用 ECH" checked={tls.ech?.enabled === true} disabled={disabled} onChange={(checked) => update({ ech: { ...(tls.ech ?? {}), enabled: checked } })} />
-      {tls.ech?.enabled && <Field label="ECH 配置" value={tls.ech.config?.join('\n') ?? ''} disabled={disabled} multiline onChange={(value) => update({ ech: { ...(tls.ech ?? { enabled: true }), enabled: true, config: lineList(value) } })} />}
+      {tls.ech?.enabled && <Field label="ECH 配置" value={joinList(tls.ech.config, '\n')} disabled={disabled} multiline onChange={(value) => update({ ech: { ...(tls.ech ?? { enabled: true }), enabled: true, config: lineList(value) } })} />}
     </>}
   </Section>
 }

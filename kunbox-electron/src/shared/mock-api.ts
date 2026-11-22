@@ -194,6 +194,7 @@ export const mockApi = {
       settingsListeners.add(callback)
       return () => { settingsListeners.delete(callback) }
     },
+    isAutoStartLaunch: (): Promise<boolean> => Promise.resolve(false),
     randomAvailablePorts: (): Promise<[number, number]> => Promise.resolve([49152, 49153]),
   },
 

@@ -5,7 +5,16 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { notifyRunningInstance, requestStartupElevation, startActivationServer, waitForAdminRestart } from './windowsAdmin'
+import {
+  AUTOSTART_ARG,
+  AUTOSTART_TASK_NAME,
+  isAutoStartLaunch,
+  notifyRunningInstance,
+  requestStartupElevation,
+  startActivationServer,
+  syncWindowsAutoStart,
+  waitForAdminRestart
+} from './windowsAdmin'
 
 test('Windows startup requests elevation only when enabled and not already elevated or relaunched', { skip: process.platform !== 'win32' }, async () => {
   let requests = 0
@@ -73,4 +82,48 @@ test('activation server wakes running instance and cleans up port file', async (
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('syncWindowsAutoStart prefers elevated scheduled task and falls back to login item', async () => {
+  assert.equal(isAutoStartLaunch(['KunBox.exe']), false)
+  assert.equal(isAutoStartLaunch(['KunBox.exe', AUTOSTART_ARG]), true)
+
+  const loginCalls: Array<{ openAtLogin: boolean; args: string[] }> = []
+  const schtasksCalls: string[][] = []
+  const setLoginItem = (openAtLogin: boolean, args: string[]) => {
+    loginCalls.push({ openAtLogin, args })
+  }
+
+  // 管理员权限下创建计划任务成功，并清理注册表启动项
+  const strategyTask = await syncWindowsAutoStart(
+    true,
+    'D:\\KunBox\\KunBox.exe',
+    setLoginItem,
+    async (args) => { schtasksCalls.push(args) }
+  )
+  assert.equal(strategyTask, 'task')
+  assert.equal(schtasksCalls[0][0], '/Create')
+  assert.ok(schtasksCalls[0].includes(AUTOSTART_TASK_NAME))
+  assert.deepEqual(loginCalls.at(-1), { openAtLogin: false, args: [] })
+
+  // 普通权限下计划任务失败，回退注册表启动项
+  const strategyRegistry = await syncWindowsAutoStart(
+    true,
+    'D:\\KunBox\\KunBox.exe',
+    setLoginItem,
+    async () => { throw new Error('Access is denied') }
+  )
+  assert.equal(strategyRegistry, 'registry')
+  assert.deepEqual(loginCalls.at(-1), { openAtLogin: true, args: [AUTOSTART_ARG] })
+
+  // 关闭时清理注册表与计划任务
+  const strategyDisabled = await syncWindowsAutoStart(
+    false,
+    'D:\\KunBox\\KunBox.exe',
+    setLoginItem,
+    async (args) => { schtasksCalls.push(args) }
+  )
+  assert.equal(strategyDisabled, 'disabled')
+  assert.equal(schtasksCalls.at(-1)?.[0], '/Delete')
+  assert.deepEqual(loginCalls.at(-1), { openAtLogin: false, args: [] })
 })

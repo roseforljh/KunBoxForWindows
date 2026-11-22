@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useCallback, useMemo, ReactNode } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Check, XCircle, AlertCircle, Info, RefreshCw } from 'lucide-react'
+import { useShallow } from 'zustand/react/shallow'
 import { useConnectionStore } from '../../stores/connectionStore'
 import { useManagedTimeouts } from '../../lib/useManagedTimeouts'
 
@@ -100,7 +101,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 10, scale: 0.95 }}
               transition={{ type: 'spring', damping: 25, stiffness: 400 }}
-              className="px-4 py-3 glass-card rounded-xl border border-[var(--glass-border)] shadow-xl flex items-center gap-3 pointer-events-auto"
+              className="px-4 py-3 floating-surface rounded-xl flex items-center gap-3 pointer-events-auto"
             >
               <div className={`w-7 h-7 shrink-0 rounded-full ${getBgColor(toast.type)} flex items-center justify-center`}>
                 {getIcon(toast.type)}
@@ -137,7 +138,12 @@ function ToastProviderInner({
   showToast: (message: string, type?: ToastType, action?: ToastAction) => void
   clearToasts: () => void
 }) {
-  const { state: vpnState, setNeedsRestart } = useConnectionStore()
+  const { vpnState, setNeedsRestart } = useConnectionStore(
+    useShallow((s) => ({
+      vpnState: s.state,
+      setNeedsRestart: s.setNeedsRestart
+    }))
+  )
 
   const showRestartToast = useCallback((message: string) => {
     if (vpnState === 'connected' || vpnState === 'connecting') {

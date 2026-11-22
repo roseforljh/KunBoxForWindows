@@ -66,7 +66,7 @@ export function ConfirmModal({
             onClick={(e) => e.stopPropagation()}
           >
             <div className="absolute inset-0 bg-gradient-to-br from-[var(--bg-primary)] via-[var(--bg-secondary)] to-[var(--bg-primary)] rounded-3xl" />
-            <div className="absolute inset-0 bg-[var(--bg-primary)]/80 backdrop-blur-3xl rounded-3xl" />
+            <div className="absolute inset-0 bg-[var(--bg-primary)]/92 backdrop-blur-3xl rounded-3xl" />
 
             <motion.div
               initial={{ opacity: 0, scale: 0.8 }}

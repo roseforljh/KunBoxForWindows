@@ -1,4 +1,5 @@
 import { spawn, ChildProcess, exec } from 'child_process'
+import http from 'http'
 import { join } from 'path'
 import { existsSync, mkdirSync, writeFileSync, unlinkSync } from 'fs'
 import { EventEmitter } from 'events'
@@ -11,6 +12,49 @@ import type {
   LogEntry,
   ProxyMode
 } from './types'
+
+// 剥离终端 ANSI 颜色转义序列，避免界面 Toast 与日志出现方块乱码
+function stripAnsi(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').trim()
+}
+
+// 将常见 sing-box 内核底层报错转换为易懂中文提示
+function formatCoreError(raw: string): string {
+  const clean = stripAnsi(raw)
+    .replace(/^(FATAL|ERROR|WARN|INFO)\[\d+\]\s*/i, '')
+    .replace(/^start service:\s*/i, '')
+    .replace(/^create service:\s*/i, '')
+    .trim()
+
+  const depMatch = clean.match(/dependency\[([^\]]+)\]\s+not found for outbound\[([^\]]+)\]/i)
+  if (depMatch) {
+    const depName = depMatch[1].includes('::') ? depMatch[1].split('::').slice(1).join('::') : depMatch[1]
+    return `节点「${depMatch[2]}」的前置代理「${depName}」不存在或已失效，请在编辑节点中重新选择`
+  }
+
+  if (/address already in use|only one usage of each socket address/i.test(clean)) {
+    return '代理或控制端口被占用，请关闭冲突程序或在设置中更换端口'
+  }
+
+  if (/access is denied|permission denied|operation not permitted|wintun|create tun/i.test(clean)) {
+    return '创建 TUN 网卡权限不足，请以管理员身份运行 KunBox 或关闭 TUN 模式'
+  }
+
+  if (/legacy DNS fakeip|Legacy Address Filter/i.test(clean)) {
+    return 'DNS 配置与当前内核版本不兼容，请检查 DNS 或规则集设置'
+  }
+
+  if (/no such file or directory|cannot find the file|system cannot find the path/i.test(clean)) {
+    return '缺少规则集或配置文件，请先更新规则集或重新导入订阅'
+  }
+
+  if (/decode config|invalid/i.test(clean)) {
+    return `配置文件格式错误：${clean.replace(/^decode config[^:]*:\s*/i, '')}`
+  }
+
+  return clean || '内核启动失败，请查看日志了解详情'
+}
 
 export class SingBoxManager extends EventEmitter {
   private process: ChildProcess | null = null
@@ -60,6 +104,29 @@ export class SingBoxManager extends EventEmitter {
   setMode(mode: ProxyMode): void {
     this.mode = mode
     this.emit('modeChange', mode)
+    // 运行中实时通知内核 Clash API 切换模式
+    if (this.isRunning()) {
+      const payload = JSON.stringify({ mode })
+      const req = http.request({
+        host: this.config.apiHost,
+        port: this.config.apiPort,
+        path: '/configs',
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(payload)
+        },
+        timeout: 3000
+      })
+      req.on('error', () => {})
+      req.on('timeout', () => req.destroy())
+      req.write(payload)
+      req.end()
+    }
+  }
+
+  getApiPort(): number {
+    return this.config.apiPort
   }
 
   private setState(newState: ServiceState, error?: string): void {
@@ -140,18 +207,18 @@ export class SingBoxManager extends EventEmitter {
       this.pid = this.process.pid || null
 
       this.process.stdout?.on('data', (data) => {
-        const msg = data.toString().trim()
+        const msg = stripAnsi(data.toString())
         if (msg) this.log('info', 'sing-box', msg)
       })
 
       this.process.stderr?.on('data', (data) => {
-        const msg = data.toString().trim()
+        const msg = stripAnsi(data.toString())
         if (msg) {
           const level = msg.includes('ERROR') || msg.includes('FATAL') ? 'error' :
                        msg.includes('WARN') ? 'warn' : 'info'
           this.log(level, 'sing-box', msg)
           if (this.state === 'starting' && (msg.includes('FATAL') || msg.includes('panic'))) {
-            this.setState('error', msg)
+            this.setState('error', formatCoreError(msg))
           }
         }
       })
@@ -268,8 +335,7 @@ export class SingBoxManager extends EventEmitter {
 
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
-        this.destroyOwnProcess()
-        resolve()
+        void this.destroyOwnProcess().finally(resolve)
       }, timeout)
 
       this.process!.once('exit', () => {
@@ -285,11 +351,8 @@ export class SingBoxManager extends EventEmitter {
     })
   }
 
-  private destroyOwnProcess(): void {
+  private destroyOwnProcess(): Promise<void> {
     const pid = this.pid || this.process?.pid
-    if (process.platform === 'win32' && pid) {
-      exec(`taskkill /F /T /PID ${pid}`, { windowsHide: true }, () => {})
-    }
     if (this.process && !this.process.killed) {
       try {
         this.process.kill('SIGKILL')
@@ -297,6 +360,12 @@ export class SingBoxManager extends EventEmitter {
         // ignore
       }
     }
+    if (process.platform === 'win32' && pid) {
+      return new Promise((resolve) => {
+        exec(`taskkill /F /T /PID ${pid}`, { windowsHide: true, timeout: 3000 }, () => resolve())
+      })
+    }
+    return Promise.resolve()
   }
 
   private handleProcessExit(code: number | null, signal: string | null): void {

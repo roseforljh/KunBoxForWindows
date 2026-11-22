@@ -134,8 +134,8 @@ export default function Dashboard() {
     if (isConnected && traffic) {
       setTrafficHistory(prev => {
         const newHistory = [...prev, { download: traffic.downloadSpeed, upload: traffic.uploadSpeed }]
-        // Keep last 20 data points
-        return newHistory.slice(-20)
+        // 保留最近 40 个采样点，使波形滚动更平顺
+        return newHistory.slice(-40)
       })
     } else {
       setTrafficHistory([])
@@ -749,94 +749,152 @@ function TrafficItem({
 }
 
 function TrafficChart({ data }: { data: { download: number; upload: number }[] }) {
-  // Use real data or show empty state
-  const downloadData = data.length > 0 ? data.map(d => d.download) : Array(20).fill(0)
-  const uploadData = data.length > 0 ? data.map(d => d.upload) : Array(20).fill(0)
-  
-  const maxValue = Math.max(...downloadData, ...uploadData, 1) * 1.1
-  const height = 120
-  const width = 100
-  
-  const createPath = (values: number[]) => {
-    if (values.length < 2) return ''
-    
-    const points = values.map((value, index) => ({
-      x: (index / (values.length - 1)) * width,
-      y: height - (value / maxValue) * height
-    }))
-    
-    let path = `M ${points[0].x} ${points[0].y}`
-    for (let i = 0; i < points.length - 1; i++) {
-      const current = points[i]
-      const next = points[i + 1]
-      const controlX = (current.x + next.x) / 2
-      path += ` C ${controlX} ${current.y}, ${controlX} ${next.y}, ${next.x} ${next.y}`
+  const POINTS = 40
+  const padCount = Math.max(0, POINTS - data.length)
+  const padded = data.length > 0
+    ? [...Array.from({ length: padCount }, () => ({ download: 0, upload: 0 })), ...data.slice(-POINTS)]
+    : Array.from({ length: POINTS }, () => ({ download: 0, upload: 0 }))
+
+  const downloadData = padded.map(d => d.download)
+  const uploadData = padded.map(d => d.upload)
+
+  const rawMax = Math.max(...downloadData, ...uploadData, 0)
+  const maxValue = rawMax > 0 ? rawMax * 1.18 : 1024
+  const width = 600
+  const height = 136
+  const padTop = 12
+  const padBottom = 4
+  const plotHeight = height - padTop - padBottom
+
+  const toPoints = (values: number[]) => values.map((value, index) => ({
+    x: (index / (values.length - 1)) * width,
+    y: padTop + plotHeight - (Math.min(value, maxValue) / maxValue) * plotHeight
+  }))
+
+  const createSmoothPath = (values: number[]) => {
+    const pts = toPoints(values)
+    if (pts.length < 2) return ''
+    let d = `M ${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)}`
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[i]
+      const p1 = pts[i + 1]
+      const cx = ((p0.x + p1.x) / 2).toFixed(2)
+      d += ` C ${cx} ${p0.y.toFixed(2)}, ${cx} ${p1.y.toFixed(2)}, ${p1.x.toFixed(2)} ${p1.y.toFixed(2)}`
     }
-    return path
-  }
-  
-  const createAreaPath = (values: number[]) => {
-    const linePath = createPath(values)
-    if (!linePath) return ''
-    
-    const points = values.map((value, index) => ({
-      x: (index / (values.length - 1)) * width,
-      y: height - (value / maxValue) * height
-    }))
-    return linePath + ` L ${points[points.length - 1].x} ${height} L ${points[0].x} ${height} Z`
+    return d
   }
 
+  const createAreaPath = (values: number[]) => {
+    const linePath = createSmoothPath(values)
+    if (!linePath) return ''
+    const baseY = (padTop + plotHeight).toFixed(2)
+    return `${linePath} L ${width} ${baseY} L 0 ${baseY} Z`
+  }
+
+  const downloadPoints = toPoints(downloadData)
+  const uploadPoints = toPoints(uploadData)
+  const lastDownload = downloadPoints[downloadPoints.length - 1]
+  const lastUpload = uploadPoints[uploadPoints.length - 1]
+  const hasTraffic = data.length > 0
+
   return (
-    <div className="relative h-32">
-      <svg 
-        viewBox={`0 0 ${width} ${height}`} 
-        className="w-full h-full"
+    <div className="relative h-36 select-none">
+      {hasTraffic && (
+        <div className="pointer-events-none absolute inset-y-1 left-0 z-10 flex flex-col justify-between text-[10px] font-mono text-[var(--text-dim)] opacity-75">
+          <span>{formatBytes(maxValue)}/s</span>
+          <span>{formatBytes(maxValue / 2)}/s</span>
+          <span>0 B/s</span>
+        </div>
+      )}
+
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        className="w-full h-full overflow-visible"
         preserveAspectRatio="none"
       >
         <defs>
           <linearGradient id="downloadGradient" x1="0%" y1="0%" x2="0%" y2="100%">
-            <stop offset="0%" stopColor="rgba(16, 185, 129, 0.3)" />
-            <stop offset="100%" stopColor="rgba(16, 185, 129, 0)" />
+            <stop offset="0%" stopColor="#10b981" stopOpacity="0.28" />
+            <stop offset="65%" stopColor="#10b981" stopOpacity="0.06" />
+            <stop offset="100%" stopColor="#10b981" stopOpacity="0" />
           </linearGradient>
           <linearGradient id="uploadGradient" x1="0%" y1="0%" x2="0%" y2="100%">
-            <stop offset="0%" stopColor="rgba(245, 158, 11, 0.2)" />
-            <stop offset="100%" stopColor="rgba(245, 158, 11, 0)" />
+            <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.24" />
+            <stop offset="65%" stopColor="#f59e0b" stopOpacity="0.05" />
+            <stop offset="100%" stopColor="#f59e0b" stopOpacity="0" />
           </linearGradient>
+          <filter id="glowDownload" x="-10%" y="-20%" width="120%" height="140%">
+            <feGaussianBlur stdDeviation="2.2" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+          <filter id="glowUpload" x="-10%" y="-20%" width="120%" height="140%">
+            <feGaussianBlur stdDeviation="2.2" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
         </defs>
-        
-        {[0, 0.25, 0.5, 0.75, 1].map((ratio) => (
-          <line
-            key={ratio}
-            x1="0"
-            y1={height * ratio}
-            x2={width}
-            y2={height * ratio}
-            stroke="var(--border-secondary)"
-            strokeWidth="0.3"
-            strokeDasharray="2,2"
-          />
-        ))}
-        
-        <path d={createAreaPath(downloadData)} fill="url(#downloadGradient)" />
-        <path 
-          d={createPath(downloadData)} 
-          fill="none" 
-          stroke="#10b981" 
-          strokeWidth="1.5"
-          strokeLinecap="round"
-        />
-        
+
+        {[0, 0.5, 1].map((ratio) => {
+          const y = padTop + plotHeight * ratio
+          return (
+            <line
+              key={ratio}
+              x1="0"
+              y1={y}
+              x2={width}
+              y2={y}
+              stroke="var(--border-secondary)"
+              strokeOpacity="0.45"
+              strokeWidth="1"
+              vectorEffect="non-scaling-stroke"
+            />
+          )
+        })}
+
         <path d={createAreaPath(uploadData)} fill="url(#uploadGradient)" />
-        <path 
-          d={createPath(uploadData)} 
-          fill="none" 
-          stroke="#f59e0b" 
-          strokeWidth="1.5"
+        <path
+          d={createSmoothPath(uploadData)}
+          fill="none"
+          stroke="#f59e0b"
+          strokeWidth="1.75"
           strokeLinecap="round"
+          strokeLinejoin="round"
+          vectorEffect="non-scaling-stroke"
+          filter="url(#glowUpload)"
+        />
+
+        <path d={createAreaPath(downloadData)} fill="url(#downloadGradient)" />
+        <path
+          d={createSmoothPath(downloadData)}
+          fill="none"
+          stroke="#10b981"
+          strokeWidth="1.75"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          vectorEffect="non-scaling-stroke"
+          filter="url(#glowDownload)"
         />
       </svg>
-      
-      {data.length === 0 && (
+
+      {hasTraffic && lastDownload && (
+        <div
+          className="pointer-events-none absolute right-0 w-2 h-2 -mr-1 -mt-1 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(16,185,129,0.9)] transition-[top] duration-300"
+          style={{ top: `${(lastDownload.y / height) * 100}%` }}
+        />
+      )}
+      {hasTraffic && lastUpload && (
+        <div
+          className="pointer-events-none absolute right-0 w-2 h-2 -mr-1 -mt-1 rounded-full bg-amber-400 shadow-[0_0_8px_rgba(245,158,11,0.9)] transition-[top] duration-300"
+          style={{ top: `${(lastUpload.y / height) * 100}%` }}
+        />
+      )}
+
+      {!hasTraffic && (
         <div className="absolute inset-0 flex items-center justify-center">
           <span className="text-xs text-[var(--text-dim)]">等待连接...</span>
         </div>

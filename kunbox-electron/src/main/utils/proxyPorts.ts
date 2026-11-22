@@ -49,3 +49,9 @@ export async function resolveProxyPorts(
     : await keep(socksPort) ? socksPort : await findAvailablePort(host, [...excluded, newLocal])
   return { localPort: newLocal, socksPort: newSocks }
 }
+
+/** 检测 Clash API 端口是否可用，被占用时自动避让到空闲端口。 */
+export async function resolveApiPort(preferredPort: number): Promise<number> {
+  if (await canListen('127.0.0.1', preferredPort)) return preferredPort
+  return findAvailablePort('127.0.0.1', [preferredPort])
+}

@@ -346,12 +346,23 @@ export default function RuleSets() {
 
 
   const [isSaving, setIsSaving] = useState(false)
+  const [listSearchQuery, setListSearchQuery] = useState('')
   const [updateResult, setUpdateResult] = useState<string | null>(null)
   const operationRef = useRef(false)
   const savedRuleSetsRef = useRef<RuleSetItem[]>([])
   const needsRestart = useConnectionStore(s => s.needsRestart)
   const vpnState = useConnectionStore(s => s.state)
   const busy = isSaving || downloadingTags.size > 0
+  const normalizedListSearch = listSearchQuery.trim().toLowerCase()
+  const visibleRuleSets = useMemo(() => {
+    if (!normalizedListSearch) return ruleSets
+    return ruleSets.filter((rs) =>
+      rs.name.toLowerCase().includes(normalizedListSearch) ||
+      rs.tag.toLowerCase().includes(normalizedListSearch) ||
+      (rs.url || '').toLowerCase().includes(normalizedListSearch) ||
+      (rs.outboundValue || '').toLowerCase().includes(normalizedListSearch)
+    )
+  }, [normalizedListSearch, ruleSets])
 
   useEffect(() => {
     window.api.ruleset.list().then((data) => {
@@ -774,29 +785,43 @@ export default function RuleSets() {
 
       {/* Rule Sets List with Drag & Drop */}
       <div className="glass-card p-4 rounded-2xl border border-[var(--glass-border)]">
-        <div className="flex items-center gap-2 mb-4">
-          <div className="w-8 h-8 rounded-lg bg-[var(--accent-muted)] flex items-center justify-center">
-            <Shield className="w-4 h-4 text-[var(--accent-primary)]" />
+        <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-lg bg-[var(--accent-muted)] flex items-center justify-center">
+              <Shield className="w-4 h-4 text-[var(--accent-primary)]" />
+            </div>
+            <span className="text-sm font-semibold text-[var(--text-primary)]">
+              路由规则集
+            </span>
+            <span className="text-xs text-[var(--text-muted)] bg-[var(--bg-tertiary)] px-2 py-0.5 rounded-full">
+              {normalizedListSearch ? `${visibleRuleSets.length}/${ruleSets.length}` : `${ruleSets.length}`} 条规则
+            </span>
           </div>
-          <span className="text-sm font-semibold text-[var(--text-primary)]">
-            路由规则集
-          </span>
-          <span className="text-xs text-[var(--text-muted)] bg-[var(--bg-tertiary)] px-2 py-0.5 rounded-full">
-            {ruleSets.length} 条规则
-          </span>
+          <div className="flex items-center gap-2 px-3 h-9 rounded-xl bg-[var(--bg-secondary)] border border-[var(--glass-border)]">
+            <Search className="w-3.5 h-3.5 text-[var(--text-muted)]" />
+            <input
+              type="text"
+              placeholder="搜索规则集..."
+              value={listSearchQuery}
+              onChange={(e) => setListSearchQuery(e.target.value)}
+              className="bg-transparent border-none outline-none text-xs text-[var(--text-primary)] placeholder:text-[var(--text-faint)] w-44"
+            />
+          </div>
         </div>
 
         <Reorder.Group
           axis="y"
-          values={ruleSets}
-          onReorder={setRuleSets}
+          values={visibleRuleSets}
+          onReorder={(reordered) => {
+            if (!normalizedListSearch) setRuleSets(reordered)
+          }}
           className="space-y-2"
         >
-          {ruleSets.map((ruleSet) => (
+          {visibleRuleSets.map((ruleSet) => (
             <Reorder.Item
               key={ruleSet.id}
               value={ruleSet}
-              dragListener={!busy}
+              dragListener={!busy && !normalizedListSearch}
               onDragEnd={() => {
                 if (!operationRef.current && ruleSets !== savedRuleSetsRef.current) {
                   operationRef.current = true

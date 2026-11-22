@@ -12,7 +12,8 @@ import {
   Server,
   FileText,
   Loader2,
-  ChevronDown
+  ChevronDown,
+  Search
 } from 'lucide-react'
 import { Modal, ModalButton } from './ui/Modal'
 import { AppSelect } from './ui/Select'
@@ -60,6 +61,8 @@ export default function DomainRules() {
       loadAllNodes: s.loadAllNodes
     }))
   )
+
+  const [searchQuery, setSearchQuery] = useState('')
 
   const [dialogData, setDialogData] = useState({
     value: '',
@@ -301,8 +304,16 @@ export default function DomainRules() {
 
   const availableNodes = allNodes.filter((n) => n.tag)
   const availableProfiles = profiles
-  const builtInRules = rules.filter(isBuiltInDomainRule)
-  const userRules = rules.filter((rule) => !isBuiltInDomainRule(rule))
+  const normalizedSearch = searchQuery.trim().toLowerCase()
+  const filteredRules = normalizedSearch
+    ? rules.filter((rule) =>
+        rule.value.toLowerCase().includes(normalizedSearch) ||
+        (rule.name || '').toLowerCase().includes(normalizedSearch) ||
+        (rule.outboundValue || '').toLowerCase().includes(normalizedSearch)
+      )
+    : rules
+  const builtInRules = filteredRules.filter(isBuiltInDomainRule)
+  const userRules = filteredRules.filter((rule) => !isBuiltInDomainRule(rule))
 
   const domainNotices = useMemo(() => {
     const value = dialogData.value.trim()
@@ -406,6 +417,16 @@ export default function DomainRules() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <div className="glass-card flex items-center gap-2 px-3.5 h-10 rounded-xl">
+            <Search className="w-4 h-4 text-[var(--text-muted)]" />
+            <input
+              type="text"
+              placeholder="搜索域名规则..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="bg-transparent border-none outline-none text-sm text-[var(--text-primary)] placeholder:text-[var(--text-faint)] w-44"
+            />
+          </div>
           <button
             onClick={openAddDialog}
             className="h-10 px-4 rounded-xl text-sm font-medium flex items-center gap-2 bg-[var(--accent-primary)] text-white hover:bg-[var(--accent-primary)]/90 shadow-lg shadow-[var(--accent-primary)]/20 transition-colors duration-150 active:scale-[0.98]"
@@ -427,7 +448,7 @@ export default function DomainRules() {
             域名规则
           </span>
           <span className="text-xs text-[var(--text-muted)] bg-[var(--bg-tertiary)] px-2 py-0.5 rounded-full">
-            {rules.length} 条规则
+            {normalizedSearch ? `${filteredRules.length}/${rules.length}` : `${rules.length}`} 条规则
           </span>
         </div>
 
@@ -437,7 +458,7 @@ export default function DomainRules() {
               <button
                 type="button"
                 onClick={() => setShowBuiltInRules((isOpen) => !isOpen)}
-                aria-expanded={showBuiltInRules}
+                aria-expanded={showBuiltInRules || Boolean(normalizedSearch)}
                 aria-controls="built-in-domain-rules"
                 className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-[var(--bg-hover)]"
               >
@@ -445,10 +466,10 @@ export default function DomainRules() {
                   <p className="text-sm font-semibold text-[var(--text-primary)]">内置域名规则</p>
                   <p className="mt-0.5 text-xs text-[var(--text-faint)]">{builtInRules.length} 条，默认收起</p>
                 </div>
-                <ChevronDown className={`h-4 w-4 text-[var(--text-muted)] transition-transform ${showBuiltInRules ? 'rotate-180' : ''}`} />
+                <ChevronDown className={`h-4 w-4 text-[var(--text-muted)] transition-transform ${showBuiltInRules || normalizedSearch ? 'rotate-180' : ''}`} />
               </button>
 
-              {showBuiltInRules && (
+              {(showBuiltInRules || Boolean(normalizedSearch)) && (
                 <div id="built-in-domain-rules" className="mt-2 space-y-2 border-t border-[var(--glass-border)] pt-2">
                   {builtInRules.map(renderRule)}
                 </div>
