@@ -97,10 +97,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           {toasts.map((toast) => (
             <motion.div
               key={toast.id}
-              initial={{ opacity: 0, y: 20, scale: 0.95 }}
+              initial={{ opacity: 0, y: 10, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 10, scale: 0.95 }}
-              transition={{ type: 'spring', damping: 25, stiffness: 400 }}
+              exit={{ opacity: 0, y: 6, scale: 0.98 }}
+              transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
               className="px-4 py-3 floating-surface rounded-xl flex items-center gap-3 pointer-events-auto"
             >
               <div className={`w-7 h-7 shrink-0 rounded-full ${getBgColor(toast.type)} flex items-center justify-center`}>

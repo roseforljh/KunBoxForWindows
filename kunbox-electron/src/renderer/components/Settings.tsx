@@ -158,7 +158,7 @@ export default function Settings() {
                 <motion.div
                   layoutId="settings-tab-bg"
                   className="absolute inset-0 bg-gradient-to-br from-[var(--accent-primary)] to-[var(--accent-secondary,var(--accent-primary))] rounded-xl -z-10 shadow-lg shadow-[var(--accent-primary)]/25"
-                  transition={{ type: "spring", bounce: 0.15, duration: 0.5 }}
+                  transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
                 />
               )}
             </button>
@@ -170,10 +170,10 @@ export default function Settings() {
         <AnimatePresence mode="wait">
           <motion.div
             key={activeTab}
-            initial={{ opacity: 0, y: 20 }}
+            initial={{ opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -15 }}
-            transition={{ duration: 0.25, ease: [0.25, 0.46, 0.45, 0.94] }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
             className="h-full overflow-y-auto pr-1"
           >
             {activeTab === 'proxy' && (

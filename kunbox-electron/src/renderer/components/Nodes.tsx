@@ -318,7 +318,7 @@ export default function Nodes() {
               <motion.div
                 layoutId="sort-tab-bg"
                 className="absolute inset-0 bg-gradient-to-br from-[var(--accent-primary)] to-[var(--accent-secondary,var(--accent-primary))] rounded-xl -z-10 shadow-lg shadow-[var(--accent-primary)]/25"
-                transition={{ type: "spring", bounce: 0.15, duration: 0.5 }}
+                transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
               />
             )}
           </button>
@@ -339,7 +339,8 @@ export default function Nodes() {
             {filteredNodes.map((node) => (
               <motion.div
                 key={node.tag}
-                whileTap={{ scale: 0.98 }}
+                whileTap={{ scale: 0.99 }}
+                transition={{ duration: 0.14, ease: [0.22, 1, 0.36, 1] }}
                 onClick={() => node.tag && selectNode(node.tag)}
                 className={cn(
                   'group/card glass-card p-5 rounded-2xl cursor-pointer relative',
@@ -353,10 +354,10 @@ export default function Nodes() {
                       <AnimatePresence>
                         {activeNodeTag === node.tag && (
                           <motion.div
-                            initial={{ scale: 0, opacity: 0 }}
+                            initial={{ scale: 0.6, opacity: 0 }}
                             animate={{ scale: 1, opacity: 1 }}
-                            exit={{ scale: 0, opacity: 0 }}
-                            transition={{ type: "spring", stiffness: 400, damping: 20 }}
+                            exit={{ scale: 0.6, opacity: 0 }}
+                            transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
                             className="absolute inset-0 rounded-full bg-[var(--accent-primary)] flex items-center justify-center"
                           >
                             <Check className="w-3 h-3 text-white" />
@@ -390,7 +391,7 @@ export default function Nodes() {
                   )}
                 </div>
 
-                <p className="text-sm font-semibold text-[var(--text-primary)] truncate mb-3 transition-transform duration-200 origin-left group-hover/card:scale-105" title={node.tag}>
+                <p className="text-sm font-semibold text-[var(--text-primary)] truncate mb-3 transition-colors duration-200 group-hover/card:text-[var(--accent-primary)]" title={node.tag}>
                   {node.tag}
                 </p>
 

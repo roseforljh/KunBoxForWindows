@@ -58,10 +58,10 @@ export function ConfirmModal({
           />
 
           <motion.div
-            initial={{ scale: 0.9, opacity: 0, y: 20 }}
+            initial={{ scale: 0.97, opacity: 0, y: 6 }}
             animate={{ scale: 1, opacity: 1, y: 0 }}
-            exit={{ scale: 0.9, opacity: 0, y: 20 }}
-            transition={{ type: 'spring', duration: 0.5, bounce: 0.3 }}
+            exit={{ scale: 0.97, opacity: 0, y: 4 }}
+            transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
             className="relative w-full max-w-[420px] rounded-3xl border border-[var(--glass-border)] flex flex-col shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >

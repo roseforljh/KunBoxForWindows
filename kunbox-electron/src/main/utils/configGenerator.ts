@@ -54,14 +54,36 @@ export function generateConfig(input: GeneratorInput): object {
   }
 }
 
-/** 仅用于关闭 VPN 时离线测速：不开 TUN、不监听本地代理端口，只开启随机端口 clash_api。 */
-export function generateLatencyTestConfig(nodes: SingBoxOutbound[], apiPort: number): object {
-  const { proxyOutbounds, extraOutbounds } = resolveDetourOutbounds(nodes)
+/** 仅用于精准延迟测速：不开 TUN，仅开启单端口 http inbound（按 auth_user 路由到各节点）与可选 clash_api。 */
+export function generateLatencyTestConfig(
+  nodes: SingBoxOutbound[],
+  apiPort: number,
+  proxyPort?: number
+): object {
+  const { proxyOutbounds, extraOutbounds, proxyTags } = resolveDetourOutbounds(nodes)
   const outbounds: object[] = [
     ...proxyOutbounds,
     ...extraOutbounds,
     { type: 'direct', tag: 'direct' }
   ]
+
+  const inbounds: object[] = proxyPort
+    ? [{
+        type: 'http',
+        tag: 'latency-in',
+        listen: '127.0.0.1',
+        listen_port: proxyPort,
+        users: proxyTags.map((tag) => ({ username: tag, password: '' }))
+      }]
+    : []
+
+  const routeRules: object[] = proxyPort
+    ? proxyTags.map((tag) => ({
+        inbound: ['latency-in'],
+        auth_user: [tag],
+        outbound: tag
+      }))
+    : []
 
   return {
     log: { disabled: true, level: 'error' },
@@ -74,9 +96,10 @@ export function generateLatencyTestConfig(nodes: SingBoxOutbound[], apiPort: num
       servers: [{ tag: 'dns-bootstrap', type: 'udp', server: '223.5.5.5', server_port: 53 }],
       final: 'dns-bootstrap'
     },
-    inbounds: [],
+    inbounds,
     outbounds,
     route: {
+      rules: routeRules,
       final: 'direct',
       auto_detect_interface: true,
       default_domain_resolver: 'dns-bootstrap'
@@ -106,7 +129,7 @@ function buildExperimentalConfig(clashApiPort?: number): object {
   }
 }
 
-function buildDnsConfig(settings: AppSettings, ruleSets: RuleSetItem[], _domainRules: DomainRule[]): object {
+function buildDnsConfig(settings: AppSettings, ruleSets: RuleSetItem[], domainRules: DomainRule[]): object {
   const servers: object[] = []
   const rules: object[] = []
 
@@ -121,7 +144,7 @@ function buildDnsConfig(settings: AppSettings, ruleSets: RuleSetItem[], _domainR
   servers.push(buildDnsServer('local-dns', localDns))
 
   const remoteDns = settings.remoteDns || 'https://dns.google/dns-query'
-  servers.push(buildDnsServer('remote-dns', remoteDns))
+  servers.push(buildDnsServer('remote-dns', remoteDns, 'PROXY'))
 
   if (settings.fakeDns) {
     servers.push({
@@ -137,6 +160,27 @@ function buildDnsConfig(settings: AppSettings, ruleSets: RuleSetItem[], _domainR
     action: 'route',
     server: 'local-dns'
   })
+
+  // 用户自定义域名分流规则优先于广告拦截规则集，确保手动放行的域名不会被 block 规则集在 DNS 层提前拦截
+  for (const rule of domainRules) {
+    if (!rule.enabled) continue
+    const matcher = rule.type === 'domain'
+      ? { domain: [rule.value] }
+      : rule.type === 'domain_suffix'
+        ? { domain_suffix: [rule.value] }
+        : rule.type === 'domain_keyword'
+          ? { domain_keyword: [rule.value] }
+          : null
+    if (!matcher) continue
+
+    if (rule.outboundMode === 'block') {
+      rules.push({ ...matcher, action: 'reject' })
+    } else if (rule.outboundMode === 'direct') {
+      rules.push({ ...matcher, action: 'route', server: 'local-dns' })
+    } else {
+      rules.push({ ...matcher, action: 'route', server: settings.fakeDns ? 'fakeip-dns' : 'remote-dns' })
+    }
+  }
 
   // DNS 规则仅允许域名类规则集，排除 geoip 等 IP 规则集，避免触发 sing-box 1.14 Legacy Address Filter 报错
   const isDomainRuleSet = (r: RuleSetItem) => !r.tag.toLowerCase().includes('geoip')
@@ -180,7 +224,8 @@ function buildDnsConfig(settings: AppSettings, ruleSets: RuleSetItem[], _domainR
   }
 }
 
-function buildDnsServer(tag: string, address: string): object {
+function buildDnsServer(tag: string, address: string, detour?: string): object {
+  const extra = detour ? { detour } : {}
   if (address.startsWith('https://')) {
     const url = new URL(address)
     return {
@@ -189,7 +234,8 @@ function buildDnsServer(tag: string, address: string): object {
       server: url.hostname,
       server_port: url.port ? parseInt(url.port) : 443,
       path: url.pathname || '/dns-query',
-      domain_resolver: 'dns-bootstrap'
+      domain_resolver: 'dns-bootstrap',
+      ...extra
     }
   } else if (address.startsWith('tls://')) {
     const server = address.replace('tls://', '').split(':')[0]
@@ -199,7 +245,8 @@ function buildDnsServer(tag: string, address: string): object {
       type: 'tls',
       server,
       server_port: port,
-      domain_resolver: 'dns-bootstrap'
+      domain_resolver: 'dns-bootstrap',
+      ...extra
     }
   } else if (address.startsWith('quic://')) {
     const server = address.replace('quic://', '').split(':')[0]
@@ -209,7 +256,8 @@ function buildDnsServer(tag: string, address: string): object {
       type: 'quic',
       server,
       server_port: port,
-      domain_resolver: 'dns-bootstrap'
+      domain_resolver: 'dns-bootstrap',
+      ...extra
     }
   } else {
     const parts = address.split(':')
@@ -217,7 +265,8 @@ function buildDnsServer(tag: string, address: string): object {
       tag,
       type: 'udp',
       server: parts[0],
-      server_port: parts[1] ? parseInt(parts[1]) : 53
+      server_port: parts[1] ? parseInt(parts[1]) : 53,
+      ...extra
     }
   }
 }

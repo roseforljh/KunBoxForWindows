@@ -107,10 +107,10 @@ export function AddNodeModal({ isOpen, onClose, onAdd, profiles, currentProfileI
             onClick={handleClose}
           />
           <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.95 }}
-            transition={{ type: 'spring', damping: 25, stiffness: 300 }}
+            initial={{ opacity: 0, scale: 0.97, y: 6 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.97, y: 4 }}
+            transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
             className="relative w-[480px] glass-card rounded-2xl border border-[var(--glass-border)] shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >

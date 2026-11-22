@@ -3,6 +3,14 @@ appId: com.kunbox.app
 productName: KunBox
 copyright: Copyright © 2024-2026 KunBox
 
+asar: true
+npmRebuild: false
+buildDependenciesFromSource: false
+includePdb: false
+electronLanguages:
+  - zh-CN
+  - en-US
+
 directories:
   buildResources: build
   output: release
@@ -35,6 +43,8 @@ nsis:
   perMachine: false
   allowToChangeInstallationDirectory: true
   deleteAppDataOnUninstall: false
+  differentialPackage: false
+  packElevateHelper: false
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: KunBox

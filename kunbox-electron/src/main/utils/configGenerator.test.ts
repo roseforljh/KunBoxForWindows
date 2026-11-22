@@ -134,8 +134,8 @@ test('E2E: generateConfig handles FakeIP, detour chains, duplicate tags, and dom
     // 5. 用真实 RayBox 内核执行 check 校验整份配置
     checkWithRealKernel(config)
 
-    // 6. 用真实 RayBox 内核校验离线测速配置
-    const latencyConfig = generateLatencyTestConfig(primaryNodes, 19092)
+    // 6. 用真实 RayBox 内核校验精准测速配置（含单端口 http inbound 与 auth_user 路由）
+    const latencyConfig = generateLatencyTestConfig(primaryNodes, 19092, 19093)
     checkWithRealKernel(latencyConfig)
   } finally {
     rmSync(tempProfilePath, { force: true })

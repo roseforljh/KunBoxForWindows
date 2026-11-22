@@ -510,8 +510,9 @@ function ProxyToggle({
             }}
             onClick={handleRestart}
             disabled={isLoading || isRestarting}
-            whileHover={{ scale: 1.1 }}
-            whileTap={{ scale: 0.9 }}
+            whileHover={{ scale: 1.03 }}
+            whileTap={{ scale: 0.96 }}
+            transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
             className={cn(
               'w-8 h-8 flex items-center justify-center rounded-full',
               'border backdrop-blur-sm',
@@ -571,10 +572,11 @@ function ProxyToggle({
         <motion.button
           onClick={onToggle}
           disabled={isLoading}
-          whileHover={{ scale: 1.08 }}
-          whileTap={{ scale: 0.92 }}
+          whileHover={{ scale: 1.04 }}
+          whileTap={{ scale: 0.96 }}
+          transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
           className={cn(
-            'w-7 h-7 flex items-center justify-center rounded-full transition-all duration-200',
+            'w-7 h-7 flex items-center justify-center rounded-full transition-colors duration-200',
             'disabled:opacity-50 disabled:cursor-not-allowed',
             isOn
               ? 'proxy-toggle-btn-stop'
@@ -590,9 +592,9 @@ function ProxyToggle({
           ) : (
             <motion.div
               key={isOn ? 'stop' : 'play'}
-              initial={{ scale: 0.5, opacity: 0 }}
+              initial={{ scale: 0.75, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
-              transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+              transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
             >
               {isOn ? (
                 <Square className="w-3 h-3" fill="currentColor" />

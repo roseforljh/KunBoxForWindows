@@ -3,7 +3,8 @@ import { join } from 'path'
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs'
 import { randomUUID } from 'crypto'
 import { spawn, type ChildProcess } from 'child_process'
-import { isIP } from 'net'
+import net, { isIP } from 'net'
+import tls from 'tls'
 import { resolve4 } from 'dns/promises'
 import http from 'http'
 import axios from 'axios'
@@ -27,8 +28,9 @@ const TEMP_SINGBOX_IDLE_MS = 15000
 
 let tempSingboxProcess: ChildProcess | null = null
 let tempSingboxPort = 0
+let tempSingboxProxyPort = 0
 let tempSingboxConfigKey = ''
-let tempSingboxReadyPromise: Promise<number> | null = null
+let tempSingboxReadyPromise: Promise<{ apiPort: number; proxyPort: number }> | null = null
 let tempSingboxIdleTimer: NodeJS.Timeout | null = null
 let activeTempLatencyRequests = 0
 let cachedLatencyNodes: { profileId: string; nodes: SingBoxOutbound[]; loadedAt: number } | null = null
@@ -230,6 +232,7 @@ export function stopTempSingbox(): void {
     tempSingboxProcess = null
   }
   tempSingboxPort = 0
+  tempSingboxProxyPort = 0
   tempSingboxConfigKey = ''
   tempSingboxReadyPromise = null
 }
@@ -268,10 +271,16 @@ function pingClashApi(port: number): Promise<boolean> {
   })
 }
 
-async function ensureTempSingbox(nodes: SingBoxOutbound[]): Promise<number> {
+async function ensureTempSingbox(nodes: SingBoxOutbound[]): Promise<{ apiPort: number; proxyPort: number }> {
   const configKey = JSON.stringify(nodes)
-  if (tempSingboxProcess && !tempSingboxProcess.killed && tempSingboxPort > 0 && tempSingboxConfigKey === configKey) {
-    return tempSingboxPort
+  if (
+    tempSingboxProcess &&
+    !tempSingboxProcess.killed &&
+    tempSingboxPort > 0 &&
+    tempSingboxProxyPort > 0 &&
+    tempSingboxConfigKey === configKey
+  ) {
+    return { apiPort: tempSingboxPort, proxyPort: tempSingboxProxyPort }
   }
   if (tempSingboxReadyPromise && tempSingboxConfigKey === configKey) {
     return tempSingboxReadyPromise
@@ -282,9 +291,15 @@ async function ensureTempSingbox(nodes: SingBoxOutbound[]): Promise<number> {
 
   const readyPromise = (async () => {
     const execPath = await getKernelManager().resolveKernelPath()
-    const apiPort = await findAvailablePort('127.0.0.1', [CLASH_API_PORT])
+    const runningApiPort = getServiceInstance()?.getApiPort() || CLASH_API_PORT
+    const apiPort = await findAvailablePort('127.0.0.1', [CLASH_API_PORT, runningApiPort])
+    const proxyPort = await findAvailablePort('127.0.0.1', [CLASH_API_PORT, runningApiPort, apiPort])
     mkdirSync(DATA_DIR, { recursive: true })
-    writeFileSync(TEMP_LATENCY_CONFIG_FILE, JSON.stringify(generateLatencyTestConfig(nodes, apiPort), null, 2), 'utf-8')
+    writeFileSync(
+      TEMP_LATENCY_CONFIG_FILE,
+      JSON.stringify(generateLatencyTestConfig(nodes, apiPort, proxyPort), null, 2),
+      'utf-8'
+    )
 
     let exited = false
     const proc = spawn(execPath, ['run', '-c', TEMP_LATENCY_CONFIG_FILE], {
@@ -298,6 +313,7 @@ async function ensureTempSingbox(nodes: SingBoxOutbound[]): Promise<number> {
       if (tempSingboxProcess === proc) {
         tempSingboxProcess = null
         tempSingboxPort = 0
+        tempSingboxProxyPort = 0
         tempSingboxConfigKey = ''
         tempSingboxReadyPromise = null
       }
@@ -310,7 +326,8 @@ async function ensureTempSingbox(nodes: SingBoxOutbound[]): Promise<number> {
       }
       if (await pingClashApi(apiPort)) {
         tempSingboxPort = apiPort
-        return apiPort
+        tempSingboxProxyPort = proxyPort
+        return { apiPort, proxyPort }
       }
       await new Promise((resolve) => setTimeout(resolve, 80))
     }
@@ -331,38 +348,138 @@ async function ensureTempSingbox(nodes: SingBoxOutbound[]): Promise<number> {
   }
 }
 
-function queryProxyDelay(port: number, tag: string, targetUrl: string, timeoutMs: number): Promise<NodeLatencyResult> {
-  const path = `/proxies/${encodeURIComponent(tag)}/delay?url=${encodeURIComponent(targetUrl)}&timeout=${timeoutMs}`
-  return new Promise((resolve) => {
-    const req = http.request({
-      host: '127.0.0.1',
-      port,
-      path,
-      method: 'GET',
-      timeout: timeoutMs + 1000
-    }, (res) => {
-      let body = ''
-      res.on('data', (chunk) => { body += chunk })
-      res.on('end', () => {
-        try {
-          const parsed = JSON.parse(body)
-          if (typeof parsed.delay === 'number' && parsed.delay > 0) {
-            resolve({ status: 'success', latencyMs: parsed.delay })
-          } else {
-            resolve({ status: 'timeout', latencyMs: null })
-          }
-        } catch {
-          resolve({ status: 'controller_unavailable', latencyMs: null })
-        }
-      })
-    })
-    req.on('error', () => resolve({ status: 'controller_unavailable', latencyMs: null }))
-    req.on('timeout', () => {
-      req.destroy()
-      resolve({ status: 'timeout', latencyMs: null })
-    })
-    req.end()
+function readHttpResponseHead(stream: net.Socket | tls.TLSSocket, timeoutMs: number): Promise<{ statusCode: number; connectionClose: boolean }> {
+  return new Promise((resolve, reject) => {
+    let buffer = ''
+    const timer = setTimeout(() => {
+      cleanup()
+      reject(new Error('timeout'))
+    }, timeoutMs)
+
+    const cleanup = () => {
+      clearTimeout(timer)
+      stream.off('data', onData)
+      stream.off('error', onError)
+      stream.off('close', onClose)
+    }
+
+    const onError = (err: Error) => {
+      cleanup()
+      reject(err)
+    }
+
+    const onClose = () => {
+      cleanup()
+      reject(new Error('closed'))
+    }
+
+    const onData = (chunk: Buffer) => {
+      buffer += chunk.toString('latin1')
+      const headEnd = buffer.indexOf('\r\n\r\n')
+      if (headEnd === -1) return
+      cleanup()
+      const head = buffer.slice(0, headEnd)
+      const statusMatch = head.match(/^HTTP\/\d\.\d\s+(\d{3})/)
+      const statusCode = statusMatch ? Number(statusMatch[1]) : 0
+      const connectionClose = /connection:\s*close/i.test(head)
+      resolve({ statusCode, connectionClose })
+    }
+
+    stream.on('data', onData)
+    stream.on('error', onError)
+    stream.on('close', onClose)
   })
+}
+
+/** 复刻 KunBox Android PreciseLatencyTester：先建立代理隧道并预热，再复用 Keep-Alive 连接测量纯单次 RTT。 */
+async function measureWarmupRtt(
+  proxyPort: number,
+  nodeTag: string,
+  targetUrl: string,
+  timeoutMs: number
+): Promise<NodeLatencyResult> {
+  let parsed: URL
+  try {
+    parsed = new URL(targetUrl)
+  } catch {
+    parsed = new URL('http://cp.cloudflare.com/generate_204')
+  }
+
+  const isHttps = parsed.protocol === 'https:'
+  const targetHost = parsed.hostname
+  const targetPort = Number(parsed.port) || (isHttps ? 443 : 80)
+  const reqPath = `${parsed.pathname || '/'}${parsed.search || ''}`
+  const hostHeader = parsed.port ? `${targetHost}:${targetPort}` : targetHost
+  const auth = Buffer.from(`${nodeTag}:`, 'utf-8').toString('base64')
+
+  const rawSocket = net.createConnection({ host: '127.0.0.1', port: proxyPort })
+  let activeStream: net.Socket | tls.TLSSocket = rawSocket
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('connect timeout')), timeoutMs)
+      rawSocket.once('connect', () => { clearTimeout(timer); resolve() })
+      rawSocket.once('error', (err) => { clearTimeout(timer); reject(err) })
+    })
+
+    // 通过 HTTP CONNECT 建立端到端代理隧道
+    rawSocket.write(
+      `CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\n` +
+      `Host: ${targetHost}:${targetPort}\r\n` +
+      `Proxy-Authorization: Basic ${auth}\r\n` +
+      `Proxy-Connection: keep-alive\r\n\r\n`
+    )
+    const connectResp = await readHttpResponseHead(rawSocket, timeoutMs)
+    if (connectResp.statusCode < 200 || connectResp.statusCode >= 300) {
+      return { status: 'timeout', latencyMs: null }
+    }
+
+    if (isHttps) {
+      activeStream = await new Promise<tls.TLSSocket>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('tls timeout')), timeoutMs)
+        const tlsSocket = tls.connect({ socket: rawSocket, servername: targetHost }, () => {
+          clearTimeout(timer)
+          resolve(tlsSocket)
+        })
+        tlsSocket.once('error', (err) => { clearTimeout(timer); reject(err) })
+      })
+    }
+
+    // 第 1 次请求：Warmup 预热连接
+    const warmupStart = performance.now()
+    activeStream.write(
+      `GET ${reqPath} HTTP/1.1\r\n` +
+      `Host: ${hostHeader}\r\n` +
+      `Connection: keep-alive\r\n\r\n`
+    )
+    const warmupResp = await readHttpResponseHead(activeStream, timeoutMs)
+    if (warmupResp.statusCode === 0 || warmupResp.statusCode >= 400) {
+      return { status: 'timeout', latencyMs: null }
+    }
+
+    if (warmupResp.connectionClose) {
+      return { status: 'success', latencyMs: Math.max(1, Math.round(performance.now() - warmupStart)) }
+    }
+
+    // 第 2 次请求：复用已预热隧道实测单次 HTTP 往返 RTT
+    const rttStart = performance.now()
+    activeStream.write(
+      `GET ${reqPath} HTTP/1.1\r\n` +
+      `Host: ${hostHeader}\r\n` +
+      `Connection: close\r\n\r\n`
+    )
+    const probeResp = await readHttpResponseHead(activeStream, timeoutMs)
+    if (probeResp.statusCode === 0 || probeResp.statusCode >= 400) {
+      return { status: 'timeout', latencyMs: null }
+    }
+
+    return { status: 'success', latencyMs: Math.max(1, Math.round(performance.now() - rttStart)) }
+  } catch {
+    return { status: 'timeout', latencyMs: null }
+  } finally {
+    activeStream.destroy()
+    rawSocket.destroy()
+  }
 }
 
 export function initProfileHandlers(): void {
@@ -651,11 +768,6 @@ export function initProfileHandlers(): void {
       const targetUrl = settings.latencyTestUrl || 'http://cp.cloudflare.com/generate_204'
       const timeoutMs = settings.latencyTestTimeout || 5000
 
-      const service = getServiceInstance()
-      if (service?.isRunning()) {
-        return await queryProxyDelay(service.getApiPort(), tag, targetUrl, timeoutMs)
-      }
-
       // 3 秒内并发测速复用内存节点列表，避免重复同步读盘
       const now = Date.now()
       let nodes: SingBoxOutbound[]
@@ -679,8 +791,8 @@ export function initProfileHandlers(): void {
       }
       activeTempLatencyRequests += 1
       try {
-        const port = await ensureTempSingbox(nodes)
-        return await queryProxyDelay(port, tag, targetUrl, timeoutMs)
+        const { proxyPort } = await ensureTempSingbox(nodes)
+        return await measureWarmupRtt(proxyPort, tag, targetUrl, timeoutMs)
       } finally {
         activeTempLatencyRequests = Math.max(0, activeTempLatencyRequests - 1)
         scheduleTempSingboxCleanup()
@@ -695,19 +807,24 @@ export function initProfileHandlers(): void {
     load()
     if (!data.activeProfileId) return {}
     const nodes = loadProfileNodes(data.activeProfileId)
+    if (!nodes.length) return {}
     const settings = settingsStore.get('settings')
     const targetUrl = settings.latencyTestUrl || 'http://cp.cloudflare.com/generate_204'
     const timeoutMs = settings.latencyTestTimeout || 5000
-    const service = getServiceInstance()
-    const port = service?.isRunning() ? service.getApiPort() : await ensureTempSingbox(nodes)
-    const results: Record<string, number> = {}
-    await Promise.all(nodes.map(async (node) => {
-      if (!node.tag) return
-      const res = await queryProxyDelay(port, node.tag, targetUrl, timeoutMs)
-      if (res.status === 'success' && res.latencyMs) results[node.tag] = res.latencyMs
-    }))
-    if (!service?.isRunning()) scheduleTempSingboxCleanup()
-    return results
+    activeTempLatencyRequests += 1
+    try {
+      const { proxyPort } = await ensureTempSingbox(nodes)
+      const results: Record<string, number> = {}
+      await Promise.all(nodes.map(async (node) => {
+        if (!node.tag) return
+        const res = await measureWarmupRtt(proxyPort, node.tag, targetUrl, timeoutMs)
+        if (res.status === 'success' && res.latencyMs) results[node.tag] = res.latencyMs
+      }))
+      return results
+    } finally {
+      activeTempLatencyRequests = Math.max(0, activeTempLatencyRequests - 1)
+      scheduleTempSingboxCleanup()
+    }
   })
 
   // 启动订阅定时自动更新检查（每分钟检查一次到达 autoUpdateInterval 的订阅）

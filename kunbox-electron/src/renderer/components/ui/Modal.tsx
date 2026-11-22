@@ -14,8 +14,8 @@ interface ModalProps {
 }
 
 const modalTransition = {
-  duration: 0.15,
-  ease: [0.4, 0, 0.2, 1] as const
+  duration: 0.2,
+  ease: [0.22, 1, 0.36, 1] as const
 }
 
 export const Modal = memo(function Modal({
@@ -54,9 +54,9 @@ export const Modal = memo(function Modal({
 
           {/* Modal container - simplified animation */}
           <motion.div
-            initial={{ opacity: 0, scale: 0.96 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.96 }}
+            initial={{ opacity: 0, scale: 0.97, y: 6 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.97, y: 4 }}
             transition={modalTransition}
             className={`relative w-full ${maxWidth} rounded-2xl overflow-hidden shadow-2xl border border-[var(--glass-border)] flex flex-col max-h-[90vh] bg-[var(--bg-primary)] ${className}`}
             onClick={(e) => e.stopPropagation()}
