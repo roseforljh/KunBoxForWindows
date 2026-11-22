@@ -59,6 +59,7 @@ const mockNodes: SingBoxOutbound[] = [
 let mockActiveProfileId: string | null = 'mock-profile-1'
 let mockActiveNodeTag: string | null = mockNodes[0]?.tag ?? null
 let mockSettings: AppSettings = { ...defaultSettings }
+const settingsListeners = new Set<(settings: AppSettings) => void>()
 let mockKernelVersion = '0.0.1'
 let mockKernelBackup: string | null = null
 type KernelProgress = { phase?: 'downloading' | 'verifying' | 'installing'; downloaded: number; total: number; percent: number }
@@ -186,7 +187,12 @@ export const mockApi = {
     get: (): Promise<AppSettings> => Promise.resolve({ ...mockSettings }),
     set: (_settings: Partial<AppSettings>): Promise<void> => {
       mockSettings = { ...mockSettings, ..._settings }
+      settingsListeners.forEach((callback) => callback({ ...mockSettings }))
       return Promise.resolve()
+    },
+    onChange: (callback: (settings: AppSettings) => void) => {
+      settingsListeners.add(callback)
+      return () => { settingsListeners.delete(callback) }
     },
     randomAvailablePorts: (): Promise<[number, number]> => Promise.resolve([49152, 49153]),
   },

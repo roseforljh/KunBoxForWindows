@@ -153,9 +153,12 @@ export default function Dashboard() {
   // Load profiles and nodes on mount
   useEffect(() => {
     void loadProfilesSafe()
-    void loadLocalPort()
     loadNodes()
-  }, [loadNodes, loadLocalPort, loadProfilesSafe])
+  }, [loadNodes, loadProfilesSafe])
+
+  useEffect(() => {
+    void loadLocalPort()
+  }, [isConnected, loadLocalPort])
 
   // Get active node info
   const activeProfile = profiles.find(p => p.enabled)
@@ -177,7 +180,6 @@ export default function Dashboard() {
       } else {
         const result = await connect()
         if (result.success) {
-          await loadLocalPort()
           if (result.warning) {
             toast.warning(result.warning)
           } else {
@@ -213,7 +215,6 @@ export default function Dashboard() {
       await new Promise(resolve => setTimeout(resolve, 500))
       const startResult = await connect()
       if (startResult.success) {
-        await loadLocalPort()
         if (startResult.warning) {
           toast.warning(startResult.warning)
         } else {

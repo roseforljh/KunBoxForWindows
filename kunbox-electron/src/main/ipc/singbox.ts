@@ -1,10 +1,11 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import { join } from 'path'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync } from 'fs'
 import log from 'electron-log'
-import { IPC_CHANNELS } from '../../shared/constants'
-import type { ProxyState, TrafficStats, LogEntry, LogLevel, SingBoxOutbound } from '../../shared/types'
+import { CLASH_API_PORT, IPC_CHANNELS } from '../../shared/constants'
+import { DEFAULT_SETTINGS, type ProxyState, type TrafficStats, type LogEntry, type LogLevel, type SingBoxOutbound } from '../../shared/types'
 import { generateConfig } from '../utils/configGenerator'
+import { resolveProxyPorts } from '../utils/proxyPorts'
 import { loadRuleSets } from './rulesets'
 import { downloadAllRuleSets, checkRuleSetsReady } from '../utils/ruleSetManager'
 import { settingsStore } from './settings'
@@ -40,11 +41,11 @@ export function getVpnService(): VpnService {
         configDir: CONFIG_DIR,
         workDir: CONFIG_DIR,
         apiHost: '127.0.0.1',
-        apiPort: 9090,
+        apiPort: CLASH_API_PORT,
         apiSecret: ''
       },
       autoSystemProxy: settings.systemProxy ?? true,
-      proxyPort: settings.localPort || 7890
+      proxyPort: settings.localPort || DEFAULT_SETTINGS.localPort
     }
 
     vpnService = new VpnService(config, (msg) => log.info(msg))
@@ -133,39 +134,54 @@ function loadProfileNodes(profileId: string): SingBoxOutbound[] {
   }
 }
 
-export function generateAndSaveConfig(): { success: boolean; error?: string; configPath?: string } {
-  try {
-    const profilesData = loadProfilesData()
+export async function startConfiguredVpn(execPath: string, restart = false): Promise<{
+  success: boolean; error?: string; warning?: string
+}> {
+  const service = getVpnService()
+  if (!restart && service.isRunning()) return { success: true }
 
-    if (!profilesData.activeProfileId) {
-      return { success: false, error: 'No active profile. Please add a subscription first.' }
+  const { activeProfileId, activeNodeTag } = loadProfilesData()
+  if (!activeProfileId) return { success: false, error: 'No active profile. Please add a subscription first.' }
+  const nodes = loadProfileNodes(activeProfileId)
+  if (!nodes.length) return { success: false, error: 'No nodes in active profile. Please update your subscription.' }
+
+  let settings = settingsStore.get('settings')
+  let warning: string | undefined
+  service.updateConfig({
+    core: { execPath, configDir: CONFIG_DIR, workDir: CONFIG_DIR, apiHost: '127.0.0.1', apiPort: CLASH_API_PORT, apiSecret: '' }
+  })
+
+  const prepareConfig = async () => {
+    const previous = settings
+    const ports = await resolveProxyPorts(previous, CLASH_API_PORT)
+    const config = generateConfig({ settings: { ...previous, ...ports }, outbounds: nodes, activeNodeTag: activeNodeTag || nodes[0]?.tag })
+    return {
+      content: JSON.stringify(config, null, 2),
+      onStarted: () => {
+        service.updateConfig({ autoSystemProxy: previous.systemProxy, proxyPort: ports.localPort || DEFAULT_SETTINGS.localPort })
+        const changed = [
+          ports.localPort !== previous.localPort && `HTTP ${previous.localPort} → ${ports.localPort}`,
+          ports.socksPort !== previous.socksPort && `SOCKS ${previous.socksPort} → ${ports.socksPort}`
+        ].filter(Boolean)
+        if (!changed.length) return
+
+        settings = { ...previous, ...ports }
+        warning = `代理端口不可用，已自动切换：${changed.join('，')}`
+        log.warn(warning)
+        try {
+          const current = settingsStore.get('settings')
+          if (current.localPort === previous.localPort && current.socksPort === previous.socksPort && current.allowLan === previous.allowLan) {
+            settingsStore.set('settings', { ...current, ...ports })
+          }
+        } catch (error) {
+          warning += '（未能保存端口设置）'
+          log.error('Failed to save proxy ports:', error)
+        }
+      }
     }
-
-    const nodes = loadProfileNodes(profilesData.activeProfileId)
-    if (nodes.length === 0) {
-      return { success: false, error: 'No nodes in active profile. Please update your subscription.' }
-    }
-
-    const settings = settingsStore.get('settings')
-    const activeNodeTag = profilesData.activeNodeTag || nodes[0]?.tag
-
-    const config = generateConfig({
-      settings,
-      outbounds: nodes,
-      activeNodeTag
-    })
-
-    mkdirSync(CONFIG_DIR, { recursive: true })
-    const configPath = join(CONFIG_DIR, 'config.json')
-    writeFileSync(configPath, JSON.stringify(config, null, 2))
-
-    log.info(`Config generated: ${configPath}, ${nodes.length} nodes`)
-    return { success: true, configPath }
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error)
-    log.error('Failed to generate config:', msg)
-    return { success: false, error: msg }
   }
+  const result = await (restart ? service.restart({ prepareConfig }) : service.start({ prepareConfig }))
+  return result.success && warning ? { ...result, warning } : result
 }
 
 export function initSingBoxHandlers(): void {
@@ -189,26 +205,7 @@ export function initSingBoxHandlers(): void {
       await downloadAllRuleSets(missing)
     }
 
-    const genResult = generateAndSaveConfig()
-    if (!genResult.success) {
-      return genResult
-    }
-
-    const settings = settingsStore.get('settings')
-    service.updateConfig({
-      core: {
-        execPath: singboxPath,
-        configDir: CONFIG_DIR,
-        workDir: CONFIG_DIR,
-        apiHost: '127.0.0.1',
-        apiPort: 9090,
-        apiSecret: ''
-      },
-      autoSystemProxy: settings.systemProxy,
-      proxyPort: settings.localPort || 7890
-    })
-
-    return service.start({ configPath: genResult.configPath! })
+    return startConfiguredVpn(singboxPath)
   })
 
   ipcMain.handle(IPC_CHANNELS.SINGBOX_STOP, async () => {
@@ -225,26 +222,7 @@ export function initSingBoxHandlers(): void {
       return { success: false, error: msg }
     }
 
-    const genResult = generateAndSaveConfig()
-    if (!genResult.success) {
-      return genResult
-    }
-
-    const settings = settingsStore.get('settings')
-    service.updateConfig({
-      core: {
-        execPath: singboxPath,
-        configDir: CONFIG_DIR,
-        workDir: CONFIG_DIR,
-        apiHost: '127.0.0.1',
-        apiPort: 9090,
-        apiSecret: ''
-      },
-      autoSystemProxy: settings.systemProxy,
-      proxyPort: settings.localPort || 7890
-    })
-
-    return service.restart({ configPath: genResult.configPath! })
+    return startConfiguredVpn(singboxPath, true)
   })
 
   ipcMain.handle('singbox:enable-system-proxy', async (_, port?: number) => {

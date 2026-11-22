@@ -32,6 +32,7 @@ export const IPC_CHANNELS = {
 
   SETTINGS_GET: 'settings:get',
   SETTINGS_SET: 'settings:set',
+  SETTINGS_CHANGED: 'settings:changed',
 
   RULESET_LIST: 'ruleset:list',
   RULESET_SAVE: 'ruleset:save',
@@ -43,6 +44,7 @@ export const IPC_CHANNELS = {
   WINDOW_CLOSE: 'window:close'
 } as const
 
-export const CLASH_API_URL = 'http://127.0.0.1:9090'
+export const CLASH_API_PORT = 9090
+export const CLASH_API_URL = `http://127.0.0.1:${CLASH_API_PORT}`
 
 export const SINGBOX_DOWNLOAD_URL = 'https://github.com/SagerNet/sing-box/releases/latest/download/sing-box-windows-amd64.zip'

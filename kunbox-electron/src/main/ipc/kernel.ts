@@ -4,9 +4,8 @@ import { existsSync, mkdirSync } from 'fs'
 import log from 'electron-log'
 import { is } from '@electron-toolkit/utils'
 import { KernelManager, RAYBOX_REPO_URL } from '../core/KernelManager'
-import { getServiceInstance, generateAndSaveConfig } from './singbox'
+import { getServiceInstance, startConfiguredVpn } from './singbox'
 import { stopTempSingbox } from './profiles'
-import { settingsStore } from './settings'
 import { getDataDir } from '../utils/paths'
 
 let kernelManager: KernelManager | null = null
@@ -53,25 +52,7 @@ export function getKernelManager(): KernelManager {
           const service = getServiceInstance()
           if (!service) return { success: false, error: 'VPN 服务未初始化' }
           const execPath = await getKernelManager().resolveKernelPath()
-          const genResult = generateAndSaveConfig()
-          if (!genResult.success || !genResult.configPath) {
-            return { success: false, error: genResult.error || '生成配置失败' }
-          }
-          const settings = settingsStore.get('settings')
-          const dataDir = getDataDir()
-          service.updateConfig({
-            core: {
-              execPath,
-              configDir: dataDir,
-              workDir: dataDir,
-              apiHost: '127.0.0.1',
-              apiPort: 9090,
-              apiSecret: ''
-            },
-            autoSystemProxy: settings.systemProxy,
-            proxyPort: settings.localPort || 7890
-          })
-          return service.start({ configPath: genResult.configPath })
+          return startConfiguredVpn(execPath)
         },
         stopAfterFailedRestart: async () => {
           const service = getServiceInstance()

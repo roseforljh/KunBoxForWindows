@@ -34,6 +34,19 @@ export async function launchAsAdmin(executable: string, appPath?: string): Promi
   await runPowerShell(`Start-Process -FilePath ${quote(executable)} -ArgumentList ${quote(args)} -Verb RunAs -ErrorAction Stop`)
 }
 
+export async function requestStartupElevation(
+  requireAdmin: boolean,
+  launch: () => Promise<void>,
+  checkAdmin = isRunningAsAdmin,
+  argv = process.argv
+): Promise<boolean> {
+  if (process.platform !== 'win32' || !requireAdmin || argv.some((arg) => arg.startsWith(waitArg)) || await checkAdmin()) {
+    return false
+  }
+  await launch()
+  return true
+}
+
 export async function waitForAdminRestart(argv = process.argv, timeoutSeconds = 30): Promise<void> {
   if (process.platform !== 'win32') return
   const arg = argv.find((value) => value.startsWith(waitArg))

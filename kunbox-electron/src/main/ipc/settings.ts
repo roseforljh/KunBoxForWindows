@@ -1,9 +1,9 @@
-import { ipcMain } from 'electron'
+import { BrowserWindow, ipcMain } from 'electron'
 import Store from 'electron-store'
-import * as net from 'net'
-import { IPC_CHANNELS } from '../../shared/constants'
+import { CLASH_API_PORT, IPC_CHANNELS } from '../../shared/constants'
 import { DEFAULT_SETTINGS, type AppSettings } from '../../shared/types'
 import { getDataDir } from '../utils/paths'
+import { findAvailablePort, proxyListenHost } from '../utils/proxyPorts'
 
 const store = new Store<{ settings: AppSettings }>({
   name: 'settings',
@@ -13,20 +13,14 @@ const store = new Store<{ settings: AppSettings }>({
   }
 })
 
-function getAvailablePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer()
-    server.unref()
-    server.on('error', reject)
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address() as net.AddressInfo
-      const port = address.port
-      server.close(() => resolve(port))
-    })
-  })
-}
-
 export function initSettingsHandlers(): void {
+  store.onDidChange('settings', (settings) => {
+    if (!settings) return
+    for (const window of BrowserWindow.getAllWindows()) {
+      window.webContents.send(IPC_CHANNELS.SETTINGS_CHANGED, settings)
+    }
+  })
+
   ipcMain.handle(IPC_CHANNELS.SETTINGS_GET, () => {
     return store.get('settings')
   })
@@ -37,9 +31,9 @@ export function initSettingsHandlers(): void {
   })
 
   ipcMain.handle('settings:random-available-ports', async () => {
-    const port1 = await getAvailablePort()
-    const port2 = await getAvailablePort()
-    return [port1, port2]
+    const host = proxyListenHost(store.get('settings').allowLan)
+    const port1 = await findAvailablePort(host, [CLASH_API_PORT])
+    return [port1, await findAvailablePort(host, [CLASH_API_PORT, port1])]
   })
 }
 

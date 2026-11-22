@@ -4,17 +4,17 @@ import { existsSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import log from 'electron-log'
 import { getDataDir } from './utils/paths'
-import { waitForAdminRestart } from './utils/windowsAdmin'
+import { requestStartupElevation, waitForAdminRestart } from './utils/windowsAdmin'
 
 // 将 Electron userData 统一指向 D:\KunBoxData（无 D 盘时回退 %APPDATA%\KunBox）
 app.setPath('userData', getDataDir())
 import { initSingBoxHandlers, cleanupBeforeQuit } from './ipc/singbox'
 import { initProfileHandlers, stopTempSingbox } from './ipc/profiles'
-import { initSettingsHandlers } from './ipc/settings'
+import { initSettingsHandlers, settingsStore } from './ipc/settings'
 import { initKernelHandlers } from './ipc/kernel'
 import { initRuleSetsHandlers } from './ipc/rulesets'
 import { initRulesHandlers } from './ipc/rules'
-import { initWindowHandlers } from './ipc/window'
+import { initWindowHandlers, launchCurrentAppAsAdmin } from './ipc/window'
 import { initUpdaterHandlers } from './ipc/updater'
 import { createTray, destroyTray, updateTrayStatus } from './tray'
 
@@ -110,7 +110,16 @@ if (!gotTheLock) {
     }
   })
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
+    try {
+      if (await requestStartupElevation(settingsStore.get('settings').requireAdmin, launchCurrentAppAsAdmin)) {
+        app.quit()
+        return
+      }
+    } catch (error) {
+      log.warn('启动时未取得管理员权限，继续以普通权限运行', error)
+    }
+
     electronApp.setAppUserModelId('com.kunbox')
 
     app.on('browser-window-created', (_, window) => {

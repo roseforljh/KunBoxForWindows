@@ -2,6 +2,11 @@ import { ipcMain, BrowserWindow, app } from 'electron'
 import log from 'electron-log'
 import { isRunningAsAdmin, launchAsAdmin } from '../utils/windowsAdmin'
 
+export function launchCurrentAppAsAdmin(): Promise<void> {
+  return launchAsAdmin(process.env.PORTABLE_EXECUTABLE_FILE || process.execPath,
+    app.isPackaged ? undefined : app.getAppPath())
+}
+
 export function initWindowHandlers(getMainWindow: () => BrowserWindow | null): void {
   ipcMain.handle('window:minimize', () => {
     const win = getMainWindow()
@@ -36,8 +41,7 @@ export function initWindowHandlers(getMainWindow: () => BrowserWindow | null): v
 
   ipcMain.handle('window:restart-as-admin', async () => {
     try {
-      await launchAsAdmin(process.env.PORTABLE_EXECUTABLE_FILE || process.execPath,
-        app.isPackaged ? undefined : app.getAppPath())
+      await launchCurrentAppAsAdmin()
       app.quit()
       return true
     } catch (error) {

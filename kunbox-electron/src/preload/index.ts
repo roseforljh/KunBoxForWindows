@@ -121,6 +121,8 @@ const api = {
   settings: {
     get: (): Promise<AppSettings> => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_GET),
     set: (settings: Partial<AppSettings>): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_SET, settings),
+    onChange: (callback: (settings: AppSettings) => void) =>
+      onEvent(IPC_CHANNELS.SETTINGS_CHANGED, callback),
     randomAvailablePorts: (): Promise<[number, number]> => ipcRenderer.invoke('settings:random-available-ports')
   },
 

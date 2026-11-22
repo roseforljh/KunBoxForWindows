@@ -39,11 +39,20 @@ export default function Settings() {
   })
 
   useEffect(() => {
-    window.api.settings.get().then((s: AppSettings) => {
-      setSettings(s)
+    let cancelled = false
+    const unsubscribe = window.api.settings.onChange(setSettings)
+    window.api.settings.get().then((initial) => {
+      if (!cancelled) setSettings((current) => current ?? initial)
     }).catch((e) => {
       console.error('Failed to load settings:', e)
     })
+    return () => {
+      cancelled = true
+      unsubscribe()
+    }
+  }, [])
+
+  useEffect(() => {
     window.api.window.isAdmin().then(setIsAdmin).catch((e) => {
       console.error('Failed to check admin status:', e)
     })
@@ -64,9 +73,6 @@ export default function Settings() {
 
   const updateSetting = async <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
     if (!settings) return
-    const prevSettings = settings
-    const newSettings = { ...settings, [key]: value }
-    setSettings(newSettings)
     setSaving(true)
 
     try {
@@ -87,11 +93,9 @@ export default function Settings() {
       }
 
       if (key === 'requireAdmin' && value === true && !isAdmin && !(await restartAsAdmin())) {
-        setSettings(prevSettings)
         await window.api.settings.set({ requireAdmin: false })
       }
     } catch (e) {
-      setSettings(prevSettings)
       console.error(`Failed to save setting ${key}:`, e)
       toast.error(`保存设置失败: ${String(e)}`)
     } finally {
@@ -101,15 +105,12 @@ export default function Settings() {
 
   const randomizePorts = async () => {
     if (!settings) return
-    const prevSettings = settings
     setSaving(true)
     try {
       const [localPort, socksPort] = await window.api.settings.randomAvailablePorts()
       await window.api.settings.set({ localPort, socksPort })
-      setSettings({ ...settings, localPort, socksPort })
       toast.showRestartToast('代理端口已保存')
     } catch (e) {
-      setSettings(prevSettings)
       console.error('Failed to randomize proxy ports:', e)
     } finally {
       setSaving(false)
@@ -451,21 +452,20 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean
 }
 
 function NumberInput({ value, onChange, min, max, step = 1 }: { value: number; onChange: (v: number) => void; min?: number; max?: number; step?: number }) {
-  const [draft, setDraft] = useState(String(value))
+  const [draft, setDraft] = useState<string | null>(null)
 
   const commit = () => {
     const next = Number(draft)
-    if (draft && Number.isInteger(next) && (min === undefined || next >= min) && (max === undefined || next <= max)) {
-      if (next !== value) onChange(next)
-    } else {
-      setDraft(String(value))
+    if (draft && next !== value && Number.isInteger(next) && (min === undefined || next >= min) && (max === undefined || next <= max)) {
+      onChange(next)
     }
+    setDraft(null)
   }
 
   return (
     <input
       type="number"
-      value={draft}
+      value={draft ?? value}
       min={min}
       max={max}
       step={step}

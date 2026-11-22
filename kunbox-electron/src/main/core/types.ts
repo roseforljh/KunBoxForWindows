@@ -61,6 +61,7 @@ export interface CoreConfig {
 export interface StartOptions {
   configPath?: string
   configContent?: string
+  prepareConfig?: () => Promise<{ content: string; onStarted: () => void }>
   cleanCache?: boolean
 }
 

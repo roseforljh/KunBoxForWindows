@@ -21,6 +21,8 @@ export class SingBoxManager extends EventEmitter {
   private configPath: string | null = null
   private mode: ProxyMode = 'rule'
   private config: CoreConfig
+  private startSequence = 0
+  private restartOptions: StartOptions | null = null
   private restartAttempts = 0
   private maxRestartAttempts = 3
   private restartDelay = 1000
@@ -80,11 +82,13 @@ export class SingBoxManager extends EventEmitter {
       return { success: true }
     }
 
-    if (this.state === 'starting') {
-      return { success: false, error: 'Already starting' }
+    if (this.state === 'starting' || this.state === 'stopping' || this.process) {
+      return { success: false, error: '内核正在启动或退出，请稍后再试' }
     }
 
+    const sequence = ++this.startSequence
     try {
+      this.lastError = null
       this.setState('starting')
       this.log('info', 'Core', 'Preparing to start sing-box...')
 
@@ -94,11 +98,15 @@ export class SingBoxManager extends EventEmitter {
         return { success: false, error }
       }
 
+      const prepared = await options.prepareConfig?.()
+      if (sequence !== this.startSequence) return { success: false, error: '内核启动已取消' }
+
       let configPath = options.configPath
-      if (options.configContent) {
+      const configContent = prepared?.content ?? options.configContent
+      if (configContent) {
         mkdirSync(this.config.configDir, { recursive: true })
         configPath = join(this.config.configDir, 'config.json')
-        writeFileSync(configPath, options.configContent)
+        writeFileSync(configPath, configContent)
       }
 
       if (!configPath || !existsSync(configPath)) {
@@ -153,15 +161,19 @@ export class SingBoxManager extends EventEmitter {
       })
 
       this.process.on('error', (err) => {
+        if (!this.pid) this.process = null
         this.log('error', 'Core', `Process error: ${err.message}`)
         this.setState('error', err.message)
       })
 
       await this.waitForStartup()
 
-      if (this.process && !this.process.killed) {
+      if (sequence !== this.startSequence) return { success: false, error: '内核启动已取消' }
+      if (this.getState() === 'starting' && this.process && !this.process.killed) {
+        prepared?.onStarted()
         this.startTime = Date.now()
         this.restartAttempts = 0
+        this.restartOptions = { configPath, prepareConfig: options.prepareConfig }
         this.setState('running')
         this.log('info', 'Core', `sing-box started (PID: ${this.pid})`)
         this.emit('started')
@@ -173,12 +185,13 @@ export class SingBoxManager extends EventEmitter {
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err)
       this.log('error', 'Core', `Start failed: ${error}`)
-      this.setState('error', error)
+      if (sequence === this.startSequence) this.setState('error', error)
       return { success: false, error }
     }
   }
 
   async stop(options: StopOptions = {}): Promise<{ success: boolean; error?: string }> {
+    ++this.startSequence
     if (!this.process || this.process.killed) {
       this.setState('idle')
       return { success: true }
@@ -214,8 +227,12 @@ export class SingBoxManager extends EventEmitter {
 
   async restart(options: StartOptions = {}): Promise<{ success: boolean; error?: string }> {
     this.log('info', 'Core', 'Restarting sing-box...')
-    await this.stop({ clearProxy: false })
+    const stopping = this.stop({ clearProxy: false })
+    const sequence = this.startSequence
+    const result = await stopping
+    if (!result.success) return result
     await new Promise(resolve => setTimeout(resolve, 500))
+    if (sequence !== this.startSequence) return { success: false, error: '内核重启已取消' }
     return this.start(options)
   }
 
@@ -296,11 +313,13 @@ export class SingBoxManager extends EventEmitter {
       this.log('warn', 'Core', `sing-box exited unexpectedly (code: ${code}, signal: ${signal})`)
       this.emit('unexpectedExit', code, signal)
 
-      if (this.restartAttempts < this.maxRestartAttempts && this.configPath) {
+      if (this.restartAttempts < this.maxRestartAttempts && this.restartOptions) {
+        const options = this.restartOptions
+        const sequence = this.startSequence
         this.restartAttempts++
         this.log('info', 'Core', `Auto-restart ${this.restartAttempts}/${this.maxRestartAttempts}`)
         setTimeout(() => {
-          this.start({ configPath: this.configPath! })
+          if (sequence === this.startSequence) void this.start(options)
         }, this.restartDelay * this.restartAttempts)
       } else {
         this.setState('error', 'Process crashed too many times')
@@ -315,6 +334,7 @@ export class SingBoxManager extends EventEmitter {
   }
 
   destroy(): void {
+    ++this.startSequence
     this.removeAllListeners()
     if (this.process && !this.process.killed) {
       this.process.kill('SIGKILL')

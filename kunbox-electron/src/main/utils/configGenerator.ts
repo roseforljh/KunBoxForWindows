@@ -1,5 +1,7 @@
 import type { AppSettings, SingBoxOutbound, DomainRule } from '../../shared/types'
 import { DEFAULT_SETTINGS } from '../../shared/types'
+import { CLASH_API_URL } from '../../shared/constants'
+import { proxyListenHost } from './proxyPorts'
 import { loadRuleSetsFromFile, isRuleSetLocal, getRuleSetLocalPath, type RuleSetItem } from './ruleSetManager'
 import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
@@ -55,7 +57,7 @@ function buildLogConfig(): object {
 function buildExperimentalConfig(): object {
   return {
     clash_api: {
-      external_controller: '127.0.0.1:9090',
+      external_controller: new URL(CLASH_API_URL).host,
       default_mode: 'rule'
     },
     cache_file: {
@@ -188,12 +190,13 @@ function buildDnsServer(tag: string, address: string): object {
 
 function buildInbounds(settings: AppSettings): object[] {
   const inbounds: object[] = []
+  const listen = proxyListenHost(settings.allowLan)
 
   if (settings.localPort > 0) {
     inbounds.push({
       type: 'mixed',
       tag: 'mixed-in',
-      listen: settings.allowLan ? '0.0.0.0' : '127.0.0.1',
+      listen,
       listen_port: settings.localPort
     })
   }
@@ -202,7 +205,7 @@ function buildInbounds(settings: AppSettings): object[] {
     inbounds.push({
       type: 'socks',
       tag: 'socks-in',
-      listen: settings.allowLan ? '0.0.0.0' : '127.0.0.1',
+      listen,
       listen_port: settings.socksPort
     })
   }
