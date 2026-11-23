@@ -12,7 +12,7 @@ import { load as loadYaml } from 'js-yaml'
 import log from 'electron-log'
 import { CLASH_API_PORT, IPC_CHANNELS } from '../../shared/constants'
 import type { Profile, SingBoxOutbound, NodeWithProfile, CustomProfileNodeSelection, NodeLatencyResult } from '../../shared/types'
-import { parseShareLink } from './shareLink'
+import { parseShareLink, serializeShareLink } from './shareLink'
 import { getDataDir } from '../utils/paths'
 import { generateLatencyTestConfig } from '../utils/configGenerator'
 import { findAvailablePort } from '../utils/proxyPorts'
@@ -857,25 +857,11 @@ export function initProfileHandlers(): void {
     let target = rawNode
     if (!target) {
       load()
-      if (!data.activeProfileId) return ''
+      if (!data.activeProfileId) throw new Error('当前没有活动配置')
       const nodes = loadProfileNodes(data.activeProfileId)
       target = nodes.find(n => n.tag === tag)
     }
-    if (!target) return ''
-    // 导出原节点配置：剥离前置代理引用 detour、客户端内部字段 x_* 与运行时状态字段
-    const ignoredKeys = new Set([
-      'detour',
-      'latencyMs',
-      'latencyStatus',
-      'healthStatus',
-      'isTimeout',
-      'isTesting',
-      'sourceProfileId',
-      'sourceProfileName'
-    ])
-    const cleaned = Object.fromEntries(
-      Object.entries(target).filter(([key]) => !key.startsWith('x_') && !ignoredKeys.has(key))
-    )
-    return JSON.stringify(cleaned, null, 2)
+    if (!target) throw new Error('未找到要导出的节点')
+    return serializeShareLink(target)
   })
 }

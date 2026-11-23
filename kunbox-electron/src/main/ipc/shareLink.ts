@@ -108,3 +108,203 @@ export function parseShareLink(link: string): SingBoxOutbound | null {
   }
   return null
 }
+
+function formatHost(server: string): string {
+  const host = server.trim()
+  return host.includes(':') && !(host.startsWith('[') && host.endsWith(']')) ? `[${host}]` : host
+}
+
+function buildQuery(entries: Array<[string, string | undefined]>): string {
+  const params = new URLSearchParams()
+  for (const [key, value] of entries) {
+    if (value !== undefined && value !== '') params.set(key, value)
+  }
+  const query = params.toString()
+  return query ? `?${query}` : ''
+}
+
+function extractTransportHost(transport?: OutboundTransport): string | undefined {
+  if (!transport) return undefined
+  const headerHost = transport.headers?.Host ?? transport.headers?.host
+  if (Array.isArray(headerHost)) return headerHost[0]
+  if (typeof headerHost === 'string' && headerHost) return headerHost
+  if (Array.isArray(transport.host)) return transport.host[0]
+  if (typeof transport.host === 'string' && transport.host) return transport.host
+  return undefined
+}
+
+function buildTransportQuery(transport?: OutboundTransport): Array<[string, string | undefined]> {
+  const type = transport?.type || 'tcp'
+  const entries: Array<[string, string | undefined]> = [['type', type]]
+  if (!transport || type === 'tcp') return entries
+  if (transport.path) entries.push(['path', transport.path])
+  const host = extractTransportHost(transport)
+  if (host) entries.push(['host', host])
+  if (transport.service_name) entries.push(['serviceName', transport.service_name])
+  if (transport.mode) entries.push(['mode', transport.mode])
+  return entries
+}
+
+function buildUserInfo(username?: string, password?: string): string {
+  if (!username && !password) return ''
+  return `${encodeURIComponent(username || '')}:${encodeURIComponent(password || '')}@`
+}
+
+/** 将 sing-box outbound 节点序列化为标准分享链接，自动忽略 detour / x_* / 运行时状态字段。 */
+export function serializeShareLink(node: SingBoxOutbound): string {
+  const type = (node.type || '').toLowerCase()
+  const server = typeof node.server === 'string' ? node.server.trim() : ''
+  const port = node.server_port
+  if (!server || !port) {
+    throw new Error(`节点缺少有效的服务器地址或端口，无法导出链接`)
+  }
+
+  const host = formatHost(server)
+  const tagName = (node.tag || `${type}-${server}`).trim()
+  const tag = encodeURIComponent(tagName)
+  const tls = node.tls
+  const alpn = tls?.alpn?.length ? tls.alpn.join(',') : undefined
+
+  switch (type) {
+    case 'vless': {
+      const security = tls?.enabled ? (tls.reality?.enabled ? 'reality' : 'tls') : 'none'
+      const query = buildQuery([
+        ['encryption', 'none'],
+        ['flow', node.flow || undefined],
+        ['security', security],
+        ...buildTransportQuery(node.transport),
+        ['sni', tls?.enabled ? (tls.server_name || undefined) : undefined],
+        ['fp', tls?.enabled ? (tls.utls?.fingerprint || undefined) : undefined],
+        ['pbk', security === 'reality' ? (tls?.reality?.public_key || undefined) : undefined],
+        ['sid', security === 'reality' ? (tls?.reality?.short_id || undefined) : undefined],
+        ['alpn', tls?.enabled ? alpn : undefined],
+        ['insecure', tls?.enabled && tls.insecure ? '1' : undefined],
+      ])
+      return `vless://${encodeURIComponent(node.uuid || '')}@${host}:${port}${query}#${tag}`
+    }
+
+    case 'vmess': {
+      const transport = node.transport
+      const payload: Record<string, unknown> = {
+        v: '2',
+        ps: tagName,
+        add: server,
+        port: String(port),
+        id: node.uuid || '',
+        aid: String(node.alter_id ?? 0),
+        scy: node.security || 'auto',
+        net: transport?.type || 'tcp',
+        type: 'none',
+        host: extractTransportHost(transport) || '',
+        path: transport?.type === 'grpc' ? (transport.service_name || '') : (transport?.path || ''),
+        tls: tls?.enabled ? 'tls' : '',
+        sni: tls?.enabled ? (tls.server_name || '') : '',
+        alpn: tls?.enabled ? (alpn || '') : '',
+        fp: tls?.enabled ? (tls.utls?.fingerprint || '') : '',
+      }
+      if (tls?.enabled && tls.insecure) payload.allowInsecure = true
+      return `vmess://${Buffer.from(JSON.stringify(payload), 'utf-8').toString('base64')}`
+    }
+
+    case 'trojan': {
+      const security = tls?.reality?.enabled ? 'reality' : 'tls'
+      const query = buildQuery([
+        ['security', security],
+        ...buildTransportQuery(node.transport),
+        ['sni', tls?.server_name || undefined],
+        ['fp', tls?.utls?.fingerprint || undefined],
+        ['pbk', security === 'reality' ? (tls?.reality?.public_key || undefined) : undefined],
+        ['sid', security === 'reality' ? (tls?.reality?.short_id || undefined) : undefined],
+        ['alpn', alpn],
+        ['allowInsecure', tls?.insecure ? '1' : undefined],
+      ])
+      return `trojan://${encodeURIComponent(node.password || '')}@${host}:${port}${query}#${tag}`
+    }
+
+    case 'shadowsocks':
+    case 'ss': {
+      const userInfo = Buffer.from(`${node.method || 'aes-256-gcm'}:${node.password || ''}`, 'utf-8').toString('base64')
+      const pluginValue = node.plugin
+        ? (node.plugin_opts ? `${node.plugin};${node.plugin_opts}` : node.plugin)
+        : undefined
+      const query = buildQuery([['plugin', pluginValue]])
+      return `ss://${userInfo}@${host}:${port}${query}#${tag}`
+    }
+
+    case 'hysteria2':
+    case 'hy2': {
+      const obfsObj = typeof node.obfs === 'object' && node.obfs !== null ? node.obfs : undefined
+      const mport = Array.isArray(node.server_ports) && node.server_ports.length > 0
+        ? node.server_ports.map((item) => String(item).replace(':', '-')).join(',')
+        : undefined
+      const query = buildQuery([
+        ['mport', mport],
+        ['sni', tls?.server_name || undefined],
+        ['insecure', tls?.insecure ? '1' : undefined],
+        ['alpn', alpn],
+        ['obfs', obfsObj?.type || undefined],
+        ['obfs-password', obfsObj?.password || undefined],
+      ])
+      return `hysteria2://${encodeURIComponent(node.password || '')}@${host}:${port}${query}#${tag}`
+    }
+
+    case 'hysteria': {
+      const query = buildQuery([
+        ['auth', node.auth_str || undefined],
+        ['peer', tls?.server_name || undefined],
+        ['insecure', tls?.insecure ? '1' : undefined],
+        ['upmbps', node.up_mbps !== undefined ? String(node.up_mbps) : undefined],
+        ['downmbps', node.down_mbps !== undefined ? String(node.down_mbps) : undefined],
+        ['obfs', typeof node.obfs === 'string' ? node.obfs : undefined],
+        ['alpn', alpn],
+      ])
+      return `hysteria://${host}:${port}${query}#${tag}`
+    }
+
+    case 'tuic': {
+      const query = buildQuery([
+        ['sni', tls?.server_name || undefined],
+        ['allow_insecure', tls?.insecure ? '1' : undefined],
+        ['congestion_control', node.congestion_control || undefined],
+        ['udp_relay_mode', node.udp_relay_mode || undefined],
+        ['alpn', alpn],
+      ])
+      return `tuic://${encodeURIComponent(node.uuid || '')}:${encodeURIComponent(node.password || '')}@${host}:${port}${query}#${tag}`
+    }
+
+    case 'anytls': {
+      const query = buildQuery([
+        ['sni', tls?.server_name || undefined],
+        ['insecure', tls?.insecure ? '1' : undefined],
+        ['fp', tls?.utls?.fingerprint || undefined],
+        ['alpn', alpn],
+      ])
+      return `anytls://${encodeURIComponent(node.password || '')}@${host}:${port}${query}#${tag}`
+    }
+
+    case 'naive': {
+      const scheme = node.quic ? 'naive+quic' : 'naive+https'
+      const query = buildQuery([
+        ['sni', tls?.server_name || undefined],
+        ['insecure', tls?.insecure ? '1' : undefined],
+      ])
+      return `${scheme}://${buildUserInfo(node.username, node.password)}${host}:${port}${query}#${tag}`
+    }
+
+    case 'socks':
+    case 'socks5':
+      return `socks5://${buildUserInfo(node.username, node.password)}${host}:${port}#${tag}`
+
+    case 'http': {
+      const scheme = tls?.enabled ? 'https' : 'http'
+      const query = buildQuery([
+        ['sni', tls?.enabled ? (tls.server_name || undefined) : undefined],
+        ['insecure', tls?.enabled && tls.insecure ? '1' : undefined],
+      ])
+      return `${scheme}://${buildUserInfo(node.username, node.password)}${host}:${port}${query}#${tag}`
+    }
+
+    default:
+      throw new Error(`暂不支持将 ${type || '未知'} 类型节点导出为分享链接`)
+  }
+}
