@@ -419,6 +419,10 @@ export function initProfileHandlers(): void {
   ipcMain.handle('profile:set-active', (_, id: string) => {
     load()
     data.activeProfileId = id
+    const nodes = loadProfileNodes(id)
+    if (!data.activeNodeTag || !nodes.some(n => n.tag === data.activeNodeTag)) {
+      data.activeNodeTag = nodes[0]?.tag || null
+    }
     save()
   })
 

@@ -208,7 +208,10 @@ export default function Profiles() {
     const targetTag = validSavedTag || (nodes.length > 0 ? nodes[0].tag : null)
 
     if (targetTag) {
+      await window.api.node.setActive(targetTag)
       nodesStore.setActiveNode(targetTag)
+    } else {
+      nodesStore.setActiveNode(null)
     }
 
     // 5. If VPN is running, restart to apply new profile config

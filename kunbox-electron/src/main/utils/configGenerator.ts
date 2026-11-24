@@ -522,7 +522,7 @@ function buildOutboundsWithRules(
       tag: 'PROXY',
       outbounds: proxyTags,
       default: defaultTag,
-      interrupt_exist_connections: false
+      interrupt_exist_connections: true
     })
   }
 

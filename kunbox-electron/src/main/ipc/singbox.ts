@@ -264,7 +264,7 @@ export function initSingBoxHandlers(): void {
 
     try {
       const http = await import('http')
-      return new Promise<{ success: boolean; error?: string }>((resolve) => {
+      const switched = await new Promise<{ success: boolean; error?: string }>((resolve) => {
         const data = JSON.stringify({ name: nodeTag })
         const req = http.request({
           host: '127.0.0.1',
@@ -277,6 +277,7 @@ export function initSingBoxHandlers(): void {
           },
           timeout: 5000
         }, (res) => {
+          res.resume()
           if (res.statusCode === 204 || res.statusCode === 200) {
             log.info(`Switched to node: ${nodeTag}`)
             resolve({ success: true })
@@ -292,6 +293,11 @@ export function initSingBoxHandlers(): void {
         req.write(data)
         req.end()
       })
+      if (switched.success) {
+        // 热切节点后立即关闭旧连接，防止浏览器复用切换前的长连接
+        await service.closeAllConnections()
+      }
+      return switched
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
       return { success: false, error: msg }

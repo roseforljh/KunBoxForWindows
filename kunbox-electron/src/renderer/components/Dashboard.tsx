@@ -7,7 +7,7 @@ import { useNodesStore } from '../stores/nodesStore'
 import { formatBytes, formatDuration, cn } from '../lib/utils'
 import { useToast } from './ui/Toast'
 import { useManagedTimeouts } from '../lib/useManagedTimeouts'
-import { useProfiles } from '../lib/useProfiles'
+import { resolveActiveProfile, useProfiles } from '../lib/useProfiles'
 import type { AppSettings, HealthEvent, HealthEventKind, HealthStatus } from '../../shared/types'
 
 type HealthToastType = 'success' | 'warning' | 'error'
@@ -62,7 +62,7 @@ export default function Dashboard() {
     }))
   )
   const [isAnimating, setIsAnimating] = useState(false)
-  const { profiles, loadProfiles } = useProfiles()
+  const { profiles, activeProfileId, loadProfiles } = useProfiles()
   const [isTesting, setIsTesting] = useState(false)
   const [localPort, setLocalPort] = useState<number | null>(null)
   const errorToastGuardRef = useRef(false)
@@ -148,7 +148,7 @@ export default function Dashboard() {
   }, [isConnected, loadLocalPort])
 
   // Get active node info
-  const activeProfile = profiles.find(p => p.enabled)
+  const activeProfile = resolveActiveProfile(profiles, activeProfileId)
   const currentLatency = activeNode?.latencyMs ?? null
   const currentHealthStatus = activeNode?.healthStatus ?? null
 

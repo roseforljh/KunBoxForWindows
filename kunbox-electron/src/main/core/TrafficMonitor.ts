@@ -214,9 +214,14 @@ export class TrafficMonitor extends EventEmitter {
           method: 'DELETE',
           timeout: 2000
         }, (res) => {
+          res.resume()
           resolve(res.statusCode === 204)
         })
         req.on('error', () => resolve(false))
+        req.on('timeout', () => {
+          req.destroy()
+          resolve(false)
+        })
         req.end()
       })
     } catch {

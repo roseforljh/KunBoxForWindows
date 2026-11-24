@@ -123,6 +123,10 @@ test('E2E: generateConfig handles FakeIP, detour chains, duplicate tags, and dom
     assert.equal(dup1.detour, 'FrontHop')
     assert.equal(dup2.detour, undefined)
 
+    const proxySelector = config.outbounds.find((o: any) => o.tag === 'PROXY')
+    assert.equal(proxySelector?.default, 'DupNode')
+    assert.equal(proxySelector?.interrupt_exist_connections, true)
+
     // 4. 验证域名分流 block -> action: reject，node -> FrontHop，profile -> profile::<id>
     const blockRule = config.route.rules.find((r: any) => r.domain_suffix?.includes('ads.example.com'))
     assert.equal(blockRule?.action, 'reject')
