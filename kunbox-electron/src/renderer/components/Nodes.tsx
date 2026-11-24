@@ -194,7 +194,7 @@ export default function Nodes() {
     setIsDeleting(true)
     try {
       await window.api.node.delete(deleteTarget.tag)
-      await loadNodes()
+      await Promise.all([loadNodes(), useNodesStore.getState().loadAllNodes()])
       setDeleteModalOpen(false)
       toast.showRestartToast('节点已删除')
       setDeleteTarget(null)
@@ -214,8 +214,7 @@ export default function Nodes() {
   const handleSaveNode = async (originalTag: string, node: SingBoxOutbound) => {
     if (!activeProfileId) throw new Error('当前没有活动配置')
     await window.api.node.update(activeProfileId, originalTag, node)
-    await loadNodes()
-    await loadProfilesSafe()
+    await Promise.all([loadNodes(), useNodesStore.getState().loadAllNodes(), loadProfilesSafe()])
     toast.showRestartToast('节点已更新')
   }
 
@@ -235,8 +234,7 @@ export default function Nodes() {
   const handleAddNode = async (link: string, target: { type: 'existing'; profileId: string } | { type: 'new'; profileName: string }) => {
     try {
       await window.api.node.add(link, target)
-      await loadNodes()
-      await loadProfilesSafe()
+      await Promise.all([loadNodes(), useNodesStore.getState().loadAllNodes(), loadProfilesSafe()])
       toast.showRestartToast('节点添加成功')
     } catch (err) {
       toast.error(`添加失败: ${err}`)

@@ -40,10 +40,11 @@ export function formatSelectorNodeName(nodeTag: string) {
 }
 
 export default function Dashboard() {
-  const { state, traffic, connect, disconnect, needsRestart, lastError } = useConnectionStore(
+  const { state, traffic, trafficHistory, connect, disconnect, needsRestart, lastError } = useConnectionStore(
     useShallow((s) => ({
       state: s.state,
       traffic: s.traffic,
+      trafficHistory: s.trafficHistory,
       connect: s.connect,
       disconnect: s.disconnect,
       needsRestart: s.needsRestart,
@@ -64,7 +65,6 @@ export default function Dashboard() {
   const { profiles, loadProfiles } = useProfiles()
   const [isTesting, setIsTesting] = useState(false)
   const [localPort, setLocalPort] = useState<number | null>(null)
-  const [trafficHistory, setTrafficHistory] = useState<{ download: number; upload: number }[]>([])
   const errorToastGuardRef = useRef(false)
   const toast = useToast()
   const { setManagedTimeout } = useManagedTimeouts()
@@ -128,19 +128,6 @@ export default function Dashboard() {
     })
     return unlisten
   }, [setNodeHealth, toast])
-
-  // Update traffic history for chart
-  useEffect(() => {
-    if (isConnected && traffic) {
-      setTrafficHistory(prev => {
-        const newHistory = [...prev, { download: traffic.downloadSpeed, upload: traffic.uploadSpeed }]
-        // 保留最近 40 个采样点，使波形滚动更平顺
-        return newHistory.slice(-40)
-      })
-    } else {
-      setTrafficHistory([])
-    }
-  }, [isConnected, traffic, traffic?.downloadSpeed, traffic?.uploadSpeed])
 
   const loadProfilesSafe = useCallback(async () => {
     try {

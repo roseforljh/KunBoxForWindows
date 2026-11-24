@@ -47,10 +47,16 @@ export function AppSelect({
   useEffect(() => {
     if (!open) return
 
-    const focusTimer = window.setTimeout(() => {
-      searchInputRef.current?.focus({ preventScroll: true })
+    let innerFrame = 0
+    const outerFrame = window.requestAnimationFrame(() => {
+      innerFrame = window.requestAnimationFrame(() => {
+        searchInputRef.current?.focus({ preventScroll: true })
+      })
     })
-    return () => window.clearTimeout(focusTimer)
+    return () => {
+      window.cancelAnimationFrame(outerFrame)
+      if (innerFrame) window.cancelAnimationFrame(innerFrame)
+    }
   }, [open])
 
   return (
@@ -84,11 +90,17 @@ export function AppSelect({
           className="floating-surface z-[200] min-w-[var(--radix-select-trigger-width)] max-w-[calc(100vw-24px)] overflow-hidden p-2"
           style={{
             maxHeight: 'min(26rem, var(--radix-select-content-available-height))',
+            backdropFilter: 'none',
+            WebkitBackdropFilter: 'none',
           }}
         >
-          <div className="shrink-0 pb-2">
+          <div
+            className="relative z-10 shrink-0 pb-2"
+            onPointerDown={(event) => event.stopPropagation()}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
             <div className="relative">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
+              <Search className="pointer-events-none absolute left-3 top-1/2 z-10 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
               <input
                 ref={searchInputRef}
                 type="text"
@@ -101,7 +113,12 @@ export function AppSelect({
                 }}
                 placeholder="搜索选项..."
                 aria-label="搜索选项"
-                className="h-10 w-full rounded-xl border-0 bg-[var(--floating-search-bg)] py-0 pl-9 pr-3 text-sm text-[var(--text-primary)] shadow-inner outline-none placeholder:text-[var(--text-faint)] focus:ring-2 focus:ring-[var(--accent-primary)]/20"
+                style={{
+                  color: 'var(--text-primary)',
+                  WebkitTextFillColor: 'var(--text-primary)',
+                  caretColor: 'var(--text-primary)',
+                }}
+                className="relative h-10 w-full select-text rounded-xl border border-[var(--border-primary)] bg-[var(--bg-secondary)] py-2 pl-9 pr-3 text-sm leading-5 text-[var(--text-primary)] outline-none placeholder:text-[var(--text-muted)] focus:border-[var(--accent-primary)] focus:ring-2 focus:ring-[var(--accent-primary)]/20"
               />
             </div>
           </div>
@@ -117,7 +134,12 @@ export function AppSelect({
                   value={toInternalValue(option.value)}
                   hidden={isFilteredOut}
                   disabled={option.disabled || isFilteredOut}
-                  className={`relative ${isFilteredOut ? 'hidden' : 'flex'} min-h-9 cursor-pointer select-none items-center rounded-lg py-2 pl-3 pr-9 text-sm text-[var(--text-secondary)] outline-none transition-colors data-[disabled]:pointer-events-none data-[disabled]:opacity-40 data-[highlighted]:bg-[var(--bg-hover)] data-[highlighted]:text-[var(--text-primary)] data-[state=checked]:bg-[var(--accent-primary)]/10 data-[state=checked]:text-[var(--accent-primary)]`}
+                  onPointerMove={(event) => {
+                    if (document.activeElement === searchInputRef.current) {
+                      event.preventDefault()
+                    }
+                  }}
+                  className={`relative ${isFilteredOut ? 'hidden' : 'flex'} min-h-9 cursor-pointer select-none items-center rounded-lg py-2 pl-3 pr-9 text-sm text-[var(--text-secondary)] outline-none transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] data-[disabled]:pointer-events-none data-[disabled]:opacity-40 data-[highlighted]:bg-[var(--bg-hover)] data-[highlighted]:text-[var(--text-primary)] data-[state=checked]:bg-[var(--accent-primary)]/10 data-[state=checked]:text-[var(--accent-primary)]`}
                 >
                   <RadixSelect.ItemText>{option.label}</RadixSelect.ItemText>
                   <RadixSelect.ItemIndicator className="absolute right-3 inline-flex items-center">

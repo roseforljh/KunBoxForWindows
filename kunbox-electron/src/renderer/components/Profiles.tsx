@@ -112,6 +112,11 @@ export default function Profiles() {
     try {
       const profile = await window.api.profile.update(id)
       await loadProfiles()
+      const nodesStore = useNodesStore.getState()
+      await Promise.all([
+        id === activeId ? nodesStore.loadNodes() : Promise.resolve(),
+        nodesStore.loadAllNodes()
+      ])
       toast.showRestartToast(`更新成功，共 ${profile.nodeCount} 个节点`)
     } catch (err) {
       toast.error(`更新失败: ${err}`)

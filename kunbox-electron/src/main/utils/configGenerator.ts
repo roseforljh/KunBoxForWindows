@@ -324,12 +324,13 @@ export function isProxyType(type?: string): boolean {
     'hysteria2',
     'tuic',
     'anytls',
+    'naive',
     'http',
     'socks',
     'wireguard',
     'ssh',
     'shadowtls'
-  ].includes(type)
+  ].includes(type.toLowerCase())
 }
 
 function loadProfileNodesById(profileId: string, cache: Map<string, SingBoxOutbound[]>): SingBoxOutbound[] {

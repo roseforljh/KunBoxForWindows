@@ -8,11 +8,11 @@ import tls from 'tls'
 import { resolve4 } from 'dns/promises'
 import http from 'http'
 import axios from 'axios'
-import { load as loadYaml } from 'js-yaml'
 import log from 'electron-log'
 import { CLASH_API_PORT, IPC_CHANNELS } from '../../shared/constants'
 import type { Profile, SingBoxOutbound, NodeWithProfile, CustomProfileNodeSelection, NodeLatencyResult } from '../../shared/types'
 import { parseShareLink, serializeShareLink } from './shareLink'
+import { dedupeNodeTags, mergePreservedNodeSettings, parseSubscriptionContent } from './subscription'
 import { getDataDir } from '../utils/paths'
 import { generateLatencyTestConfig } from '../utils/configGenerator'
 import { findAvailablePort } from '../utils/proxyPorts'
@@ -35,20 +35,6 @@ let tempSingboxIdleTimer: NodeJS.Timeout | null = null
 let activeTempLatencyRequests = 0
 let cachedLatencyNodes: { profileId: string; nodes: SingBoxOutbound[]; loadedAt: number } | null = null
 let autoUpdateTimer: NodeJS.Timeout | null = null
-
-function dedupeNodeTags(nodes: SingBoxOutbound[]): SingBoxOutbound[] {
-  const used = new Set<string>()
-  return nodes.map((node) => {
-    let tag = node.tag?.trim() || `${node.type || 'node'}`
-    if (used.has(tag)) {
-      let idx = 2
-      while (used.has(`${tag} (${idx})`)) idx += 1
-      tag = `${tag} (${idx})`
-    }
-    used.add(tag)
-    return tag === node.tag ? node : { ...node, tag }
-  })
-}
 
 // 订阅开启 DNS 预解析时，将节点域名预先解析为 IP，并保留原域名作为 TLS SNI 避免证书校验失败
 async function preResolveNodesDns(nodes: SingBoxOutbound[]): Promise<SingBoxOutbound[]> {
@@ -138,84 +124,19 @@ async function fetchSubscription(url: string): Promise<SingBoxOutbound[]> {
   return parseSubscriptionContent(response.data)
 }
 
-function parseSubscriptionContent(content: string | object): SingBoxOutbound[] {
-  if (typeof content === 'object') {
-    if ((content as any).proxies && Array.isArray((content as any).proxies)) {
-      return parseClashProxies((content as any).proxies)
-    }
-    if ((content as any).outbounds && Array.isArray((content as any).outbounds)) {
-      return (content as any).outbounds
-    }
-    return []
+async function updateProfileFromUrl(profile: Profile): Promise<SingBoxOutbound[]> {
+  const rawNodes = await fetchSubscription(profile.url)
+  const resolvedNodes = profile.dnsPreResolve ? await preResolveNodesDns(rawNodes) : rawNodes
+  const existingNodes = loadProfileNodes(profile.id)
+  const mergedNodes = mergePreservedNodeSettings(existingNodes, resolvedNodes)
+  profile.nodeCount = mergedNodes.length
+  profile.lastUpdate = Date.now()
+  saveProfileNodes(profile.id, mergedNodes)
+  if (data.activeProfileId === profile.id && data.activeNodeTag && !mergedNodes.some(n => n.tag === data.activeNodeTag)) {
+    data.activeNodeTag = mergedNodes[0]?.tag || null
   }
-
-  const str = String(content).trim()
-  if (str.startsWith('{') || str.startsWith('[')) {
-    try {
-      const json = JSON.parse(str)
-      if (Array.isArray(json)) return json
-      if (json.outbounds) return json.outbounds
-      if (json.proxies) return parseClashProxies(json.proxies)
-    } catch {
-      // not json
-    }
-  }
-
-  try {
-    const yamlDoc = loadYaml(str) as any
-    if (yamlDoc && yamlDoc.proxies && Array.isArray(yamlDoc.proxies)) {
-      return parseClashProxies(yamlDoc.proxies)
-    }
-  } catch {
-    // not yaml
-  }
-
-  // Base64 or plain links
-  let decoded: string
-  try {
-    decoded = Buffer.from(str.replace(/\s+/g, ''), 'base64').toString('utf-8')
-  } catch {
-    decoded = str
-  }
-
-  const lines = decoded.split(/[\r\n]+/).map(l => l.trim()).filter(Boolean)
-  const nodes: SingBoxOutbound[] = []
-  for (const line of lines) {
-    const parsed = parseShareLink(line)
-    if (parsed) nodes.push(parsed)
-  }
-  return nodes
-}
-
-function parseClashProxies(proxies: any[]): SingBoxOutbound[] {
-  return proxies.map((p) => {
-    const type = (p.type || '').toLowerCase()
-    const node: SingBoxOutbound = {
-      tag: p.name || `${type}-${p.server}:${p.port}`,
-      type: type === 'ss' ? 'shadowsocks' : type,
-      server: p.server,
-      server_port: p.port
-    }
-
-    if (type === 'vmess' || type === 'vless') {
-      node.uuid = p.uuid
-      node.alter_id = p.alterId || 0
-      node.security = p.cipher || 'auto'
-      if (p.network) node.transport = { type: p.network, path: p['ws-opts']?.path, headers: p['ws-opts']?.headers }
-      if (p.tls) node.tls = { enabled: true, server_name: p.servername || p.sni, insecure: p['skip-cert-verify'] }
-    } else if (type === 'shadowsocks' || type === 'ss') {
-      node.method = p.cipher
-      node.password = p.password
-    } else if (type === 'trojan') {
-      node.password = p.password
-      if (p.sni) node.tls = { enabled: true, server_name: p.sni }
-    } else if (type === 'hysteria2') {
-      node.password = p.password
-      if (p.sni) node.tls = { enabled: true, server_name: p.sni }
-    }
-
-    return node
-  })
+  save()
+  return mergedNodes
 }
 
 export function stopTempSingbox(): void {
@@ -596,12 +517,7 @@ export function initProfileHandlers(): void {
     const profile = data.profiles.find(p => p.id === id)
     if (!profile) throw new Error('Profile not found')
     if (profile.url) {
-      const rawNodes = await fetchSubscription(profile.url)
-      const nodes = profile.dnsPreResolve ? await preResolveNodesDns(rawNodes) : rawNodes
-      profile.nodeCount = nodes.length
-      profile.lastUpdate = Date.now()
-      saveProfileNodes(id, nodes)
-      save()
+      await updateProfileFromUrl(profile)
     }
     return profile
   })
@@ -699,13 +615,14 @@ export function initProfileHandlers(): void {
     }
 
     const nodes = loadProfileNodes(profileId)
-    nodes.push(node)
+    const manualNode: SingBoxOutbound = { ...node, x_kunbox_manual: true }
+    nodes.push(manualNode)
     saveProfileNodes(profileId, nodes)
 
     const prof = data.profiles.find(p => p.id === profileId)
     if (prof) prof.nodeCount = nodes.length
     save()
-    return node
+    return loadProfileNodes(profileId).at(-1) ?? manualNode
   })
 
   ipcMain.handle('node:delete', (_, tag: string) => {
@@ -839,11 +756,7 @@ export function initProfileHandlers(): void {
         const elapsedMinutes = (now - (profile.lastUpdate || 0)) / 60000
         if (elapsedMinutes >= profile.autoUpdateInterval) {
           try {
-            const nodes = await fetchSubscription(profile.url)
-            profile.nodeCount = nodes.length
-            profile.lastUpdate = Date.now()
-            saveProfileNodes(profile.id, nodes)
-            save()
+            const nodes = await updateProfileFromUrl(profile)
             log.info(`[AutoUpdate] Updated profile "${profile.name}" (${nodes.length} nodes)`)
           } catch (error) {
             log.warn(`[AutoUpdate] Failed to update profile "${profile.name}":`, error)

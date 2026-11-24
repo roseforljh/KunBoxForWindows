@@ -157,6 +157,7 @@ export interface SingBoxOutbound {
   multiplex?: OutboundMultiplex
   x_kunbox_auto_selection_eligible?: boolean
   x_kunbox_metered_protected?: boolean
+  x_kunbox_manual?: boolean
   [key: string]: unknown
 }
 

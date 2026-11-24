@@ -534,9 +534,7 @@ export default function RuleSets() {
       type: rs.type,
       format: rs.format,
       outboundMode: rs.outboundMode,
-      outboundValue: rs.outboundMode === 'node'
-        ? getRuleNodeValue(rs.outboundValue, allNodes)
-        : rs.outboundValue || ''
+      outboundValue: rs.outboundValue || ''
     })
     setShowAddDialog(true)
   }
@@ -1095,29 +1093,37 @@ export default function RuleSets() {
                   <Loader2 className="w-4 h-4 animate-spin" />
                   加载中...
                 </div>
-              ) : (
-                <AppSelect
-                  value={dialogData.outboundMode === 'node'
-                    ? getRuleNodeValue(dialogData.outboundValue, allNodes)
-                    : dialogData.outboundValue}
-                  onValueChange={(value) =>
-                    setDialogData({ ...dialogData, outboundValue: value })
-                  }
-                  options={dialogData.outboundMode === 'node'
-                    ? allNodes
-                        .filter((n) => n.tag)
-                        .map((node) => ({
-                          value: `${node.sourceProfileId}::${node.tag}`,
-                          label: `${node.tag}（${node.type}）· ${node.sourceProfileName}`,
-                        }))
-                    : profiles.map((profile) => ({
-                        value: profile.id,
-                        label: profile.name,
-                      }))}
-                  placeholder={`请选择${dialogData.outboundMode === 'node' ? '节点' : '配置'}`}
-                  ariaLabel={`选择${dialogData.outboundMode === 'node' ? '节点' : '配置'}`}
-                />
-              )}
+              ) : (() => {
+                const isNodeMode = dialogData.outboundMode === 'node'
+                const resolvedValue = isNodeMode
+                  ? (getRuleNodeValue(dialogData.outboundValue, allNodes) || dialogData.outboundValue)
+                  : dialogData.outboundValue
+                const baseOptions = isNodeMode
+                  ? allNodes
+                      .filter((n) => n.tag)
+                      .map((node) => ({
+                        value: `${node.sourceProfileId}::${node.tag}`,
+                        label: `${node.tag}（${node.type}）· ${node.sourceProfileName}`,
+                      }))
+                  : profiles.map((profile) => ({
+                      value: profile.id,
+                      label: profile.name,
+                    }))
+                const selectOptions = isNodeMode && resolvedValue && !baseOptions.some((opt) => opt.value === resolvedValue)
+                  ? [{ value: resolvedValue, label: `已保存：${resolvedValue.includes('::') ? resolvedValue.slice(resolvedValue.indexOf('::') + 2) : resolvedValue}` }, ...baseOptions]
+                  : baseOptions
+                return (
+                  <AppSelect
+                    value={resolvedValue}
+                    onValueChange={(value) =>
+                      setDialogData({ ...dialogData, outboundValue: value })
+                    }
+                    options={selectOptions}
+                    placeholder={`请选择${isNodeMode ? '节点' : '配置'}`}
+                    ariaLabel={`选择${isNodeMode ? '节点' : '配置'}`}
+                  />
+                )
+              })()}
               {dialogData.outboundMode === 'node' && allNodes.filter((n) => n.tag).length === 0 && !isLoadingData && (
                 <p className="text-xs text-amber-400 mt-1">暂无可用节点</p>
               )}

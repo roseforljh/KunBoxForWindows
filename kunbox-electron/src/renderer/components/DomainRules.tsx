@@ -231,9 +231,7 @@ export default function DomainRules() {
       value: rule.value,
       type: rule.type,
       outboundMode: rule.outboundMode,
-      outboundValue: rule.outboundMode === 'node'
-        ? getRuleNodeValue(rule.outboundValue, allNodes)
-        : rule.outboundValue || ''
+      outboundValue: rule.outboundValue || ''
     })
     setShowAddDialog(true)
   }
@@ -694,18 +692,26 @@ export default function DomainRules() {
                     暂无可用节点，请先添加订阅或节点
                   </p>
                 </div>
-              ) : (
-                <AppSelect
-                  value={getRuleNodeValue(dialogData.outboundValue, allNodes)}
-                  onValueChange={(value) => setDialogData({ ...dialogData, outboundValue: value })}
-                  options={availableNodes.map((node) => ({
-                    value: `${node.sourceProfileId}::${node.tag}`,
-                    label: `${node.tag} (${node.sourceProfileName})`
-                  }))}
-                  placeholder="请选择节点..."
-                  ariaLabel="选择节点"
-                />
-              )}
+              ) : (() => {
+                const resolvedNodeValue = getRuleNodeValue(dialogData.outboundValue, allNodes)
+                const selectedNodeValue = resolvedNodeValue || dialogData.outboundValue
+                const baseNodeOptions = availableNodes.map((node) => ({
+                  value: `${node.sourceProfileId}::${node.tag}`,
+                  label: `${node.tag} (${node.sourceProfileName})`
+                }))
+                const nodeOptions = selectedNodeValue && !baseNodeOptions.some((opt) => opt.value === selectedNodeValue)
+                  ? [{ value: selectedNodeValue, label: `已保存：${selectedNodeValue.includes('::') ? selectedNodeValue.slice(selectedNodeValue.indexOf('::') + 2) : selectedNodeValue}` }, ...baseNodeOptions]
+                  : baseNodeOptions
+                return (
+                  <AppSelect
+                    value={selectedNodeValue}
+                    onValueChange={(value) => setDialogData({ ...dialogData, outboundValue: value })}
+                    options={nodeOptions}
+                    placeholder="请选择节点..."
+                    ariaLabel="选择节点"
+                  />
+                )
+              })()}
               <p className="text-xs text-[var(--text-faint)] mt-1.5">
                 共 {availableNodes.length} 个可用节点。未选择时使用当前选中的代理。
               </p>
