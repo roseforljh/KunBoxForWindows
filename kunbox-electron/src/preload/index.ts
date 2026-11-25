@@ -32,7 +32,7 @@ const api = {
       ipcRenderer.invoke(IPC_CHANNELS.SINGBOX_STOP),
     restart: (): Promise<{ success: boolean; error?: string; warning?: string }> =>
       ipcRenderer.invoke(IPC_CHANNELS.SINGBOX_RESTART),
-    switchNode: (nodeTag: string): Promise<{ success: boolean; error?: string }> =>
+    switchNode: (nodeTag: string): Promise<{ success: boolean; error?: string; superseded?: boolean }> =>
       ipcRenderer.invoke(IPC_CHANNELS.SINGBOX_SWITCH_NODE, nodeTag),
     enableSystemProxy: (port?: number): Promise<{ success: boolean; error?: string }> =>
       ipcRenderer.invoke('singbox:enable-system-proxy', port),

@@ -92,6 +92,20 @@ function save() {
   }
 }
 
+export function getActiveProfileState(): { activeProfileId: string | null; activeNodeTag: string | null } {
+  load()
+  return {
+    activeProfileId: data.activeProfileId,
+    activeNodeTag: data.activeNodeTag
+  }
+}
+
+export function setActiveNodeTag(tag: string | null): void {
+  load()
+  data.activeNodeTag = tag
+  save()
+}
+
 export function loadProfileNodes(profileId: string): SingBoxOutbound[] {
   try {
     const configFile = join(CONFIGS_DIR, `${profileId}.json`)
@@ -103,16 +117,17 @@ export function loadProfileNodes(profileId: string): SingBoxOutbound[] {
   }
 }
 
-export function saveProfileNodes(profileId: string, nodes: SingBoxOutbound[]) {
+export function saveProfileNodes(profileId: string, nodes: SingBoxOutbound[]): SingBoxOutbound[] {
+  const deduped = dedupeNodeTags(nodes)
   try {
     mkdirSync(CONFIGS_DIR, { recursive: true })
     const configFile = join(CONFIGS_DIR, `${profileId}.json`)
-    const deduped = dedupeNodeTags(nodes)
     writeFileSync(configFile, JSON.stringify(deduped, null, 2))
     cachedLatencyNodes = null
   } catch (error) {
     log.error(`Failed to save nodes for profile ${profileId}:`, error)
   }
+  return deduped
 }
 
 async function fetchSubscription(url: string): Promise<SingBoxOutbound[]> {
@@ -130,14 +145,22 @@ async function updateProfileFromUrl(profile: Profile): Promise<SingBoxOutbound[]
   const resolvedNodes = profile.dnsPreResolve ? await preResolveNodesDns(rawNodes) : rawNodes
   const existingNodes = loadProfileNodes(profile.id)
   const mergedNodes = mergePreservedNodeSettings(existingNodes, resolvedNodes)
-  profile.nodeCount = mergedNodes.length
-  profile.lastUpdate = Date.now()
-  saveProfileNodes(profile.id, mergedNodes)
-  if (data.activeProfileId === profile.id && data.activeNodeTag && !mergedNodes.some(n => n.tag === data.activeNodeTag)) {
-    data.activeNodeTag = mergedNodes[0]?.tag || null
+  const savedNodes = saveProfileNodes(profile.id, mergedNodes)
+  // 网络拉取完成后重新加载最新 profiles.json，避免覆盖并发期间用户切换的激活节点或订阅
+  load()
+  const latestProfile = data.profiles.find(p => p.id === profile.id)
+  const now = Date.now()
+  if (latestProfile) {
+    latestProfile.nodeCount = savedNodes.length
+    latestProfile.lastUpdate = now
+  }
+  profile.nodeCount = savedNodes.length
+  profile.lastUpdate = now
+  if (data.activeProfileId === profile.id && data.activeNodeTag && !savedNodes.some(n => n.tag === data.activeNodeTag)) {
+    data.activeNodeTag = savedNodes[0]?.tag || null
   }
   save()
-  return mergedNodes
+  return savedNodes
 }
 
 export function stopTempSingbox(): void {
@@ -435,54 +458,54 @@ export function initProfileHandlers(): void {
   })
 
   ipcMain.handle('profile:add', async (_, url: string, name?: string, settings?: any) => {
-    load()
     const id = randomUUID()
     const rawNodes = await fetchSubscription(url)
     const nodes = settings?.dnsPreResolve ? await preResolveNodesDns(rawNodes) : rawNodes
+    const savedNodes = saveProfileNodes(id, nodes)
+    load()
     const profile: Profile = {
       id,
       name: name || `订阅 ${data.profiles.length + 1}`,
       url,
       lastUpdate: Date.now(),
-      nodeCount: nodes.length,
+      nodeCount: savedNodes.length,
       enabled: true,
       autoUpdateInterval: settings?.autoUpdateInterval || 0,
       dnsPreResolve: !!settings?.dnsPreResolve,
       dnsServer: settings?.dnsServer || null
     }
 
-    saveProfileNodes(id, nodes)
     data.profiles.push(profile)
     if (!data.activeProfileId) {
       data.activeProfileId = id
-      if (nodes.length > 0) data.activeNodeTag = nodes[0].tag || null
+      if (savedNodes.length > 0) data.activeNodeTag = savedNodes[0].tag || null
     }
     save()
     return profile
   })
 
   ipcMain.handle('profile:import-content', async (_, name: string, content: string, settings?: any) => {
-    load()
     const id = randomUUID()
     const rawNodes = parseSubscriptionContent(content)
     const nodes = settings?.dnsPreResolve ? await preResolveNodesDns(rawNodes) : rawNodes
+    const savedNodes = saveProfileNodes(id, nodes)
+    load()
     const profile: Profile = {
       id,
       name: name || `导入 ${data.profiles.length + 1}`,
       url: '',
       lastUpdate: Date.now(),
-      nodeCount: nodes.length,
+      nodeCount: savedNodes.length,
       enabled: true,
       autoUpdateInterval: 0,
       dnsPreResolve: !!settings?.dnsPreResolve,
       dnsServer: settings?.dnsServer || null
     }
 
-    saveProfileNodes(id, nodes)
     data.profiles.push(profile)
     if (!data.activeProfileId) {
       data.activeProfileId = id
-      if (nodes.length > 0) data.activeNodeTag = nodes[0].tag || null
+      if (savedNodes.length > 0) data.activeNodeTag = savedNodes[0].tag || null
     }
     save()
     return profile
@@ -694,15 +717,18 @@ export function initProfileHandlers(): void {
   })
 
   ipcMain.handle('node:update', (_, profileId: string, originalTag: string, updatedNode: SingBoxOutbound) => {
+    load()
     const nodes = loadProfileNodes(profileId)
     const index = nodes.findIndex(n => n.tag === originalTag)
     if (index !== -1) {
       nodes[index] = updatedNode
-      saveProfileNodes(profileId, nodes)
-      if (data.activeNodeTag === originalTag) {
-        data.activeNodeTag = updatedNode.tag || originalTag
+      const savedNodes = saveProfileNodes(profileId, nodes)
+      const persistedNode = savedNodes[index] ?? updatedNode
+      if (data.activeProfileId === profileId && data.activeNodeTag === originalTag) {
+        data.activeNodeTag = persistedNode.tag || originalTag
         save()
       }
+      return persistedNode
     }
     return updatedNode
   })

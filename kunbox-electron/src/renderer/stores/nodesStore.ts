@@ -73,6 +73,7 @@ function isUsableCachedLatency(
 let abortController: AbortController | null = null
 let testAllRunId = 0
 let latencyCancelGeneration = 0
+let activeNodeVersion = 0
 
 interface NodesState {
   nodes: NodeItem[]
@@ -146,7 +147,10 @@ export const useNodesStore = create<NodesState>()(
         })
         set({ nodes: nodesWithLatency })
       },
-      setActiveNode: (tag: string | null) => set({ activeNodeTag: tag }),
+      setActiveNode: (tag: string | null) => {
+        activeNodeVersion += 1
+        set({ activeNodeTag: tag })
+      },
       setNodeHealth: (tag: string, status: HealthStatus) => {
         set((state: NodesState) => ({
           nodeHealth: {
@@ -171,12 +175,16 @@ export const useNodesStore = create<NodesState>()(
       }),
 
       selectNode: async (tag: string) => {
+        const version = ++activeNodeVersion
         const result = await window.api.singbox.switchNode(tag)
+        if (version !== activeNodeVersion || result.superseded) {
+          return false
+        }
         if (!result.success) {
           return false
         }
 
-        await window.api.node.setActive(tag)
+        // 主进程 switchNode 已串行落盘 activeNodeTag，避免双 IPC 乱序覆写
         set({ activeNodeTag: tag })
         return true
       },
@@ -369,6 +377,7 @@ export const useNodesStore = create<NodesState>()(
       },
 
       loadNodes: async () => {
+        const requestVersion = activeNodeVersion
         const nodes = await window.api.node.list()
         const activeProfileId = await window.api.profile.getActive()
         const backendActiveNodeTag = await window.api.node.getActive()
@@ -390,6 +399,12 @@ export const useNodesStore = create<NodesState>()(
           return { ...n, healthStatus }
         })
 
+        // 加载期间若已发生新的手动切换操作，只刷新节点列表，不回写或覆盖 activeNodeTag
+        if (requestVersion !== activeNodeVersion) {
+          set({ nodes: nodesWithLatency })
+          return
+        }
+
         const nodeTags = new Set(nodes.map((node) => node.tag).filter(Boolean))
         const validBackendTag = backendActiveNodeTag && nodeTags.has(backendActiveNodeTag)
           ? backendActiveNodeTag
@@ -401,6 +416,10 @@ export const useNodesStore = create<NodesState>()(
 
         if (nextActiveTag && nextActiveTag !== backendActiveNodeTag) {
           await window.api.node.setActive(nextActiveTag)
+          if (requestVersion !== activeNodeVersion) {
+            set({ nodes: nodesWithLatency })
+            return
+          }
         }
 
         set({

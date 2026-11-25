@@ -138,6 +138,14 @@ export class VpnService extends EventEmitter {
     return this.singbox.flushDnsCache()
   }
 
+  async selectProxy(groupTag: string, nodeTag: string): Promise<{ success: boolean; statusCode?: number; error?: string }> {
+    return this.singbox.selectProxy(groupTag, nodeTag)
+  }
+
+  async getProxyNow(groupTag: string): Promise<string | null> {
+    return this.singbox.getProxyNow(groupTag)
+  }
+
   async enableSystemProxy(host?: string, port?: number): Promise<boolean> {
     return this.systemProxy.enable(host || '127.0.0.1', port || this.config.proxyPort)
   }

@@ -563,3 +563,74 @@ test('E2E: optimized TUN config passes real RayBox check and SingBoxManager rest
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('E2E: startup onStarted sync overrides stale cache.db PROXY selection against real RayBox kernel', async () => {
+  assert.equal(existsSync(RAYBOX_EXE), true)
+
+  const apiPort = await resolveApiPort(19140)
+  const localPort = await resolveApiPort(apiPort + 1)
+  const socksPort = await resolveApiPort(localPort + 1)
+  const dir = mkdtempSync(join(tmpdir(), 'kunbox-e2e-cachedb-node-'))
+  const mgr = new SingBoxManager({
+    execPath: RAYBOX_EXE,
+    configDir: dir,
+    workDir: dir,
+    apiHost: '127.0.0.1',
+    apiPort,
+    apiSecret: ''
+  }, () => {})
+
+  const nodes: SingBoxOutbound[] = [
+    { type: 'socks', tag: 'Node1', server: '127.0.0.1', server_port: 10891 },
+    { type: 'socks', tag: 'Node2', server: '127.0.0.1', server_port: 10892 }
+  ]
+
+  const buildContent = (activeNodeTag: string) => JSON.stringify(generateConfig({
+    settings: {
+      ...DEFAULT_SETTINGS,
+      localPort,
+      socksPort,
+      tunEnabled: false,
+      systemProxy: false
+    },
+    outbounds: nodes,
+    activeNodeTag,
+    domainRules: [],
+    clashApiPort: apiPort
+  }), null, 2)
+
+  try {
+    // 1. 首次启动选中 Node1，随后热切到 Node2，使 RayBox 将 PROXY=Node2 持久化写入 cache.db
+    const firstStart = await mgr.start({ configContent: buildContent('Node1') })
+    assert.equal(firstStart.success, true, firstStart.error || 'first start failed')
+    assert.equal(await mgr.getProxyNow('PROXY'), 'Node1')
+
+    const switched = await mgr.selectProxy('PROXY', 'Node2')
+    assert.equal(switched.success, true, switched.error || 'selectProxy Node2 failed')
+    assert.equal(await mgr.getProxyNow('PROXY'), 'Node2')
+    await mgr.stop({ force: true, timeout: 1500 })
+
+    // 2. 离线改为选中 Node1 后重启：确认 cache.db 确实会把启动瞬间的 PROXY 覆写为 Node2，
+    //    而 onStarted 在进入 running 前将其纠正为 Node1 并写回 cache.db
+    let beforeSyncNow: string | null = null
+    const secondStart = await mgr.start({
+      prepareConfig: async () => ({
+        content: buildContent('Node1'),
+        onStarted: async () => {
+          beforeSyncNow = await mgr.getProxyNow('PROXY')
+          if (beforeSyncNow !== 'Node1') {
+            const syncRes = await mgr.selectProxy('PROXY', 'Node1')
+            assert.equal(syncRes.success, true, syncRes.error || 'sync Node1 failed')
+          }
+        }
+      })
+    })
+    assert.equal(secondStart.success, true, secondStart.error || 'second start failed')
+    assert.equal(beforeSyncNow, 'Node2', '应复现 cache.db 历史选中覆盖 default 的内核行为')
+    assert.equal(await mgr.getProxyNow('PROXY'), 'Node1', '进入 running 后内核实际生效节点必须是 Node1')
+  } finally {
+    await mgr.stop({ force: true, timeout: 1000 })
+    mgr.destroy()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

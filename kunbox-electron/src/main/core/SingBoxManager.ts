@@ -101,11 +101,19 @@ export class SingBoxManager extends EventEmitter {
     this.config = { ...this.config, ...config }
   }
 
+  private isApiAvailable(): boolean {
+    return (
+      (this.state === 'running' || this.state === 'starting') &&
+      this.process !== null &&
+      !this.process.killed
+    )
+  }
+
   setMode(mode: ProxyMode): Promise<boolean> {
     this.mode = mode
     this.emit('modeChange', mode)
-    // 运行中实时通知内核 Clash API 切换模式
-    if (!this.isRunning()) {
+    // 运行中或启动就绪钩子阶段实时通知内核 Clash API 切换模式
+    if (!this.isApiAvailable()) {
       return Promise.resolve(true)
     }
     return new Promise((resolve) => {
@@ -153,6 +161,76 @@ export class SingBoxManager extends EventEmitter {
       req.on('timeout', () => {
         req.destroy()
         resolve(false)
+      })
+      req.end()
+    })
+  }
+
+  selectProxy(groupTag: string, nodeTag: string): Promise<{ success: boolean; statusCode?: number; error?: string }> {
+    if (!this.isApiAvailable()) {
+      return Promise.resolve({ success: false, error: '内核未运行' })
+    }
+    return new Promise((resolve) => {
+      const data = JSON.stringify({ name: nodeTag })
+      const req = http.request({
+        host: this.config.apiHost,
+        port: this.config.apiPort,
+        path: `/proxies/${encodeURIComponent(groupTag)}`,
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(data)
+        },
+        timeout: 5000
+      }, (res) => {
+        res.resume()
+        if (res.statusCode === 204 || res.statusCode === 200) {
+          resolve({ success: true, statusCode: res.statusCode })
+        } else {
+          resolve({ success: false, statusCode: res.statusCode, error: `API returned ${res.statusCode}` })
+        }
+      })
+      req.on('error', (e) => resolve({ success: false, error: e.message }))
+      req.on('timeout', () => {
+        req.destroy()
+        resolve({ success: false, error: 'Request timeout' })
+      })
+      req.write(data)
+      req.end()
+    })
+  }
+
+  getProxyNow(groupTag: string): Promise<string | null> {
+    if (!this.isApiAvailable()) {
+      return Promise.resolve(null)
+    }
+    return new Promise((resolve) => {
+      const req = http.request({
+        host: this.config.apiHost,
+        port: this.config.apiPort,
+        path: `/proxies/${encodeURIComponent(groupTag)}`,
+        method: 'GET',
+        timeout: 3000
+      }, (res) => {
+        let body = ''
+        res.on('data', (chunk) => { body += chunk })
+        res.on('end', () => {
+          if (res.statusCode !== 200) {
+            resolve(null)
+            return
+          }
+          try {
+            const parsed = JSON.parse(body)
+            resolve(typeof parsed?.now === 'string' ? parsed.now : null)
+          } catch {
+            resolve(null)
+          }
+        })
+      })
+      req.on('error', () => resolve(null))
+      req.on('timeout', () => {
+        req.destroy()
+        resolve(null)
       })
       req.end()
     })
@@ -270,7 +348,10 @@ export class SingBoxManager extends EventEmitter {
 
       if (sequence !== this.startSequence) return { success: false, error: '内核启动已取消' }
       if (this.getState() === 'starting' && this.process && !this.process.killed) {
-        prepared?.onStarted()
+        await prepared?.onStarted()
+        if (sequence !== this.startSequence || this.getState() !== 'starting' || !this.process || this.process.killed) {
+          return { success: false, error: '内核启动已取消' }
+        }
         this.startTime = Date.now()
         this.restartAttempts = 0
         this.restartOptions = { configPath, prepareConfig: options.prepareConfig }

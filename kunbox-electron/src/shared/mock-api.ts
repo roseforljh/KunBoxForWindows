@@ -78,7 +78,7 @@ export const mockApi = {
     start: () => Promise.resolve({ success: true }),
     stop: () => Promise.resolve({ success: true }),
     restart: () => Promise.resolve({ success: true }),
-    switchNode: (_nodeTag: string) => Promise.resolve({ success: true }),
+    switchNode: (_nodeTag: string): Promise<{ success: boolean; error?: string; superseded?: boolean }> => Promise.resolve({ success: true }),
     enableSystemProxy: (_port?: number) => Promise.resolve({ success: true }),
     disableSystemProxy: () => Promise.resolve({ success: true }),
     onStateChange: (_callback: (state: any) => void) => noopUnlisten(),

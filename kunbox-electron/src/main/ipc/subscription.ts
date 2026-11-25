@@ -3,8 +3,10 @@ import type { SingBoxOutbound } from '../../shared/types'
 import { isProxyType } from '../utils/configGenerator'
 import { parseShareLink } from './shareLink'
 
+const RESERVED_OUTBOUND_TAGS = ['PROXY', 'auto', 'direct', 'block'] as const
+
 export function dedupeNodeTags(nodes: SingBoxOutbound[]): SingBoxOutbound[] {
-  const used = new Set<string>()
+  const used = new Set<string>(RESERVED_OUTBOUND_TAGS)
   return nodes.map((node) => {
     let tag = node.tag?.trim() || `${node.type || 'node'}`
     if (used.has(tag)) {

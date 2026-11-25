@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import type { SingBoxOutbound } from '../../shared/types'
-import { mergePreservedNodeSettings, parseSubscriptionContent } from './subscription'
+import { dedupeNodeTags, mergePreservedNodeSettings, parseSubscriptionContent } from './subscription'
 
 describe('parseSubscriptionContent', () => {
   it('filters out selector, urltest, direct, block, and dns outbounds from sing-box JSON configs', () => {
@@ -132,5 +132,15 @@ describe('mergePreservedNodeSettings', () => {
     assert.deepEqual(merged.map((n) => n.tag), ['remote-1', 'remote-2', 'ru2-direct'])
     assert.equal(merged[2].x_kunbox_manual, true)
     assert.equal(merged[2].detour, 'lxy::HK')
+  })
+
+  it('dedupeNodeTags avoids reserved outbound tags consistent with configGenerator', () => {
+    const deduped = dedupeNodeTags([
+      { type: 'socks', tag: 'PROXY', server: '1.1.1.1', server_port: 1080 },
+      { type: 'socks', tag: 'direct', server: '1.1.1.2', server_port: 1080 },
+      { type: 'socks', tag: 'auto', server: '1.1.1.3', server_port: 1080 },
+      { type: 'socks', tag: 'block', server: '1.1.1.4', server_port: 1080 }
+    ])
+    assert.deepEqual(deduped.map((n) => n.tag), ['PROXY (2)', 'direct (2)', 'auto (2)', 'block (2)'])
   })
 })

@@ -17,6 +17,7 @@ export default function Profiles() {
   const [isLoadingAllNodes, setIsLoadingAllNodes] = useState(false)
   const [openMenuId, setOpenMenuId] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  const selectSeqRef = useRef(0)
   const toast = useToast()
 
   const [deleteModalOpen, setDeleteModalOpen] = useState(false)
@@ -195,6 +196,7 @@ export default function Profiles() {
 
   const handleSelect = async (id: string) => {
     if (id === activeId) return
+    const seq = ++selectSeqRef.current
 
     const nodesStore = useNodesStore.getState()
 
@@ -205,11 +207,14 @@ export default function Profiles() {
 
     // 2. Set active profile (backend will save/restore node selection)
     await window.api.profile.setActive(id)
+    if (seq !== selectSeqRef.current) return
     setActiveId(id)
 
     // 3. Load nodes for the new profile
     const nodes = await window.api.node.list()
+    if (seq !== selectSeqRef.current) return
     await nodesStore.setNodes(nodes)
+    if (seq !== selectSeqRef.current) return
 
     // 4. Restore saved node selection, or fallback to first node
     const savedTag = nodesStore.restoreNodeSelection(id)
@@ -218,19 +223,24 @@ export default function Profiles() {
 
     if (targetTag) {
       await window.api.node.setActive(targetTag)
+      if (seq !== selectSeqRef.current) return
       nodesStore.setActiveNode(targetTag)
     } else {
       nodesStore.setActiveNode(null)
     }
 
-    // 5. If VPN is running, restart to apply new profile config
+    // 5. If VPN is running or connecting, restart to apply new profile config
     const connectionState = useConnectionStore.getState().state
-    if (connectionState === 'connected') {
+    if (connectionState === 'connected' || connectionState === 'connecting') {
       try {
         await window.api.singbox.restart()
-        toast.success('已切换订阅并重启内核')
+        if (seq === selectSeqRef.current) {
+          toast.success('已切换订阅并重启内核')
+        }
       } catch (err) {
-        toast.error(`重启内核失败: ${err}`)
+        if (seq === selectSeqRef.current) {
+          toast.error(`重启内核失败: ${err}`)
+        }
       }
     }
   }

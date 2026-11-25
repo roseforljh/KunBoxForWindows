@@ -1,9 +1,8 @@
 import { ipcMain, BrowserWindow } from 'electron'
-import { join } from 'path'
-import { existsSync, mkdirSync, readFileSync } from 'fs'
+import { mkdirSync } from 'fs'
 import log from 'electron-log'
 import { CLASH_API_PORT, IPC_CHANNELS } from '../../shared/constants'
-import { DEFAULT_SETTINGS, type ProxyState, type TrafficStats, type LogEntry, type LogLevel, type SingBoxOutbound } from '../../shared/types'
+import { DEFAULT_SETTINGS, type ProxyState, type TrafficStats, type LogEntry, type LogLevel } from '../../shared/types'
 import { generateConfig, routingModeToClashMode } from '../utils/configGenerator'
 import { resolveApiPort, resolveProxyPorts } from '../utils/proxyPorts'
 import { loadRuleSets } from './rulesets'
@@ -11,17 +10,58 @@ import { downloadAllRuleSets, checkRuleSetsReady } from '../utils/ruleSetManager
 import { settingsStore } from './settings'
 import { VpnService, VpnServiceConfig, ServiceState } from '../core'
 import { getKernelManager } from './kernel'
-import { stopTempSingbox } from './profiles'
+import { getActiveProfileState, loadProfileNodes, setActiveNodeTag, stopTempSingbox } from './profiles'
 
 import { getDataDir } from '../utils/paths'
 
 const DATA_DIR = getDataDir()
 const CONFIG_DIR = DATA_DIR
-const PROFILES_FILE = join(DATA_DIR, 'profiles.json')
-const CONFIGS_DIR = join(DATA_DIR, 'configs')
 
 let vpnService: VpnService | null = null
 let startTime = 0
+let nodeSwitchSeq = 0
+let nodeSwitchChain: Promise<void> = Promise.resolve()
+let lastSyncedNodeTag: string | null = null
+
+function enqueueNodeOp<T>(task: () => Promise<T>): Promise<T> {
+  const run = nodeSwitchChain.then(task, task)
+  nodeSwitchChain = run.then(() => undefined, () => undefined)
+  return run
+}
+
+/**
+ * 将当前持久化选中的激活节点同步至运行中的 RayBox PROXY 选择器。
+ * 用于覆盖 cache.db 历史选中残留，以及补齐启动/重启过渡期内切换的新节点。
+ */
+async function syncActiveNodeToCore(service: VpnService, fallbackTag?: string): Promise<void> {
+  const { activeNodeTag } = getActiveProfileState()
+  const desiredTag = activeNodeTag || fallbackTag || null
+  if (!desiredTag) return
+
+  const actualNow = await service.getProxyNow('PROXY')
+  if (actualNow === desiredTag) {
+    lastSyncedNodeTag = desiredTag
+    return
+  }
+
+  const switched = await service.selectProxy('PROXY', desiredTag)
+  if (switched.success) {
+    lastSyncedNodeTag = desiredTag
+    log.info(`Synced PROXY selector from "${actualNow ?? 'unknown'}" to "${desiredTag}"`)
+    await service.closeAllConnections()
+    return
+  }
+
+  log.warn(`Failed to sync PROXY selector to "${desiredTag}": ${switched.error || 'unknown error'}`)
+  if (fallbackTag && fallbackTag !== desiredTag && actualNow !== fallbackTag) {
+    const fallbackRes = await service.selectProxy('PROXY', fallbackTag)
+    if (fallbackRes.success) {
+      lastSyncedNodeTag = fallbackTag
+      log.warn(`Fallback synced PROXY selector to "${fallbackTag}"`)
+      await service.closeAllConnections()
+    }
+  }
+}
 
 export function getSingBoxPath(): string {
   const kernelManager = getKernelManager()
@@ -84,13 +124,20 @@ function setupEventHandlers(service: VpnService): void {
 
   service.on('started', () => {
     startTime = Date.now()
-    // 内核进入 running 后同步一次当前路由模式，避免 cache.db 中残留的历史模式覆盖设置
-    const currentSettings = settingsStore.get('settings')
-    void service.setMode(routingModeToClashMode(currentSettings.routingMode), false)
+    // 兜底检查：若在 onStarted 同步完成至状态切为 running 的极短窗口内用户再次切换了节点，立即补同步
+    const { activeNodeTag } = getActiveProfileState()
+    if (activeNodeTag && activeNodeTag !== lastSyncedNodeTag) {
+      void enqueueNodeOp(async () => {
+        if (service.isRunning()) {
+          await syncActiveNodeToCore(service)
+        }
+      })
+    }
   })
 
   service.on('stopped', () => {
     startTime = 0
+    lastSyncedNodeTag = null
   })
 }
 
@@ -111,33 +158,6 @@ function sendToRenderer(channel: string, data: unknown): void {
   })
 }
 
-interface ProfilesData {
-  profiles: { id: string; enabled: boolean }[]
-  activeProfileId: string | null
-  activeNodeTag: string | null
-}
-
-function loadProfilesData(): ProfilesData {
-  try {
-    if (existsSync(PROFILES_FILE)) {
-      return JSON.parse(readFileSync(PROFILES_FILE, 'utf-8'))
-    }
-  } catch (error) {
-    log.error('Failed to load profiles data:', error)
-  }
-  return { profiles: [], activeProfileId: null, activeNodeTag: null }
-}
-
-function loadProfileNodes(profileId: string): SingBoxOutbound[] {
-  try {
-    const configFile = join(CONFIGS_DIR, `${profileId}.json`)
-    if (!existsSync(configFile)) return []
-    return JSON.parse(readFileSync(configFile, 'utf-8'))
-  } catch {
-    return []
-  }
-}
-
 export async function startConfiguredVpn(execPath: string, restart = false): Promise<{
   success: boolean; error?: string; warning?: string
 }> {
@@ -145,52 +165,72 @@ export async function startConfiguredVpn(execPath: string, restart = false): Pro
   const service = getVpnService()
   if (!restart && service.isRunning()) return { success: true }
 
-  const { activeProfileId, activeNodeTag } = loadProfilesData()
-  if (!activeProfileId) return { success: false, error: 'No active profile. Please add a subscription first.' }
-  const nodes = loadProfileNodes(activeProfileId)
-  if (!nodes.length) return { success: false, error: 'No nodes in active profile. Please update your subscription.' }
+  const initialState = getActiveProfileState()
+  if (!initialState.activeProfileId) return { success: false, error: 'No active profile. Please add a subscription first.' }
+  if (!loadProfileNodes(initialState.activeProfileId).length) {
+    return { success: false, error: 'No nodes in active profile. Please update your subscription.' }
+  }
 
-  let settings = settingsStore.get('settings')
   let warning: string | undefined
   service.updateConfig({
     core: { execPath, configDir: CONFIG_DIR, workDir: CONFIG_DIR, apiHost: '127.0.0.1', apiPort: CLASH_API_PORT, apiSecret: '' }
   })
 
   const prepareConfig = async () => {
-    const previous = settings
+    // 等待在途节点切换落盘，保证配置生成和自动重启始终读取最新激活订阅、节点与设置
+    await nodeSwitchChain
+    lastSyncedNodeTag = null
+
+    const { activeProfileId, activeNodeTag } = getActiveProfileState()
+    if (!activeProfileId) {
+      throw new Error('No active profile. Please add a subscription first.')
+    }
+    const nodes = loadProfileNodes(activeProfileId)
+    if (!nodes.length) {
+      throw new Error('No nodes in active profile. Please update your subscription.')
+    }
+
+    const previous = settingsStore.get('settings')
     const apiPort = await resolveApiPort(CLASH_API_PORT)
     const ports = await resolveProxyPorts(previous, apiPort)
     service.updateConfig({
       core: { execPath, configDir: CONFIG_DIR, workDir: CONFIG_DIR, apiHost: '127.0.0.1', apiPort, apiSecret: '' }
     })
+    const defaultTag = activeNodeTag || nodes[0]?.tag
     const config = generateConfig({
       settings: { ...previous, ...ports },
       outbounds: nodes,
-      activeNodeTag: activeNodeTag || nodes[0]?.tag,
+      activeNodeTag: defaultTag,
       clashApiPort: apiPort
     })
     return {
       content: JSON.stringify(config, null, 2),
-      onStarted: () => {
+      onStarted: async () => {
         service.updateConfig({ autoSystemProxy: previous.systemProxy, proxyPort: ports.localPort || DEFAULT_SETTINGS.localPort })
         const changed = [
           ports.localPort !== previous.localPort && `HTTP ${previous.localPort} → ${ports.localPort}`,
           ports.socksPort !== previous.socksPort && `SOCKS ${previous.socksPort} → ${ports.socksPort}`
         ].filter(Boolean)
-        if (!changed.length) return
-
-        settings = { ...previous, ...ports }
-        warning = `代理端口不可用，已自动切换：${changed.join('，')}`
-        log.warn(warning)
-        try {
-          const current = settingsStore.get('settings')
-          if (current.localPort === previous.localPort && current.socksPort === previous.socksPort && current.allowLan === previous.allowLan) {
-            settingsStore.set('settings', { ...current, ...ports })
+        if (changed.length) {
+          warning = `代理端口不可用，已自动切换：${changed.join('，')}`
+          log.warn(warning)
+          try {
+            const current = settingsStore.get('settings')
+            if (current.localPort === previous.localPort && current.socksPort === previous.socksPort && current.allowLan === previous.allowLan) {
+              settingsStore.set('settings', { ...current, ...ports })
+            }
+          } catch (error) {
+            warning += '（未能保存端口设置）'
+            log.error('Failed to save proxy ports:', error)
           }
-        } catch (error) {
-          warning += '（未能保存端口设置）'
-          log.error('Failed to save proxy ports:', error)
         }
+
+        // 在进入 running 和启用系统代理之前，强制对齐路由模式与 PROXY 选中节点，消除 cache.db 残留覆盖
+        await enqueueNodeOp(async () => {
+          const currentSettings = settingsStore.get('settings')
+          await service.setMode(routingModeToClashMode(currentSettings.routingMode), false)
+          await syncActiveNodeToCore(service, defaultTag)
+        })
       }
     }
   }
@@ -260,51 +300,39 @@ export function initSingBoxHandlers(): void {
   })
 
   ipcMain.handle(IPC_CHANNELS.SINGBOX_SWITCH_NODE, async (_, nodeTag: string) => {
-    // VPN 未运行时无需通知内核热切换，由前端继续保存选中节点供下次连接使用
-    if (!service.isRunning()) {
-      return { success: true }
-    }
+    const seq = ++nodeSwitchSeq
+    return enqueueNodeOp(async () => {
+      if (seq !== nodeSwitchSeq) {
+        return { success: false, superseded: true }
+      }
 
-    try {
-      const http = await import('http')
-      const switched = await new Promise<{ success: boolean; error?: string }>((resolve) => {
-        const data = JSON.stringify({ name: nodeTag })
-        const req = http.request({
-          host: '127.0.0.1',
-          port: service.getApiPort(),
-          path: '/proxies/PROXY',
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            'Content-Length': Buffer.byteLength(data)
-          },
-          timeout: 5000
-        }, (res) => {
-          res.resume()
-          if (res.statusCode === 204 || res.statusCode === 200) {
-            log.info(`Switched to node: ${nodeTag}`)
-            resolve({ success: true })
-          } else {
-            resolve({ success: false, error: `API returned ${res.statusCode}` })
-          }
-        })
-        req.on('error', (e) => resolve({ success: false, error: e.message }))
-        req.on('timeout', () => {
-          req.destroy()
-          resolve({ success: false, error: 'Request timeout' })
-        })
-        req.write(data)
-        req.end()
-      })
-      if (switched.success) {
+      // VPN 未进入 running（空闲、启动中或重启中）时先落盘选中节点，启动就绪阶段会自动同步到内核
+      if (!service.isRunning()) {
+        setActiveNodeTag(nodeTag)
+        return { success: true }
+      }
+
+      try {
+        const switched = await service.selectProxy('PROXY', nodeTag)
+        if (!switched.success) {
+          return { success: false, error: switched.error }
+        }
+
+        lastSyncedNodeTag = nodeTag
+        if (seq !== nodeSwitchSeq) {
+          return { success: false, superseded: true }
+        }
+
+        setActiveNodeTag(nodeTag)
+        log.info(`Switched to node: ${nodeTag}`)
         // 热切节点后立即关闭旧连接，防止浏览器复用切换前的长连接
         await service.closeAllConnections()
+        return { success: true }
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error)
+        return { success: false, error: msg }
       }
-      return switched
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error)
-      return { success: false, error: msg }
-    }
+    })
   })
 
   ipcMain.handle('singbox:test-selector-latency', async (_, selectorTag: string, testUrl?: string) => {
