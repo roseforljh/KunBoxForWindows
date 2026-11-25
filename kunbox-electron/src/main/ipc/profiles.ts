@@ -19,6 +19,7 @@ import { findAvailablePort } from '../utils/proxyPorts'
 import { getKernelManager } from './kernel'
 import { getServiceInstance } from './singbox'
 import { settingsStore } from './settings'
+import { loadRuleSetsFromFile } from '../utils/ruleSetManager'
 
 const DATA_DIR = getDataDir()
 const PROFILES_FILE = join(DATA_DIR, 'profiles.json')
@@ -566,6 +567,48 @@ export function initProfileHandlers(): void {
       profile.enabled = enabled
       save()
     }
+  })
+
+  ipcMain.handle('profile:affects-running-core', (_, id: string) => {
+    if (!getServiceInstance()?.isRunning()) return false
+    load()
+    if (data.activeProfileId === id) return true
+
+    // 检查当前激活订阅的节点是否通过 detour 引用了该订阅
+    if (data.activeProfileId) {
+      const activeNodes = loadProfileNodes(data.activeProfileId)
+      if (activeNodes.some((n) => typeof n.detour === 'string' && n.detour.startsWith(`${id}::`))) {
+        return true
+      }
+    }
+
+    // 检查已启用的规则集是否引用了该订阅或其节点
+    const ruleSets = loadRuleSetsFromFile()
+    if (ruleSets.some((rs) => rs.enabled && (
+      (rs.outboundMode === 'profile' && rs.outboundValue === id) ||
+      (rs.outboundMode === 'node' && rs.outboundValue?.startsWith(`${id}::`))
+    ))) {
+      return true
+    }
+
+    // 检查已启用的自定义域名规则是否引用了该订阅或其节点
+    try {
+      const customRulesPath = join(DATA_DIR, 'custom_rules.json')
+      if (existsSync(customRulesPath)) {
+        const parsed = JSON.parse(readFileSync(customRulesPath, 'utf-8'))
+        const domainRules = Array.isArray(parsed.domainRules) ? parsed.domainRules : []
+        if (domainRules.some((r: any) => r.enabled && (
+          (r.outboundMode === 'profile' && r.outboundValue === id) ||
+          (r.outboundMode === 'node' && typeof r.outboundValue === 'string' && r.outboundValue.startsWith(`${id}::`))
+        ))) {
+          return true
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    return false
   })
 
   // Nodes

@@ -451,18 +451,20 @@ export default function App() {
 function AppContent() {
   const [currentPage, setCurrentPage] = useState<Page>('dashboard')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const { state, setState, setTraffic, connect, disconnect } = useConnectionStore(
+  const { state, setState, setTraffic, connect, disconnect, restart } = useConnectionStore(
     useShallow((s) => ({
       state: s.state,
       setState: s.setState,
       setTraffic: s.setTraffic,
       connect: s.connect,
-      disconnect: s.disconnect
+      disconnect: s.disconnect,
+      restart: s.restart
     }))
   )
   const stateRef = useRef(state)
   const connectRef = useRef(connect)
   const disconnectRef = useRef(disconnect)
+  const restartRef = useRef(restart)
   const { warning, clear } = useToast()
   useTheme()
 
@@ -475,7 +477,8 @@ function AppContent() {
   useEffect(() => {
     connectRef.current = connect
     disconnectRef.current = disconnect
-  }, [connect, disconnect])
+    restartRef.current = restart
+  }, [connect, disconnect, restart])
 
   // Set sidebar width CSS variable on :root for fixed positioned elements
   useEffect(() => {
@@ -563,13 +566,9 @@ function AppContent() {
 
   // Listen for tray menu events
   useEffect(() => {
-    const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
-
     const restartIfConnected = async () => {
       if (stateRef.current === 'connected') {
-        await disconnectRef.current()
-        await sleep(500)
-        await connectRef.current()
+        await restartRef.current()
       }
     }
 

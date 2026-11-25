@@ -2,7 +2,16 @@ import type { AppSettings, SingBoxOutbound, DomainRule } from '../../shared/type
 import { DEFAULT_SETTINGS } from '../../shared/types'
 import { CLASH_API_URL } from '../../shared/constants'
 import { proxyListenHost } from './proxyPorts'
-import { loadRuleSetsFromFile, isRuleSetLocal, getRuleSetLocalPath, type RuleSetItem } from './ruleSetManager'
+import {
+  DYNAMIC_RULE_SET_TAGS,
+  getDynamicRuleSetPath,
+  getRuleSetLocalPath,
+  isRuleSetLocal,
+  loadRuleSetsFromFile,
+  syncBypassLanRuleSet,
+  syncCustomDomainRuleSets,
+  type RuleSetItem
+} from './ruleSetManager'
 import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 
@@ -31,11 +40,22 @@ function loadDomainRules(): DomainRule[] {
   return []
 }
 
+export function routingModeToClashMode(routingMode?: AppSettings['routingMode']): 'rule' | 'global' | 'direct' {
+  if (routingMode === 'global-proxy') return 'global'
+  if (routingMode === 'global-direct') return 'direct'
+  return 'rule'
+}
+
 export function generateConfig(input: GeneratorInput): object {
   const { outbounds, activeNodeTag, clashApiPort } = input
   const settings = input.settings || DEFAULT_SETTINGS
   const ruleSets = loadRuleSetsFromFile()
   const domainRules = input.domainRules || loadDomainRules()
+
+  // 启动前同步本地动态规则集文件，供 RayBox fswatch 持续监听热重载
+  syncBypassLanRuleSet(settings.bypassLan)
+  syncCustomDomainRuleSets(domainRules)
+
   const { outbounds: builtOutbounds, resolveRuleOutbound } = buildOutboundsWithRules(
     outbounds,
     activeNodeTag,
@@ -45,8 +65,8 @@ export function generateConfig(input: GeneratorInput): object {
   )
 
   return {
-    log: buildLogConfig(),
-    experimental: buildExperimentalConfig(clashApiPort),
+    log: buildLogConfig(settings),
+    experimental: buildExperimentalConfig(clashApiPort, settings.routingMode),
     dns: buildDnsConfig(settings, ruleSets, domainRules),
     inbounds: buildInbounds(settings),
     outbounds: builtOutbounds,
@@ -107,20 +127,21 @@ export function generateLatencyTestConfig(
   }
 }
 
-function buildLogConfig(): object {
+function buildLogConfig(settings: AppSettings): object {
+  // 避免 TUN 高并发下每条连接/DNS 包都刷 INFO 日志拖慢吞吐与 IPC；保留 warn/error 排障与启动错误捕获
   return {
     disabled: false,
-    level: 'info',
+    level: settings.enableRuntimeLogs ? 'warn' : 'error',
     timestamp: true
   }
 }
 
-function buildExperimentalConfig(clashApiPort?: number): object {
+function buildExperimentalConfig(clashApiPort?: number, routingMode?: AppSettings['routingMode']): object {
   const controller = clashApiPort ? `127.0.0.1:${clashApiPort}` : new URL(CLASH_API_URL).host
   return {
     clash_api: {
       external_controller: controller,
-      default_mode: 'rule'
+      default_mode: routingModeToClashMode(routingMode)
     },
     cache_file: {
       enabled: true,
@@ -161,9 +182,32 @@ function buildDnsConfig(settings: AppSettings, ruleSets: RuleSetItem[], domainRu
     server: 'local-dns'
   })
 
-  // 用户自定义域名分流规则优先于广告拦截规则集，确保手动放行的域名不会被 block 规则集在 DNS 层提前拦截
+  rules.push({
+    clash_mode: 'global',
+    action: 'route',
+    server: settings.fakeDns ? 'fakeip-dns' : 'remote-dns'
+  })
+
+  // 用户自定义域名规则（direct / proxy / block）通过本地规则集热加载，且优先于内置广告拦截规则集
+  rules.push({
+    rule_set: [DYNAMIC_RULE_SET_TAGS.customDirect],
+    action: 'route',
+    server: 'local-dns'
+  })
+  rules.push({
+    rule_set: [DYNAMIC_RULE_SET_TAGS.customProxy],
+    action: 'route',
+    server: settings.fakeDns ? 'fakeip-dns' : 'remote-dns'
+  })
+  rules.push({
+    rule_set: [DYNAMIC_RULE_SET_TAGS.customBlock],
+    action: 'reject'
+  })
+
+  // 指定节点 / 订阅组的自定义域名规则保留内联匹配
   for (const rule of domainRules) {
     if (!rule.enabled) continue
+    if (rule.outboundMode !== 'node' && rule.outboundMode !== 'profile') continue
     const matcher = rule.type === 'domain'
       ? { domain: [rule.value] }
       : rule.type === 'domain_suffix'
@@ -173,13 +217,7 @@ function buildDnsConfig(settings: AppSettings, ruleSets: RuleSetItem[], domainRu
           : null
     if (!matcher) continue
 
-    if (rule.outboundMode === 'block') {
-      rules.push({ ...matcher, action: 'reject' })
-    } else if (rule.outboundMode === 'direct') {
-      rules.push({ ...matcher, action: 'route', server: 'local-dns' })
-    } else {
-      rules.push({ ...matcher, action: 'route', server: settings.fakeDns ? 'fakeip-dns' : 'remote-dns' })
-    }
+    rules.push({ ...matcher, action: 'route', server: settings.fakeDns ? 'fakeip-dns' : 'remote-dns' })
   }
 
   // 按规则集顺序逐条生成 DNS 规则（自定义业务规则集优先于内置通用规则集，且排除 geoip 类 IP 规则集）
@@ -224,7 +262,11 @@ function buildDnsConfig(settings: AppSettings, ruleSets: RuleSetItem[], domainRu
     servers,
     rules,
     final: 'remote-dns',
-    strategy: 'ipv4_only'
+    strategy: 'ipv4_only',
+    cache_capacity: 4096,
+    optimistic: {
+      enabled: true
+    }
   }
 }
 
@@ -298,15 +340,17 @@ function buildInbounds(settings: AppSettings): object[] {
   }
 
   if (settings.tunEnabled) {
+    // Windows Wintun 不显式覆盖 MTU，让 RayBox 内核启用桌面端默认最优 65535 大帧聚合以提升吞吐；
+    // 仅配置 IPv4 地址，与 dns.strategy=ipv4_only 对齐，避免应用 Happy Eyeballs 探测 IPv6 超时卡顿
     inbounds.push({
       type: 'tun',
       tag: 'tun-in',
       interface_name: 'kunbox-tun',
-      address: ['172.19.0.1/30', 'fdfe:dcba:9876::1/126'],
-      mtu: 9000,
+      address: ['172.19.0.1/30'],
       auto_route: true,
-      strict_route: settings.tunStrictRoute ?? true,
-      stack: settings.tunStack || 'system'
+      strict_route: settings.tunStrictRoute ?? false,
+      stack: settings.tunStack || 'mixed',
+      udp_timeout: '5m'
     })
   }
 
@@ -841,23 +885,43 @@ function buildRouteConfig(
 ): object {
   const rules: object[] = []
 
-  // 全局启用协议嗅探（覆盖 mixed-in / socks-in / tun-in），避免 IP 直连或未带域名连接误落 geoip-cn 直连被重置
-  rules.push({ action: 'sniff' })
+  // 1. 53 端口 DNS 流量零延迟直接劫持，不经过嗅探器
+  rules.push({
+    port: [53],
+    action: 'hijack-dns'
+  })
 
+  // 2. 绕过局域网通过本地规则集热开关，私网连接直接直出，不浪费嗅探开销
+  rules.push({
+    rule_set: [DYNAMIC_RULE_SET_TAGS.bypassLan],
+    outbound: 'direct'
+  })
+
+  // 3. 精准协议嗅探并缩短超时（默认 300ms -> 50ms），避免服务端先发或慢首包协议被卡顿
+  rules.push({
+    action: 'sniff',
+    sniffer: ['tls', 'http', 'quic', 'dns'],
+    timeout: '50ms'
+  })
+
+  // 4. 兜底非 53 端口嗅探出的 DNS 协议流量
   rules.push({
     protocol: ['dns'],
     action: 'hijack-dns'
   })
 
-  if (settings.bypassLan) {
-    rules.push({
-      ip_is_private: true,
-      outbound: 'direct'
-    })
-  }
+  // Clash 模式热切换规则（支持通过 PATCH /configs 零重启切换直连 / 全局 / 规则模式）
+  rules.push({
+    clash_mode: 'direct',
+    outbound: 'direct'
+  })
+  rules.push({
+    clash_mode: 'global',
+    outbound: 'PROXY'
+  })
 
-  // 自定义域名分流规则（统一支持 direct / proxy / node / profile / reject）
-  for (const rule of domainRules.filter(r => r.enabled)) {
+  // 自定义域名分流规则：direct / proxy / block 走本地规则集热重载，node / profile 保留精确出站绑定
+  for (const rule of domainRules.filter(r => r.enabled && (r.outboundMode === 'node' || r.outboundMode === 'profile'))) {
     const matcher = rule.type === 'domain'
       ? { domain: [rule.value] }
       : rule.type === 'domain_suffix'
@@ -867,12 +931,21 @@ function buildRouteConfig(
           : null
     if (!matcher) continue
 
-    if (rule.outboundMode === 'block') {
-      rules.push({ ...matcher, action: 'reject' })
-    } else {
-      rules.push({ ...matcher, outbound: resolveRuleOutbound(rule.outboundMode, rule.outboundValue) })
-    }
+    rules.push({ ...matcher, outbound: resolveRuleOutbound(rule.outboundMode, rule.outboundValue) })
   }
+
+  rules.push({
+    rule_set: [DYNAMIC_RULE_SET_TAGS.customDirect],
+    outbound: 'direct'
+  })
+  rules.push({
+    rule_set: [DYNAMIC_RULE_SET_TAGS.customProxy],
+    outbound: 'PROXY'
+  })
+  rules.push({
+    rule_set: [DYNAMIC_RULE_SET_TAGS.customBlock],
+    action: 'reject'
+  })
 
   // 用户自定义业务规则集始终优先于内置通用规则集（geosite-cn / geoip-cn / 广告拦截），防止被内置大合集误拦截或误直连
   const orderedRuleSets = [
@@ -902,14 +975,24 @@ function buildRouteConfig(
     })
   }
 
-  const finalOutbound = settings.routingMode === 'global-direct' ? 'direct' : 'PROXY'
+  const dynamicRuleSets = [
+    DYNAMIC_RULE_SET_TAGS.bypassLan,
+    DYNAMIC_RULE_SET_TAGS.customDirect,
+    DYNAMIC_RULE_SET_TAGS.customProxy,
+    DYNAMIC_RULE_SET_TAGS.customBlock
+  ].map((tag) => ({
+    type: 'local',
+    tag,
+    format: 'source',
+    path: getDynamicRuleSetPath(tag)
+  }))
 
   return {
     rules,
-    final: finalOutbound,
+    final: 'PROXY',
     auto_detect_interface: true,
     default_domain_resolver: 'dns-bootstrap',
-    rule_set: buildRuleSets(availableRuleSets)
+    rule_set: [...dynamicRuleSets, ...buildRuleSets(availableRuleSets)]
   }
 }
 

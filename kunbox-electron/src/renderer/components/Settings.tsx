@@ -78,9 +78,16 @@ export default function Settings() {
     try {
       await window.api.settings.set({ [key]: value })
 
-      if (['routingMode', 'tunEnabled', 'tunStack', 'tunStrictRoute', 'systemProxy',
-        'localPort', 'socksPort', 'allowLan', 'bypassLan', 'localDns', 'remoteDns', 'fakeDns'].includes(key)) {
+      // 仅真正依赖内核重建的配置项才提示重启；systemProxy / routingMode / bypassLan 均已支持热生效
+      if (['tunEnabled', 'tunStack', 'tunStrictRoute',
+        'localPort', 'socksPort', 'allowLan', 'localDns', 'remoteDns', 'fakeDns'].includes(key)) {
         toast.showRestartToast('网络设置已保存')
+      } else if (key === 'systemProxy') {
+        toast.success(value ? '系统代理已开启' : '系统代理已关闭')
+      } else if (key === 'routingMode') {
+        toast.success('路由模式已切换并生效')
+      } else if (key === 'bypassLan') {
+        toast.success(value ? '已开启绕过局域网' : '已关闭绕过局域网')
       }
 
       if (key === 'theme') {
@@ -218,7 +225,7 @@ export default function Settings() {
                   </SettingRow>
                   {settings.routingMode !== 'rule' && (
                     <p className="px-5 py-3 text-sm text-amber-500">
-                      全局模式会忽略域名分流和规则集的指定节点。需要按网站分流时，请选择规则模式；修改后重启 VPN 生效。
+                      全局模式会忽略域名分流和规则集的指定节点。需要按网站分流时，请选择规则模式（切换后立即生效）。
                     </p>
                   )}
                   <SettingRow label="绕过局域网" isLast>
@@ -300,10 +307,10 @@ export default function Settings() {
                     TUN 与系统代理可以同时开启：支持系统代理的应用走代理，其余 IPv4 流量由 TUN 接管，两者共用分流规则。严格路由默认关闭。
                   </p>
                   <p className="text-sm text-[var(--text-muted)]">
-                    TUN 与路由模式独立。按网站使用指定节点，需要在「代理」页选择「规则模式」，并重启 VPN 应用设置。
+                    TUN 与路由模式独立。按网站使用指定节点，需要在「代理」页选择「规则模式」（切换后即时生效）。
                   </p>
                   <p className="text-sm text-[var(--text-muted)]">
-                    TUN 网卡仅 IPv4，DNS 优先 IPv4（prefer_ipv4，MTU 1500）。IPv6 不进隧道，由系统原生链路回退。
+                    TUN 网卡仅 IPv4，DNS 优先 IPv4 并启用乐观缓存（自动使用 Wintun 最优 MTU）。IPv6 不进隧道，由系统原生链路回退。
                   </p>
                 </div>
               </div>

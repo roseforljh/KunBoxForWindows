@@ -235,7 +235,14 @@ export default function Nodes() {
     try {
       await window.api.node.add(link, target)
       await Promise.all([loadNodes(), useNodesStore.getState().loadAllNodes(), loadProfilesSafe()])
-      toast.showRestartToast('节点添加成功')
+      const affectsCore = target.type === 'existing'
+        ? await window.api.profile.affectsRunningCore(target.profileId)
+        : false
+      if (affectsCore) {
+        toast.showRestartToast('节点添加成功')
+      } else {
+        toast.success('节点添加成功')
+      }
     } catch (err) {
       toast.error(`添加失败: ${err}`)
     }

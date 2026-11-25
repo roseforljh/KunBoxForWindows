@@ -101,11 +101,14 @@ export class SingBoxManager extends EventEmitter {
     this.config = { ...this.config, ...config }
   }
 
-  setMode(mode: ProxyMode): void {
+  setMode(mode: ProxyMode): Promise<boolean> {
     this.mode = mode
     this.emit('modeChange', mode)
     // 运行中实时通知内核 Clash API 切换模式
-    if (this.isRunning()) {
+    if (!this.isRunning()) {
+      return Promise.resolve(true)
+    }
+    return new Promise((resolve) => {
       const payload = JSON.stringify({ mode })
       const req = http.request({
         host: this.config.apiHost,
@@ -117,12 +120,42 @@ export class SingBoxManager extends EventEmitter {
           'Content-Length': Buffer.byteLength(payload)
         },
         timeout: 3000
+      }, (res) => {
+        res.resume()
+        resolve(res.statusCode === 204 || res.statusCode === 200)
       })
-      req.on('error', () => {})
-      req.on('timeout', () => req.destroy())
+      req.on('error', () => resolve(false))
+      req.on('timeout', () => {
+        req.destroy()
+        resolve(false)
+      })
       req.write(payload)
       req.end()
+    })
+  }
+
+  flushDnsCache(): Promise<boolean> {
+    if (!this.isRunning()) {
+      return Promise.resolve(true)
     }
+    return new Promise((resolve) => {
+      const req = http.request({
+        host: this.config.apiHost,
+        port: this.config.apiPort,
+        path: '/cache/dns/flush',
+        method: 'POST',
+        timeout: 3000
+      }, (res) => {
+        res.resume()
+        resolve(res.statusCode === 204 || res.statusCode === 200)
+      })
+      req.on('error', () => resolve(false))
+      req.on('timeout', () => {
+        req.destroy()
+        resolve(false)
+      })
+      req.end()
+    })
   }
 
   getApiPort(): number {
@@ -272,7 +305,7 @@ export class SingBoxManager extends EventEmitter {
       this.setState('stopping')
       this.log('info', 'Core', 'Stopping sing-box...')
 
-      const timeout = options.timeout || 5000
+      const timeout = options.timeout || 1500
       await this.killProcess(options.force, timeout)
 
       this.process = null
@@ -298,7 +331,7 @@ export class SingBoxManager extends EventEmitter {
     const sequence = this.startSequence
     const result = await stopping
     if (!result.success) return result
-    await new Promise(resolve => setTimeout(resolve, 500))
+    await new Promise(resolve => setTimeout(resolve, 30))
     if (sequence !== this.startSequence) return { success: false, error: '内核重启已取消' }
     return this.start(options)
   }
@@ -306,10 +339,12 @@ export class SingBoxManager extends EventEmitter {
   private async waitForStartup(timeout = 3000): Promise<void> {
     const start = Date.now()
     const http = await import('http')
-    
+    // 避开刚 spawn 瞬间的必然 ECONNREFUSED 空转，随后以 40ms 高频探测就绪
+    await new Promise(resolve => setTimeout(resolve, 40))
+
     while (Date.now() - start < timeout) {
       if (!this.process || this.process.killed) break
-      
+
       const ready = await new Promise<boolean>((resolve) => {
         const req = http.request({
           host: this.config.apiHost,
@@ -318,19 +353,20 @@ export class SingBoxManager extends EventEmitter {
           method: 'GET',
           timeout: 500
         }, (res) => {
+          res.resume()
           resolve(res.statusCode === 200)
         })
         req.on('error', () => resolve(false))
         req.on('timeout', () => { req.destroy(); resolve(false) })
         req.end()
       })
-      
+
       if (ready) return
-      await new Promise(resolve => setTimeout(resolve, 200))
+      await new Promise(resolve => setTimeout(resolve, 40))
     }
   }
 
-  private async killProcess(force = false, timeout = 5000): Promise<void> {
+  private async killProcess(force = false, timeout = 1500): Promise<void> {
     if (!this.process) return
 
     return new Promise((resolve) => {

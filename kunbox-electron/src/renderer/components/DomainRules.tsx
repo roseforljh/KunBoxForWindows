@@ -84,13 +84,13 @@ export default function DomainRules() {
   // Save rules to backend
   const saveRules = useCallback(async (newRules: DomainRule[]) => {
     try {
-      await window.api.customRules.saveDomainRules(newRules)
+      const result = await window.api.customRules.saveDomainRules(newRules)
       setRules(newRules)
-      return true
+      return { ok: true, needsRestart: Boolean(result?.needsRestart) }
     } catch (error) {
       console.error('Failed to save domain rules:', error)
       toast.error('保存域名规则失败')
-      return false
+      return { ok: false, needsRestart: false }
     }
   }, [toast])
 
@@ -198,12 +198,20 @@ export default function DomainRules() {
     }
   }
 
+  const notifySaveResult = (message: string, needsRestart: boolean) => {
+    if (needsRestart) {
+      toast.showRestartToast(message)
+    } else {
+      toast.success(message)
+    }
+  }
+
   const toggleRule = async (id: string) => {
     const rule = rules.find(r => r.id === id)
     const newRules = rules.map((r) => (r.id === id ? { ...r, enabled: !r.enabled } : r))
     const saved = await saveRules(newRules)
-    if (saved) {
-      toast.showRestartToast(`规则「${rule?.name || rule?.value}」已${rule?.enabled ? '禁用' : '启用'}`)
+    if (saved.ok) {
+      notifySaveResult(`规则「${rule?.name || rule?.value}」已${rule?.enabled ? '禁用' : '启用'}`, saved.needsRestart)
     }
   }
 
@@ -217,8 +225,8 @@ export default function DomainRules() {
       const target = rules.find((r) => r.id === deleteTargetId)
       const newRules = rules.filter((r) => r.id !== deleteTargetId)
       const saved = await saveRules(newRules)
-      if (saved) {
-        toast.showRestartToast(`已删除规则「${target?.name || target?.value}」`)
+      if (saved.ok) {
+        notifySaveResult(`已删除规则「${target?.name || target?.value}」`, saved.needsRestart)
       }
       setDeleteTargetId(null)
     }
@@ -276,8 +284,8 @@ export default function DomainRules() {
           : r
       )
       const saved = await saveRules(newRules)
-      if (saved) {
-        toast.showRestartToast(`规则「${finalName}」已更新`)
+      if (saved.ok) {
+        notifySaveResult(`规则「${finalName}」已更新`, saved.needsRestart)
         setShowAddDialog(false)
       }
     } else {
@@ -291,8 +299,8 @@ export default function DomainRules() {
         enabled: true
       }
       const saved = await saveRules([...rules, newRule])
-      if (saved) {
-        toast.showRestartToast(`规则「${finalName}」已添加`)
+      if (saved.ok) {
+        notifySaveResult(`规则「${finalName}」已添加`, saved.needsRestart)
         setShowAddDialog(false)
       }
     }

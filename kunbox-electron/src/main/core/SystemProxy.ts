@@ -27,9 +27,13 @@ export class SystemProxy {
       const proxyServer = `${host}:${port}`
       const bypassList = this.bypass.join(';')
 
-      await this.runReg('add', 'ProxyEnable', 'REG_DWORD', '1')
-      await this.runReg('add', 'ProxyServer', 'REG_SZ', proxyServer)
-      await this.runReg('add', 'ProxyOverride', 'REG_SZ', bypassList)
+      // 合并为单次 cmd 调用写入 3 个注册表值，减少子进程创建开销
+      const cmd = [
+        `reg add "${REGISTRY_PATH}" /v ProxyEnable /t REG_DWORD /d "1" /f`,
+        `reg add "${REGISTRY_PATH}" /v ProxyServer /t REG_SZ /d "${proxyServer}" /f`,
+        `reg add "${REGISTRY_PATH}" /v ProxyOverride /t REG_SZ /d "${bypassList}" /f`
+      ].join(' && ')
+      await execAsync(cmd, { windowsHide: true })
 
       // Notify system of proxy change
       await this.notifyProxyChange()
@@ -46,14 +50,10 @@ export class SystemProxy {
   // Disable system proxy
   async disable(): Promise<boolean> {
     try {
-      await this.runReg('add', 'ProxyEnable', 'REG_DWORD', '0')
-      
-      // Optionally clear ProxyServer
-      try {
-        await this.runReg('delete', 'ProxyServer')
-      } catch {
-        // ignore if doesn't exist
-      }
+      await execAsync(
+        `reg add "${REGISTRY_PATH}" /v ProxyEnable /t REG_DWORD /d "0" /f && (reg delete "${REGISTRY_PATH}" /v ProxyServer /f 2>nul || exit /b 0)`,
+        { windowsHide: true }
+      )
 
       await this.notifyProxyChange()
 
@@ -105,18 +105,8 @@ export class SystemProxy {
     return this.enabled
   }
 
-  private async runReg(action: 'add' | 'delete', name: string, type?: string, value?: string): Promise<void> {
-    let cmd: string
-
-    if (action === 'add' && type && value !== undefined) {
-      cmd = `reg add "${REGISTRY_PATH}" /v ${name} /t ${type} /d "${value}" /f`
-    } else if (action === 'delete') {
-      cmd = `reg delete "${REGISTRY_PATH}" /v ${name} /f`
-    } else {
-      throw new Error('Invalid registry operation')
-    }
-
-    await execAsync(cmd, { windowsHide: true })
+  getPort(): number {
+    return this.port
   }
 
   private async queryReg(name: string): Promise<string> {
@@ -148,7 +138,7 @@ export class SystemProxy {
     `.replace(/\n/g, '; ')
 
     try {
-      await execAsync(`powershell -Command "${ps}"`, { windowsHide: true })
+      await execAsync(`powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "${ps}"`, { windowsHide: true })
     } catch {
       this.log('Could not notify system of proxy change')
     }

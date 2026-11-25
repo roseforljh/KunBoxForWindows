@@ -40,13 +40,14 @@ export function formatSelectorNodeName(nodeTag: string) {
 }
 
 export default function Dashboard() {
-  const { state, traffic, trafficHistory, connect, disconnect, needsRestart, lastError } = useConnectionStore(
+  const { state, traffic, trafficHistory, connect, disconnect, restart, needsRestart, lastError } = useConnectionStore(
     useShallow((s) => ({
       state: s.state,
       traffic: s.traffic,
       trafficHistory: s.trafficHistory,
       connect: s.connect,
       disconnect: s.disconnect,
+      restart: s.restart,
       needsRestart: s.needsRestart,
       lastError: s.lastError,
     }))
@@ -193,24 +194,17 @@ export default function Dashboard() {
     
     setIsAnimating(true)
     try {
-      const stopResult = await disconnect()
-      if (!stopResult.success) {
-        toast.clear()
-        toast.error(stopResult.error || '停止失败')
-        return
-      }
-      await new Promise(resolve => setTimeout(resolve, 500))
-      const startResult = await connect()
-      if (startResult.success) {
-        if (startResult.warning) {
-          toast.warning(startResult.warning)
+      const result = await restart()
+      if (result.success) {
+        if (result.warning) {
+          toast.warning(result.warning)
         } else {
           toast.success('已重新连接')
         }
         testLatency()
       } else {
         toast.clear()
-        toast.error(startResult.error || '重启失败')
+        toast.error(result.error || '重启失败')
       }
     } catch (err) {
       toast.error(`重启失败: ${err}`)

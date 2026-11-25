@@ -1,17 +1,27 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { DEFAULT_SETTINGS, type DomainRule, type SingBoxOutbound } from '../../shared/types'
+import { SingBoxManager } from '../core/SingBoxManager'
 import { TrafficMonitor } from '../core/TrafficMonitor'
 import { parseShareLink } from '../ipc/shareLink'
 import { generateConfig, generateLatencyTestConfig, isProxyType } from './configGenerator'
 import { getDataDir } from './paths'
 import { resolveApiPort } from './proxyPorts'
+import {
+  DYNAMIC_RULE_SET_TAGS,
+  domainRulesNeedRestart,
+  getDynamicRuleSetPath,
+  ruleSetsNeedRestart,
+  syncBypassLanRuleSet,
+  syncCustomDomainRuleSets,
+  type RuleSetItem
+} from './ruleSetManager'
 
 const RAYBOX_EXE = join(process.cwd(), 'resources', 'libs', 'raybox', 'raybox-windows-amd64.exe')
 
@@ -128,9 +138,13 @@ test('E2E: generateConfig handles FakeIP, detour chains, duplicate tags, and dom
     assert.equal(proxySelector?.default, 'DupNode')
     assert.equal(proxySelector?.interrupt_exist_connections, true)
 
-    // 4. 验证域名分流 block -> action: reject，node -> FrontHop，profile -> profile::<id>
-    const blockRule = config.route.rules.find((r: any) => r.domain_suffix?.includes('ads.example.com'))
+    // 4. 验证自定义域名分流：block / direct 写入本地热载规则集，node -> FrontHop，profile -> profile::<id>
+    const blockRule = config.route.rules.find((r: any) => r.rule_set?.includes(DYNAMIC_RULE_SET_TAGS.customBlock))
     assert.equal(blockRule?.action, 'reject')
+    const blockSetJson = JSON.parse(readFileSync(getDynamicRuleSetPath(DYNAMIC_RULE_SET_TAGS.customBlock), 'utf-8'))
+    assert.ok(blockSetJson.rules[0]?.domain_suffix?.includes('ads.example.com'))
+    const directSetJson = JSON.parse(readFileSync(getDynamicRuleSetPath(DYNAMIC_RULE_SET_TAGS.customDirect), 'utf-8'))
+    assert.ok(directSetJson.rules[0]?.domain?.includes('direct.example.com'))
     const nodeRule = config.route.rules.find((r: any) => r.domain_suffix?.includes('node.example.com'))
     assert.equal(nodeRule?.outbound, 'FrontHop')
     const profileRule = config.route.rules.find((r: any) => r.domain_keyword?.includes('profile-test'))
@@ -332,4 +346,220 @@ test('E2E: VLESS XHTTP + REALITY + Encryption converts to native xray outbound a
 
   checkWithRealKernel(fullConfig)
   checkWithRealKernel(extendedConfig)
+})
+
+test('E2E: real RayBox kernel hot-switches clash modes, flushes DNS cache, and reloads local dynamic rule-sets via fswatch', async () => {
+  assert.equal(existsSync(RAYBOX_EXE), true)
+
+  const apiPort = await resolveApiPort(19120)
+  const localPort = await resolveApiPort(apiPort + 1)
+  const socksPort = await resolveApiPort(localPort + 1)
+
+  const dir = mkdtempSync(join(tmpdir(), 'kunbox-e2e-hotreload-'))
+  const configPath = join(dir, 'config.json')
+  const config = generateConfig({
+    settings: {
+      ...DEFAULT_SETTINGS,
+      localPort,
+      socksPort,
+      tunEnabled: false,
+      systemProxy: false,
+      routingMode: 'rule',
+      bypassLan: true
+    },
+    outbounds: [{ type: 'socks', tag: 'HotNode', server: '127.0.0.1', server_port: 10899 }],
+    activeNodeTag: 'HotNode',
+    domainRules: [],
+    clashApiPort: apiPort
+  })
+  writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
+
+  let stderrLog = ''
+  const proc = spawn(RAYBOX_EXE, ['run', '-c', configPath], {
+    cwd: dir,
+    windowsHide: true,
+    stdio: ['ignore', 'ignore', 'pipe']
+  })
+  proc.stderr?.on('data', (chunk: Buffer) => {
+    stderrLog += chunk.toString('utf-8')
+  })
+
+  const apiRequest = (method: string, path: string, body?: object) =>
+    new Promise<{ status: number; text: string }>((resolve, reject) => {
+      const payload = body ? JSON.stringify(body) : undefined
+      const req = http.request({
+        host: '127.0.0.1',
+        port: apiPort,
+        path,
+        method,
+        headers: payload ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } : undefined,
+        timeout: 3000
+      }, (res) => {
+        let text = ''
+        res.on('data', (c) => { text += c })
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, text }))
+      })
+      req.on('error', reject)
+      req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+      if (payload) req.write(payload)
+      req.end()
+    })
+
+  try {
+    let ready = false
+    const deadline = Date.now() + 5000
+    while (Date.now() < deadline && !ready) {
+      try {
+        const res = await apiRequest('GET', '/version')
+        ready = res.status === 200
+      } catch {
+        // retry
+      }
+      if (!ready) await new Promise((r) => setTimeout(r, 80))
+    }
+    assert.equal(ready, true, `RayBox 启动超时:\n${stderrLog}`)
+
+    // 1. 验证 rule / global / direct 三态均在 modeList 中且 PATCH /configs 真正生效
+    for (const targetMode of ['global', 'direct', 'rule'] as const) {
+      const patchRes = await apiRequest('PATCH', '/configs', { mode: targetMode })
+      assert.equal(patchRes.status, 204)
+      const getRes = await apiRequest('GET', '/configs')
+      const parsed = JSON.parse(getRes.text)
+      assert.equal(String(parsed.mode).toLowerCase(), targetMode)
+    }
+
+    // 2. 验证 POST /cache/dns/flush 热清缓存返回 204
+    const flushRes = await apiRequest('POST', '/cache/dns/flush')
+    assert.equal(flushRes.status, 204)
+
+    // 3. 验证运行期覆写本地动态规则集（bypassLan 与自定义域名）后 fswatch 热重载无报错
+    syncBypassLanRuleSet(false)
+    syncCustomDomainRuleSets([
+      { id: 'h1', name: 'HotDirect', type: 'domain_suffix', value: 'hot-direct.test', outboundMode: 'direct', enabled: true },
+      { id: 'h2', name: 'HotBlock', type: 'domain', value: 'hot-block.test', outboundMode: 'block', enabled: true }
+    ])
+    await new Promise((r) => setTimeout(r, 350))
+    syncBypassLanRuleSet(true)
+    syncCustomDomainRuleSets([])
+    await new Promise((r) => setTimeout(r, 250))
+
+    assert.equal(proc.exitCode, null, `热重载后内核异常退出:\n${stderrLog}`)
+    assert.equal(/reload rule-set|FATAL|ERROR/i.test(stderrLog), false, `热重载产生内核报错:\n${stderrLog}`)
+  } finally {
+    if (proc.exitCode === null) {
+      const exited = new Promise<void>((resolve) => proc.once('exit', () => resolve()))
+      proc.kill('SIGKILL')
+      await Promise.race([exited, new Promise((r) => setTimeout(r, 2000))])
+    }
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('needsRestart判定：仅实质影响内核结构的规则/规则集变更才要求重启', () => {
+  const baseDomain: DomainRule[] = [
+    { id: '1', name: 'a', type: 'domain_suffix', value: 'a.com', outboundMode: 'direct', enabled: true },
+    { id: '2', name: 'b', type: 'domain', value: 'b.com', outboundMode: 'node', outboundValue: 'p1::n1', enabled: false }
+  ]
+  // 增删改 direct/proxy/block 或禁用态 node 规则均无需重启
+  assert.equal(domainRulesNeedRestart(baseDomain, [
+    ...baseDomain,
+    { id: '3', name: 'c', type: 'domain_keyword', value: 'ads', outboundMode: 'block', enabled: true }
+  ]), false)
+  // 启用 node 规则才需要重启
+  assert.equal(domainRulesNeedRestart(baseDomain, [
+    baseDomain[0],
+    { ...baseDomain[1], enabled: true }
+  ]), true)
+
+  const baseSets: RuleSetItem[] = [
+    { id: '1', tag: 'rs-local', name: '本地', url: 'a.json', path: 'a.json', type: 'local', format: 'source', outboundMode: 'direct', enabled: true, isBuiltIn: false },
+    { id: '2', tag: 'rs-off', name: '禁用项', url: 'b.json', path: 'b.json', type: 'local', format: 'source', outboundMode: 'proxy', enabled: false, isBuiltIn: false }
+  ]
+  // 改显示名称、删除禁用规则集无需重启
+  assert.equal(ruleSetsNeedRestart(baseSets, [
+    { ...baseSets[0], name: '改个名' }
+  ]), false)
+  // 启用新规则集需要重启
+  assert.equal(ruleSetsNeedRestart(baseSets, [
+    baseSets[0],
+    { ...baseSets[1], enabled: true }
+  ]), true)
+})
+
+test('E2E: optimized TUN config passes real RayBox check and SingBoxManager restart completes rapidly', async () => {
+  assert.equal(existsSync(RAYBOX_EXE), true)
+
+  // 1. 校验优化后的 TUN 配置（自动最优 MTU、纯 IPv4、50ms 精准嗅探、DNS 乐观缓存、warn 日志级别）通过真实 RayBox check
+  const tunConfig = generateConfig({
+    settings: {
+      ...DEFAULT_SETTINGS,
+      tunEnabled: true,
+      tunStack: 'mixed',
+      tunStrictRoute: false,
+      fakeDns: true,
+      systemProxy: false
+    },
+    outbounds: [{ type: 'socks', tag: 'TunNode', server: '127.0.0.1', server_port: 10899 }],
+    activeNodeTag: 'TunNode',
+    domainRules: [],
+    clashApiPort: 19130
+  }) as any
+
+  const tunInbound = tunConfig.inbounds.find((i: any) => i.type === 'tun')
+  assert.equal(tunInbound?.mtu, undefined)
+  assert.deepEqual(tunInbound?.address, ['172.19.0.1/30'])
+  assert.equal(tunInbound?.stack, 'mixed')
+  assert.equal(tunInbound?.udp_timeout, '5m')
+  assert.equal(tunConfig.dns.cache_capacity, 4096)
+  assert.equal(tunConfig.dns.optimistic?.enabled, true)
+  assert.equal(tunConfig.log.level, 'warn')
+  assert.equal(tunConfig.route.rules[0]?.action, 'hijack-dns')
+  assert.deepEqual(tunConfig.route.rules[0]?.port, [53])
+  const sniffRule = tunConfig.route.rules.find((r: any) => r.action === 'sniff')
+  assert.equal(sniffRule?.timeout, '50ms')
+  checkWithRealKernel(tunConfig)
+
+  // 2. 实测 SingBoxManager 真实进程重启端到端耗时与可用性
+  const apiPort = await resolveApiPort(19131)
+  const localPort = await resolveApiPort(apiPort + 1)
+  const socksPort = await resolveApiPort(localPort + 1)
+  const dir = mkdtempSync(join(tmpdir(), 'kunbox-e2e-restart-'))
+  const mgr = new SingBoxManager({
+    execPath: RAYBOX_EXE,
+    configDir: dir,
+    workDir: dir,
+    apiHost: '127.0.0.1',
+    apiPort,
+    apiSecret: ''
+  }, () => {})
+
+  const content = JSON.stringify(generateConfig({
+    settings: {
+      ...DEFAULT_SETTINGS,
+      localPort,
+      socksPort,
+      tunEnabled: false,
+      systemProxy: false
+    },
+    outbounds: [{ type: 'socks', tag: 'RestartNode', server: '127.0.0.1', server_port: 10899 }],
+    activeNodeTag: 'RestartNode',
+    domainRules: [],
+    clashApiPort: apiPort
+  }), null, 2)
+
+  try {
+    const startRes = await mgr.start({ configContent: content })
+    assert.equal(startRes.success, true, startRes.error || 'start failed')
+
+    const t0 = Date.now()
+    const restartRes = await mgr.restart({ configContent: content })
+    const elapsed = Date.now() - t0
+    assert.equal(restartRes.success, true, restartRes.error || 'restart failed')
+    assert.equal(mgr.isRunning(), true)
+    assert.ok(elapsed < 2000, `重启耗时过长: ${elapsed}ms`)
+  } finally {
+    await mgr.stop({ force: true, timeout: 1000 })
+    mgr.destroy()
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

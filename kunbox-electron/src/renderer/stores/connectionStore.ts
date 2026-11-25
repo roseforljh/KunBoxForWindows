@@ -25,6 +25,7 @@ interface ConnectionState {
   setNeedsRestart: (needs: boolean) => void
   connect: () => Promise<{ success: boolean; error?: string; warning?: string }>
   disconnect: () => Promise<{ success: boolean; error?: string; warning?: string }>
+  restart: () => Promise<{ success: boolean; error?: string; warning?: string }>
 }
 
 export const useConnectionStore = create<ConnectionState>((set, get) => ({
@@ -91,6 +92,29 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       }
       set({ state: 'idle', traffic: null, trafficHistory: [], lastError: null, needsRestart: false })
       return { success: true }
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err)
+      set({ state: 'error', lastError: error })
+      return { success: false, error }
+    }
+  },
+
+  restart: async () => {
+    const { state } = get()
+    if (state !== 'connected') {
+      return { success: false, error: '未在运行中' }
+    }
+
+    useNodesStore.getState().cancelTestAllLatency()
+    set({ state: 'connecting', lastError: null })
+    try {
+      const result = await window.api.singbox.restart()
+      if (!result.success) {
+        set({ state: 'error', lastError: result.error })
+        return { success: false, error: result.error }
+      }
+      set({ state: 'connected', needsRestart: false })
+      return { success: true, warning: result.warning }
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err)
       set({ state: 'error', lastError: error })

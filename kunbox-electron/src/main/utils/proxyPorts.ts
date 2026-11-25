@@ -44,9 +44,14 @@ export async function resolveProxyPorts(
   const host = proxyListenHost(allowLan)
   const excluded = [apiPort, localPort, socksPort]
   const keep = async (port: number) => port <= 0 || (port !== apiPort && await canListen(host, port))
-  const newLocal = await keep(localPort) ? localPort : await findAvailablePort(host, excluded)
-  const newSocks = socksPort === localPort ? newLocal
-    : await keep(socksPort) ? socksPort : await findAvailablePort(host, [...excluded, newLocal])
+  const samePort = socksPort === localPort
+  const [localOk, socksOk] = await Promise.all([
+    keep(localPort),
+    samePort ? Promise.resolve(true) : keep(socksPort)
+  ])
+  const newLocal = localOk ? localPort : await findAvailablePort(host, excluded)
+  const newSocks = samePort ? newLocal
+    : socksOk ? socksPort : await findAvailablePort(host, [...excluded, newLocal])
   return { localPort: newLocal, socksPort: newSocks }
 }
 

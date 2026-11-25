@@ -331,12 +331,37 @@ function rayboxRepositoryMatches(value: string): boolean {
   return value === RAYBOX_REPO_URL || value === RAYBOX_REPO_SLUG
 }
 
+// 对大文件（如 80MB RayBox 内核）按 size + mtime + ctime 缓存 SHA-256，避免每次重启重复全盘读取
+const LARGE_FILE_HASH_CACHE_THRESHOLD = 1024 * 1024
+const largeFileSha256Cache = new Map<string, { key: string; hash: string }>()
+
 function sha256File(filePath: string): Promise<string> {
+  let cacheKey: string | null = null
+  try {
+    const st = statSync(filePath)
+    if (st.size >= LARGE_FILE_HASH_CACHE_THRESHOLD) {
+      cacheKey = `${st.size}:${st.mtimeMs}:${st.ctimeMs}`
+      const cached = largeFileSha256Cache.get(filePath)
+      if (cached && cached.key === cacheKey) {
+        return Promise.resolve(cached.hash)
+      }
+    }
+  } catch {
+    // 交给后续流读取抛出原始错误
+  }
+
   return new Promise((resolve, reject) => {
     const hash = createHash('sha256')
     const stream = createReadStream(filePath)
     stream.on('data', chunk => hash.update(chunk))
-    stream.on('end', () => resolve(hash.digest('hex')))
+    stream.on('end', () => {
+      const digest = hash.digest('hex')
+      if (cacheKey) {
+        if (largeFileSha256Cache.size >= 16) largeFileSha256Cache.clear()
+        largeFileSha256Cache.set(filePath, { key: cacheKey, hash: digest })
+      }
+      resolve(digest)
+    })
     stream.on('error', reject)
   })
 }

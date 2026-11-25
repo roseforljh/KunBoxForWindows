@@ -377,10 +377,14 @@ export default function RuleSets() {
   const persistRuleSets = async (next: RuleSetItem[], message: string) => {
     setIsSaving(true)
     try {
-      await window.api.ruleset.save(next)
+      const result = await window.api.ruleset.save(next)
       savedRuleSetsRef.current = next
       setRuleSets(next)
-      toast.showRestartToast(message)
+      if (result?.needsRestart === false) {
+        toast.success(message)
+      } else {
+        toast.showRestartToast(message)
+      }
       return true
     } catch (error) {
       setRuleSets(savedRuleSetsRef.current)
@@ -498,7 +502,8 @@ export default function RuleSets() {
       }
       const summary = `已更新 ${updated} 个规则集${failures.length ? `，失败 ${failures.length} 个，已有缓存保留` : ''}`
       setUpdateResult([summary, ...failures].join('\n'))
-      if (updated > 0) toast.showRestartToast(summary)
+      // RayBox fswatch 会自动热加载覆写后的本地 .srs 规则集文件，无需重启内核
+      if (updated > 0) toast.success(`${summary}（已自动热生效）`)
       else toast.error(summary)
     } finally {
       setDownloadingTags(new Set())
@@ -938,7 +943,7 @@ export default function RuleSets() {
         )}
 
         <p className="text-xs text-[var(--text-faint)] mt-4">
-          拖拽可调整优先级。更新会重新下载远程规则集，失败时保留已有缓存；修改分流配置后，重启内核即可生效。
+          拖拽可调整优先级。更新已有远程规则集会自动热重载生效，失败时保留已有缓存；增删或调整已启用规则集顺序后需重启内核生效。
         </p>
       </div>
 

@@ -6,6 +6,8 @@ import { DEFAULT_SETTINGS, type AppSettings } from '../../shared/types'
 import { getDataDir } from '../utils/paths'
 import { findAvailablePort, proxyListenHost } from '../utils/proxyPorts'
 import { isAutoStartLaunch, syncWindowsAutoStart } from '../utils/windowsAdmin'
+import { routingModeToClashMode } from '../utils/configGenerator'
+import { syncBypassLanRuleSet } from '../utils/ruleSetManager'
 import { updateTrayStatus } from '../tray'
 import { getServiceInstance } from './singbox'
 
@@ -55,6 +57,33 @@ export function initSettingsHandlers(): void {
     const current = store.get('settings')
     const next = { ...current, ...settings }
     store.set('settings', next)
+
+    const service = getServiceInstance()
+
+    // 系统代理开关直接热生效（无需重启内核）
+    if (settings.systemProxy !== undefined && settings.systemProxy !== current.systemProxy && service) {
+      service.setAutoSystemProxy(Boolean(next.systemProxy))
+      if (service.isRunning()) {
+        if (next.systemProxy) {
+          await service.enableSystemProxy('127.0.0.1', next.localPort || DEFAULT_SETTINGS.localPort)
+        } else {
+          await service.disableSystemProxy()
+        }
+      }
+    }
+
+    // 路由模式通过 Clash API PATCH /configs 热切换（无需重启内核）
+    if (settings.routingMode !== undefined && settings.routingMode !== current.routingMode && service) {
+      await service.setMode(routingModeToClashMode(next.routingMode))
+    }
+
+    // 绕过局域网通过覆写本地规则集由 RayBox fswatch 自动热重载（无需重启内核）
+    if (settings.bypassLan !== undefined && settings.bypassLan !== current.bypassLan) {
+      syncBypassLanRuleSet(Boolean(next.bypassLan))
+      if (service?.isRunning()) {
+        await service.closeAllConnections()
+      }
+    }
 
     if (settings.startWithWindows !== undefined || settings.requireAdmin !== undefined) {
       await applyAutoStartSetting(Boolean(next.startWithWindows))

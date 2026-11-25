@@ -151,6 +151,7 @@ export const mockApi = {
     refresh: (_id: string): Promise<Profile> => Promise.resolve(mockProfiles[0]),
     edit: (_id: string, _data: any): Promise<Profile> => Promise.resolve(mockProfiles[0]),
     setEnabled: (_id: string, _enabled: boolean): Promise<void> => Promise.resolve(),
+    affectsRunningCore: (_id: string): Promise<boolean> => Promise.resolve(false),
   },
 
   node: {
@@ -266,7 +267,7 @@ export const mockApi = {
 
   ruleset: {
     list: () => Promise.resolve([]),
-    save: (_ruleSets: any[]) => Promise.resolve(),
+    save: (_ruleSets: any[]) => Promise.resolve({ success: true, needsRestart: false }),
     download: (_ruleSet: any, _force = false) => Promise.resolve({ success: true }),
     isCached: (_tag: string) => Promise.resolve(false),
     fetchHub: () => Promise.resolve({ tree: [] }),
@@ -274,9 +275,11 @@ export const mockApi = {
 
   customRules: {
     get: (): Promise<CustomRules> => Promise.resolve({ domainRules: [] }),
-    save: (_rules: CustomRules): Promise<void> => Promise.resolve(),
+    save: (_rules: CustomRules): Promise<{ success: boolean; needsRestart?: boolean }> =>
+      Promise.resolve({ success: true, needsRestart: false }),
     getDomainRules: (): Promise<DomainRule[]> => Promise.resolve([]),
-    saveDomainRules: (_rules: DomainRule[]): Promise<void> => Promise.resolve(),
+    saveDomainRules: (_rules: DomainRule[]): Promise<{ success: boolean; needsRestart?: boolean }> =>
+      Promise.resolve({ success: true, needsRestart: false }),
   },
 
   updater: {

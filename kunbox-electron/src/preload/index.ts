@@ -95,7 +95,8 @@ const api = {
     refresh: (id: string): Promise<Profile> => ipcRenderer.invoke('profile:update', id),
     edit: (id: string, data: { name: string; url: string; autoUpdateInterval?: number; dnsPreResolve?: boolean; dnsServer?: string | null }): Promise<Profile> =>
       ipcRenderer.invoke('profile:edit', id, data),
-    setEnabled: (id: string, enabled: boolean): Promise<void> => ipcRenderer.invoke('profile:set-enabled', id, enabled)
+    setEnabled: (id: string, enabled: boolean): Promise<void> => ipcRenderer.invoke('profile:set-enabled', id, enabled),
+    affectsRunningCore: (id: string): Promise<boolean> => ipcRenderer.invoke('profile:affects-running-core', id)
   },
 
   node: {
@@ -158,7 +159,8 @@ const api = {
 
   ruleset: {
     list: (): Promise<RuleSet[]> => ipcRenderer.invoke(IPC_CHANNELS.RULESET_LIST),
-    save: (ruleSets: RuleSet[]) => ipcRenderer.invoke(IPC_CHANNELS.RULESET_SAVE, ruleSets),
+    save: (ruleSets: RuleSet[]): Promise<{ success: boolean; needsRestart?: boolean }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.RULESET_SAVE, ruleSets),
     download: (ruleSet: RuleSet, force = false) => ipcRenderer.invoke(IPC_CHANNELS.RULESET_DOWNLOAD, ruleSet, force),
     isCached: (tag: string): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.RULESET_IS_CACHED, tag),
     fetchHub: () => ipcRenderer.invoke('ruleset:fetch-hub')
@@ -166,9 +168,11 @@ const api = {
 
   customRules: {
     get: (): Promise<CustomRules> => ipcRenderer.invoke('custom-rules:get'),
-    save: (rules: CustomRules): Promise<void> => ipcRenderer.invoke('custom-rules:save', rules),
+    save: (rules: CustomRules): Promise<{ success: boolean; needsRestart?: boolean }> =>
+      ipcRenderer.invoke('custom-rules:save', rules),
     getDomainRules: (): Promise<DomainRule[]> => ipcRenderer.invoke('domain-rules:get'),
-    saveDomainRules: (rules: DomainRule[]): Promise<void> => ipcRenderer.invoke('domain-rules:save', rules)
+    saveDomainRules: (rules: DomainRule[]): Promise<{ success: boolean; needsRestart?: boolean }> =>
+      ipcRenderer.invoke('domain-rules:save', rules)
   },
 
   updater: {

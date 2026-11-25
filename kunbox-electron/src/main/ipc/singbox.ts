@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync } from 'fs'
 import log from 'electron-log'
 import { CLASH_API_PORT, IPC_CHANNELS } from '../../shared/constants'
 import { DEFAULT_SETTINGS, type ProxyState, type TrafficStats, type LogEntry, type LogLevel, type SingBoxOutbound } from '../../shared/types'
-import { generateConfig } from '../utils/configGenerator'
+import { generateConfig, routingModeToClashMode } from '../utils/configGenerator'
 import { resolveApiPort, resolveProxyPorts } from '../utils/proxyPorts'
 import { loadRuleSets } from './rulesets'
 import { downloadAllRuleSets, checkRuleSetsReady } from '../utils/ruleSetManager'
@@ -84,6 +84,9 @@ function setupEventHandlers(service: VpnService): void {
 
   service.on('started', () => {
     startTime = Date.now()
+    // 内核进入 running 后同步一次当前路由模式，避免 cache.db 中残留的历史模式覆盖设置
+    const currentSettings = settingsStore.get('settings')
+    void service.setMode(routingModeToClashMode(currentSettings.routingMode), false)
   })
 
   service.on('stopped', () => {

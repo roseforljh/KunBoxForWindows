@@ -80,7 +80,7 @@ export default function Profiles() {
     try {
       await window.api.profile.add(url, name || undefined, settings)
       await loadProfiles()
-      toast.showRestartToast('订阅添加成功')
+      toast.success('订阅添加成功')
     } catch (err) {
       toast.error(`添加失败: ${err}`)
     }
@@ -90,7 +90,7 @@ export default function Profiles() {
     try {
       await window.api.profile.importContent(name, content, settings)
       await loadProfiles()
-      toast.showRestartToast('订阅导入成功')
+      toast.success('订阅导入成功')
     } catch (err) {
       toast.error(`导入失败: ${err}`)
     }
@@ -100,7 +100,7 @@ export default function Profiles() {
     try {
       const profile = await window.api.profile.createCustom(name, selections, newNodeLinks)
       await loadProfiles()
-      toast.showRestartToast(`自定义订阅已创建，共 ${profile.nodeCount} 个节点`)
+      toast.success(`自定义订阅已创建，共 ${profile.nodeCount} 个节点`)
     } catch (err) {
       toast.error(`创建失败: ${err}`)
     }
@@ -110,6 +110,7 @@ export default function Profiles() {
     setOpenMenuId(null)
     setUpdatingIds((prev) => new Set(prev).add(id))
     try {
+      const affectsCore = await window.api.profile.affectsRunningCore(id)
       const profile = await window.api.profile.update(id)
       await loadProfiles()
       const nodesStore = useNodesStore.getState()
@@ -117,7 +118,9 @@ export default function Profiles() {
         id === activeId ? nodesStore.loadNodes() : Promise.resolve(),
         nodesStore.loadAllNodes()
       ])
-      toast.showRestartToast(`更新成功，共 ${profile.nodeCount} 个节点`)
+      const msg = `更新成功，共 ${profile.nodeCount} 个节点`
+      if (affectsCore) toast.showRestartToast(msg)
+      else toast.success(msg)
     } catch (err) {
       toast.error(`更新失败: ${err}`)
     } finally {
@@ -139,10 +142,13 @@ export default function Profiles() {
     if (!deleteTarget) return
     setIsDeleting(true)
     try {
+      // 删除前先判定是否影响运行中的内核，避免删除后 activeProfileId 变更导致误判
+      const affectsCore = await window.api.profile.affectsRunningCore(deleteTarget.id)
       await window.api.profile.delete(deleteTarget.id)
       await loadProfiles()
       setDeleteModalOpen(false)
-      toast.showRestartToast('订阅已删除')
+      if (affectsCore) toast.showRestartToast('订阅已删除')
+      else toast.success('订阅已删除')
       setDeleteTarget(null)
     } catch (err) {
       toast.error(`删除失败: ${err}`)
@@ -164,7 +170,7 @@ export default function Profiles() {
       await window.api.profile.edit(editTarget.id, { name, url, ...settings })
       await loadProfiles()
       setEditModalOpen(false)
-      toast.showRestartToast('订阅已更新')
+      toast.success('订阅已更新')
       setEditTarget(null)
     } catch (err) {
       toast.error(`保存失败: ${err}`)
@@ -176,9 +182,12 @@ export default function Profiles() {
   const handleToggleEnabled = async (profile: Profile) => {
     setOpenMenuId(null)
     try {
+      const affectsCore = await window.api.profile.affectsRunningCore(profile.id)
       await window.api.profile.setEnabled(profile.id, !profile.enabled)
       await loadProfiles()
-      toast.showRestartToast(profile.enabled ? '订阅已禁用' : '订阅已启用')
+      const msg = profile.enabled ? '订阅已禁用' : '订阅已启用'
+      if (affectsCore) toast.showRestartToast(msg)
+      else toast.success(msg)
     } catch (err) {
       toast.error(`操作失败: ${err}`)
     }

@@ -2,6 +2,8 @@ import { ipcMain } from 'electron'
 import { join } from 'path'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import type { CustomRules, DomainRule } from '../../shared/types'
+import { domainRulesNeedRestart, serializeDynamicDomainRules, syncCustomDomainRuleSets } from '../utils/ruleSetManager'
+import { getServiceInstance } from './singbox'
 
 import { getDataDir } from '../utils/paths'
 
@@ -29,24 +31,40 @@ function saveCustomRules(rules: CustomRules): void {
   writeFileSync(CUSTOM_RULES_FILE, JSON.stringify(rules, null, 2))
 }
 
+async function applyDomainRulesUpdate(prev: DomainRule[], next: DomainRule[]): Promise<{ success: boolean; needsRestart: boolean }> {
+  syncCustomDomainRuleSets(next)
+  const needsRestart = domainRulesNeedRestart(prev, next)
+  const dynamicChanged = serializeDynamicDomainRules(prev) !== serializeDynamicDomainRules(next)
+  const service = getServiceInstance()
+
+  if (!needsRestart && dynamicChanged && service?.isRunning()) {
+    await service.flushDnsCache()
+    await service.closeAllConnections()
+  }
+
+  return { success: true, needsRestart }
+}
+
 export function initRulesHandlers(): void {
   ipcMain.handle('custom-rules:get', () => {
     return loadCustomRules()
   })
 
-  ipcMain.handle('custom-rules:save', (_, rules: CustomRules) => {
+  ipcMain.handle('custom-rules:save', async (_, rules: CustomRules) => {
+    const prev = loadCustomRules().domainRules
     saveCustomRules(rules)
-    return { success: true }
+    return applyDomainRulesUpdate(prev, rules.domainRules || [])
   })
 
   ipcMain.handle('domain-rules:get', () => {
     return loadCustomRules().domainRules
   })
 
-  ipcMain.handle('domain-rules:save', (_, rules: DomainRule[]) => {
+  ipcMain.handle('domain-rules:save', async (_, rules: DomainRule[]) => {
     const custom = loadCustomRules()
+    const prev = custom.domainRules
     custom.domainRules = rules
     saveCustomRules(custom)
-    return { success: true }
+    return applyDomainRulesUpdate(prev, rules)
   })
 }

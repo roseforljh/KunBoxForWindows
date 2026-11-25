@@ -25,6 +25,7 @@ export class VpnService extends EventEmitter {
   private trafficMonitor: TrafficMonitor
   private config: VpnServiceConfig
   private autoSystemProxy: boolean
+  private restarting = false
   private logger: (msg: string) => void
 
   constructor(config: VpnServiceConfig, logger?: (msg: string) => void) {
@@ -45,13 +46,18 @@ export class VpnService extends EventEmitter {
       this.emit('stateChange', newState, oldState)
 
       if (newState === 'running') {
+        // 重启期间若系统代理已启用且端口未变，跳过重复写注册表与 PowerShell 刷新（立省 1.5~3 秒）
         if (this.autoSystemProxy) {
-          this.systemProxy.enable('127.0.0.1', this.config.proxyPort)
+          const alreadyEnabledOnSamePort =
+            this.systemProxy.isEnabled() && this.systemProxy.getPort() === this.config.proxyPort
+          if (!alreadyEnabledOnSamePort) {
+            void this.systemProxy.enable('127.0.0.1', this.config.proxyPort)
+          }
         }
         this.trafficMonitor.start()
       } else if (newState === 'idle' || newState === 'error') {
-        if (this.autoSystemProxy) {
-          this.systemProxy.disable()
+        if (this.autoSystemProxy && !this.restarting) {
+          void this.systemProxy.disable()
         }
         this.trafficMonitor.stop()
       }
@@ -96,7 +102,16 @@ export class VpnService extends EventEmitter {
   }
 
   async restart(options: StartOptions = {}): Promise<{ success: boolean; error?: string }> {
-    return this.singbox.restart(options)
+    this.restarting = true
+    try {
+      const result = await this.singbox.restart(options)
+      if (!result.success && this.autoSystemProxy && this.systemProxy.isEnabled()) {
+        await this.systemProxy.disable()
+      }
+      return result
+    } finally {
+      this.restarting = false
+    }
   }
 
   getStatus(): ServiceStatus {
@@ -111,8 +126,16 @@ export class VpnService extends EventEmitter {
     return this.singbox.isRunning()
   }
 
-  setMode(mode: ProxyMode): void {
-    this.singbox.setMode(mode)
+  async setMode(mode: ProxyMode, closeConnections = true): Promise<boolean> {
+    const ok = await this.singbox.setMode(mode)
+    if (ok && closeConnections && this.singbox.isRunning()) {
+      await this.closeAllConnections()
+    }
+    return ok
+  }
+
+  async flushDnsCache(): Promise<boolean> {
+    return this.singbox.flushDnsCache()
   }
 
   async enableSystemProxy(host?: string, port?: number): Promise<boolean> {

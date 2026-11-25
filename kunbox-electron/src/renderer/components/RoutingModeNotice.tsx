@@ -7,12 +7,18 @@ export function RoutingModeNotice() {
 
   useEffect(() => {
     let active = true
+    const unsubscribe = window.api.settings.onChange((settings) => {
+      if (active) setMode(settings.routingMode)
+    })
     window.api.settings.get().then(settings => {
       if (active) setMode(settings.routingMode)
     }).catch(() => {
       if (active) setError(true)
     })
-    return () => { active = false }
+    return () => {
+      active = false
+      unsubscribe()
+    }
   }, [])
 
   if (!error && (mode === null || mode === 'rule')) return null
@@ -22,7 +28,7 @@ export function RoutingModeNotice() {
       {error ? '无法读取路由模式，请到设置页确认当前是否使用规则模式。' : (
         <>
           当前保存的路由模式为「{mode === 'global-proxy' ? '全局代理' : '全局直连'}」，此模式会忽略域名分流和规则集的指定节点。
-          请在「设置 → 代理」切换为「规则模式」，然后重启 VPN。TUN 负责接管流量，不会自动开启规则模式。
+          请在「设置 → 代理」切换为「规则模式」（切换后立即生效）。TUN 负责接管流量，不会自动开启规则模式。
         </>
       )}
     </div>

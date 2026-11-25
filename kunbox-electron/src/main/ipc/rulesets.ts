@@ -4,7 +4,8 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import log from 'electron-log'
 import https from 'https'
 import { IPC_CHANNELS } from '../../shared/constants'
-import { downloadRuleSet, isRuleSetLocal, type RuleSetItem } from '../utils/ruleSetManager'
+import { downloadRuleSet, isRuleSetLocal, ruleSetsNeedRestart, type RuleSetItem } from '../utils/ruleSetManager'
+import { getServiceInstance } from './singbox'
 
 import { getDataDir } from '../utils/paths'
 
@@ -82,8 +83,9 @@ export function initRuleSetsHandlers(): void {
   })
 
   ipcMain.handle(IPC_CHANNELS.RULESET_SAVE, (_, ruleSets: RuleSetItem[]) => {
+    const prev = loadRuleSets()
     saveRuleSets(ruleSets)
-    return { success: true }
+    return { success: true, needsRestart: ruleSetsNeedRestart(prev, ruleSets) }
   })
 
   ipcMain.handle(IPC_CHANNELS.RULESET_DOWNLOAD, async (_, ruleSet: RuleSetItem, force = false) => {
@@ -98,6 +100,11 @@ export function initRuleSetsHandlers(): void {
     log.info(`[RuleSet] Downloading ${ruleSet.tag}...`)
     const success = await downloadRuleSet(ruleSet)
     if (success) {
+      // 已启用规则集覆写 .srs 后，RayBox fswatch 会自动热重载，清空 DNS 缓存使其立即按新规则解析
+      const service = getServiceInstance()
+      if (ruleSet.enabled && service?.isRunning()) {
+        await service.flushDnsCache()
+      }
       return { success: true, cached: false }
     } else {
       return { success: false, error: `Failed to download ${ruleSet.tag}` }
