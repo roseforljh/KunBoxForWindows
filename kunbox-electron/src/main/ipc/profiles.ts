@@ -223,12 +223,16 @@ async function ensureTempSingbox(nodes: SingBoxOutbound[]): Promise<{ apiPort: n
     )
 
     let exited = false
+    let stderrTail = ''
     const proc = spawn(execPath, ['run', '-c', TEMP_LATENCY_CONFIG_FILE], {
       cwd: DATA_DIR,
       windowsHide: true,
       stdio: ['ignore', 'ignore', 'pipe']
     })
     tempSingboxProcess = proc
+    proc.stderr?.on('data', (chunk: Buffer) => {
+      stderrTail = `${stderrTail}${chunk.toString('utf-8')}`.slice(-2000)
+    })
     proc.on('exit', () => {
       exited = true
       if (tempSingboxProcess === proc) {
@@ -243,7 +247,9 @@ async function ensureTempSingbox(nodes: SingBoxOutbound[]): Promise<{ apiPort: n
     const deadline = Date.now() + 5000
     while (Date.now() < deadline) {
       if (exited || tempSingboxProcess !== proc) {
-        throw new Error('临时测速内核启动失败')
+        const detail = stderrTail.trim()
+        if (detail) log.warn(`[TempLatency] 临时测速内核异常退出:\n${detail}`)
+        throw new Error(detail ? `临时测速内核启动失败: ${detail.split(/\r?\n/).pop()}` : '临时测速内核启动失败')
       }
       if (await pingClashApi(apiPort)) {
         tempSingboxPort = apiPort
@@ -419,6 +425,7 @@ export function initProfileHandlers(): void {
   ipcMain.handle('profile:set-active', (_, id: string) => {
     load()
     data.activeProfileId = id
+    cachedLatencyNodes = null
     const nodes = loadProfileNodes(id)
     if (!data.activeNodeTag || !nodes.some(n => n.tag === data.activeNodeTag)) {
       data.activeNodeTag = nodes[0]?.tag || null

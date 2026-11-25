@@ -8,7 +8,8 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { DEFAULT_SETTINGS, type DomainRule, type SingBoxOutbound } from '../../shared/types'
 import { TrafficMonitor } from '../core/TrafficMonitor'
-import { generateConfig, generateLatencyTestConfig } from './configGenerator'
+import { parseShareLink } from '../ipc/shareLink'
+import { generateConfig, generateLatencyTestConfig, isProxyType } from './configGenerator'
 import { getDataDir } from './paths'
 import { resolveApiPort } from './proxyPorts'
 
@@ -229,4 +230,106 @@ test('E2E: real RayBox kernel boots on dynamic Clash API port, serves TrafficMon
     }
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('E2E: VLESS XHTTP + REALITY + Encryption converts to native xray outbound and passes real RayBox check', () => {
+  const link =
+    'vless://8b062f90-a96e-424c-9fb5-af08f0357947@35.212.174.125:34079?encryption=mlkem768x25519plus.native.0rtt.Z9xJHXwCD22Z_0xiwNhzOEZrRX6GRYDBP6d7CHPGoRU&flow=xtls-rprx-vision&security=reality&type=xhttp&sni=swdist.apple.com&fp=firefox&pbk=UlNIVQDev9mT_kDQxDQKah-scP4by-V6MNaxk-b0UXI&sid=d4501f3e217b6a7e&path=%2Fws-d92a98d2a03a631b&host=swdist.apple.com&mode=stream-one#node-dbeea602'
+  const parsed = parseShareLink(link)
+  assert.ok(parsed)
+  assert.equal(isProxyType('xray'), true)
+
+  // 同时覆盖历史导入把 XHTTP host 写入 headers.Host 的旧节点
+  const legacyHeaderHostNode: SingBoxOutbound = {
+    ...parsed,
+    tag: 'legacy-xhttp-host',
+    transport: {
+      type: 'xhttp',
+      path: '/ws-d92a98d2a03a631b',
+      headers: { Host: 'swdist.apple.com' },
+      mode: 'stream-one'
+    }
+  }
+
+  const fullConfig = generateConfig({
+    settings: { ...DEFAULT_SETTINGS, tunEnabled: false, systemProxy: false },
+    outbounds: [parsed, legacyHeaderHostNode],
+    activeNodeTag: parsed.tag,
+    domainRules: [],
+    clashApiPort: 19094
+  }) as any
+
+  const xrayOutbound = fullConfig.outbounds.find((o: any) => o.tag === 'node-dbeea602')
+  assert.equal(xrayOutbound?.type, 'xray')
+  assert.equal(xrayOutbound?.outbound?.protocol, 'vless')
+  assert.equal(
+    xrayOutbound?.outbound?.settings?.vnext?.[0]?.users?.[0]?.encryption,
+    'mlkem768x25519plus.native.0rtt.Z9xJHXwCD22Z_0xiwNhzOEZrRX6GRYDBP6d7CHPGoRU'
+  )
+  assert.equal(xrayOutbound?.outbound?.settings?.vnext?.[0]?.users?.[0]?.flow, 'xtls-rprx-vision')
+  assert.equal(xrayOutbound?.outbound?.streamSettings?.network, 'xhttp')
+  assert.equal(xrayOutbound?.outbound?.streamSettings?.security, 'reality')
+  assert.equal(xrayOutbound?.outbound?.streamSettings?.xhttpSettings?.host, 'swdist.apple.com')
+  assert.equal(xrayOutbound?.outbound?.streamSettings?.xhttpSettings?.mode, 'stream-one')
+
+  const legacyOutbound = fullConfig.outbounds.find((o: any) => o.tag === 'legacy-xhttp-host')
+  assert.equal(legacyOutbound?.type, 'xray')
+  assert.equal(legacyOutbound?.outbound?.streamSettings?.xhttpSettings?.host, 'swdist.apple.com')
+
+  // 对齐 RayBox streamconn/option.XHTTPOptions：覆盖 httpupgrade + encryption、xhttp headers/packetDown/xmux、ws ed
+  const rayboxExtendedNodes: SingBoxOutbound[] = [
+    {
+      tag: 'xhttp-tuned',
+      type: 'vless',
+      server: '127.0.0.1',
+      server_port: 443,
+      uuid: '11111111-1111-4111-8111-111111111111',
+      encryption: 'mlkem768x25519plus.native.0rtt.Z9xJHXwCD22Z_0xiwNhzOEZrRX6GRYDBP6d7CHPGoRU',
+      tls: { enabled: true, server_name: 'edge.example.invalid', utls: { enabled: true, fingerprint: 'chrome_155' } },
+      transport: {
+        type: 'xhttp',
+        host: 'edge.example.invalid',
+        path: '/tuned',
+        mode: 'packet-up',
+        headers: { Host: 'ignored-by-host-field', 'X-Trace': 'ok' },
+        extra: {
+          packetDown: { keepAlive: true, keepAlivePeriod: '10-20', keepAliveLength: '24-64' },
+          xmux: { maxConcurrency: 5, maxConnections: 0 }
+        }
+      }
+    },
+    {
+      tag: 'httpupgrade-enc',
+      type: 'vless',
+      server: '127.0.0.1',
+      server_port: 443,
+      uuid: '11111111-1111-4111-8111-111111111111',
+      encryption: 'mlkem768x25519plus.native.0rtt.Z9xJHXwCD22Z_0xiwNhzOEZrRX6GRYDBP6d7CHPGoRU',
+      tls: { enabled: true, server_name: 'edge.example.invalid' },
+      transport: { type: 'httpupgrade', host: 'edge.example.invalid', path: '/up', headers: { 'X-Up': '1' } }
+    },
+    {
+      tag: 'ws-ed-enc',
+      type: 'vless',
+      server: '127.0.0.1',
+      server_port: 443,
+      uuid: '11111111-1111-4111-8111-111111111111',
+      encryption: 'mlkem768x25519plus.native.0rtt.Z9xJHXwCD22Z_0xiwNhzOEZrRX6GRYDBP6d7CHPGoRU',
+      tls: { enabled: true, server_name: 'edge.example.invalid' },
+      transport: { type: 'ws', path: '/ws', max_early_data: 2048, early_data_header_name: 'Sec-WebSocket-Protocol', headers: { Host: 'edge.example.invalid' } }
+    }
+  ]
+
+  const extendedConfig = generateLatencyTestConfig([parsed, legacyHeaderHostNode, ...rayboxExtendedNodes], 19095, 19096) as any
+  const tunedOut = extendedConfig.outbounds.find((o: any) => o.tag === 'xhttp-tuned')
+  assert.deepEqual(tunedOut?.outbound?.streamSettings?.xhttpSettings?.headers, { 'X-Trace': 'ok' })
+  assert.equal(tunedOut?.outbound?.streamSettings?.xhttpSettings?.extra?.packetDown?.keepAlive, true)
+  const huOut = extendedConfig.outbounds.find((o: any) => o.tag === 'httpupgrade-enc')
+  assert.equal(huOut?.outbound?.streamSettings?.network, 'httpupgrade')
+  assert.equal(huOut?.outbound?.streamSettings?.httpupgradeSettings?.host, 'edge.example.invalid')
+  const wsOut = extendedConfig.outbounds.find((o: any) => o.tag === 'ws-ed-enc')
+  assert.equal(wsOut?.outbound?.streamSettings?.wsSettings?.path, '/ws?ed=2048')
+
+  checkWithRealKernel(fullConfig)
+  checkWithRealKernel(extendedConfig)
 })

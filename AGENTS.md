@@ -57,6 +57,17 @@ npm run typecheck  # TypeScript 类型检查
 npm run lint       # 代码检查
 ```
 
+## 定制内核（RayBox）
+
+- **本地源码仓库**: `D:\RayBox-rx`（远程 `roseforljh/RayBox-rx`）
+- **内置 Windows 二进制**: `kunbox-electron\resources\libs\raybox\raybox-windows-amd64.exe`（清单与锁定文件在同目录 `raybox-windows-manifest.json` 与上级 `raybox-windows.lock.json`）
+- **关键核对路径**（涉及协议解析、出站配置生成、XHTTP / VLESS Encryption / REALITY / 原生 `type: "xray"` 时以内核源码为准）:
+  - `D:\RayBox-rx\option\`（如 `vless.go`、`v2ray_transport.go`、`xhttp.go`）
+  - `D:\RayBox-rx\protocol\session\outbound.go`（`type: "xray"` 校验与加载）
+  - `D:\RayBox-rx\protocol\streamconn\`（`options.go`、`stream.go` 协议/传输/TLS 映射）
+  - `D:\RayBox-rx\internal\protocol\infra\conf\transport_method.go`（`SplitHTTPConfig` 等字段定义）
+  - `D:\RayBox-rx\docs\raybox-unification\CONTRACT.md`（配置与工件契约）
+
 ## 开发约定
 
 1. 遵循现有代码风格

@@ -2,23 +2,46 @@ import type { OutboundTransport, SingBoxOutbound } from '../../shared/types'
 
 /** tcp 以外的传输方式映射到 sing-box transport；链接里没写就当 tcp。 */
 function parseTransport(params: URLSearchParams): OutboundTransport | undefined {
-  const type = params.get('type')
-  if (!type || type === 'tcp') return undefined
+  const rawType = params.get('type')?.trim().toLowerCase()
+  if (!rawType || rawType === 'tcp') return undefined
+  const type = rawType === 'h2' ? 'http' : rawType
   const transport: OutboundTransport = { type }
   const path = params.get('path')
   if (path) transport.path = path
-  const host = params.get('host')
-  if (host) transport.headers = { Host: host }
+  const host = params.get('host')?.trim()
+  if (host) {
+    if (type === 'xhttp' || type === 'splithttp' || type === 'httpupgrade') {
+      transport.host = host
+    } else if (type === 'http') {
+      const hosts = host.split(',').map((item) => item.trim()).filter(Boolean)
+      if (hosts.length) transport.host = hosts
+    } else {
+      transport.headers = { Host: host }
+    }
+  }
   const serviceName = params.get('serviceName')
   if (serviceName) transport.service_name = serviceName
-  const mode = params.get('mode')
+  const mode = params.get('mode')?.trim()
   if (mode) transport.mode = mode
+  const extraRaw = params.get('extra')?.trim()
+  if (extraRaw) {
+    try {
+      const parsed = JSON.parse(extraRaw)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        transport.extra = parsed as Record<string, unknown>
+      } else {
+        transport.extra = extraRaw
+      }
+    } catch {
+      transport.extra = extraRaw
+    }
+  }
   return transport
 }
 
 /**
  * 把分享链接解析成 sing-box outbound。
- * reality 的 pbk/sid、uTLS 的 fp、vless 的 flow 缺一个都连不上（表现是握手后卡死/超时），别省。
+ * reality 的 pbk/sid、uTLS 的 fp、vless 的 flow/encryption 缺一个都连不上（表现是握手后卡死/断开），别省。
  */
 export function parseShareLink(link: string): SingBoxOutbound | null {
   try {
@@ -33,29 +56,70 @@ export function parseShareLink(link: string): SingBoxOutbound | null {
         type: protocol,
         server: url.hostname,
         server_port: parseInt(url.port) || 443,
-        uuid: url.username
+        uuid: decodeURIComponent(url.username)
       }
-      const flow = params.get('flow')
+      const flow = params.get('flow')?.trim()
       if (flow) node.flow = flow
 
-      const security = params.get('security')
+      if (protocol === 'vless') {
+        const encryption = params.get('encryption')?.trim()
+        if (encryption && encryption.toLowerCase() !== 'none') {
+          node.encryption = encryption
+        }
+      }
+
+      const rawSecurity = params.get('security')?.trim().toLowerCase() || ''
+      const hasTlsHint = ['sni', 'servername', 'alpn', 'fp', 'insecure', 'allowInsecure'].some((key) => params.has(key))
+      const security = rawSecurity || (hasTlsHint ? 'tls' : '')
       if (security === 'tls' || security === 'reality') {
-        node.tls = { enabled: true, server_name: params.get('sni') || url.hostname }
-        const fp = params.get('fp')
+        node.tls = { enabled: true, server_name: params.get('sni') || params.get('servername') || url.hostname }
+        const fp = params.get('fp')?.trim()
         if (fp) node.tls.utls = { enabled: true, fingerprint: fp }
         if (security === 'reality') {
           node.tls.reality = { enabled: true }
-          const pbk = params.get('pbk')
+          const pbk = params.get('pbk')?.trim()
           if (pbk) node.tls.reality.public_key = pbk
-          const sid = params.get('sid')
+          const sid = params.get('sid')?.trim()
           if (sid) node.tls.reality.short_id = sid
           // REALITY 必须用 uTLS 发 ClientHello，链接没带 fp 时用 chrome 兜底
           if (!node.tls.utls) node.tls.utls = { enabled: true, fingerprint: 'chrome' }
+        } else {
+          const insecureRaw = (params.get('insecure') || params.get('allowInsecure') || '').trim().toLowerCase()
+          if (insecureRaw === '1' || insecureRaw === 'true') {
+            node.tls.insecure = true
+          }
+          const alpnRaw = params.get('alpn')?.trim()
+          if (alpnRaw) {
+            const alpn = alpnRaw.split(',').map((item) => item.trim()).filter(Boolean)
+            if (alpn.length) node.tls.alpn = alpn
+          }
         }
       }
 
       const transport = parseTransport(params)
-      if (transport) node.transport = transport
+      if (transport) {
+        // 兼容旧格式将 VLESS encryption 写在 xhttp extra JSON 内的写法，提升到顶层 encryption
+        if (
+          protocol === 'vless' &&
+          transport.extra &&
+          typeof transport.extra === 'object' &&
+          !Array.isArray(transport.extra) &&
+          typeof transport.extra.encryption === 'string'
+        ) {
+          const extraEnc = transport.extra.encryption.trim()
+          if (!node.encryption && extraEnc && extraEnc.toLowerCase() !== 'none') {
+            node.encryption = extraEnc
+          }
+          const restExtra = { ...transport.extra }
+          delete restExtra.encryption
+          if (Object.keys(restExtra).length > 0) {
+            transport.extra = restExtra
+          } else {
+            delete transport.extra
+          }
+        }
+        node.transport = transport
+      }
       return node
     }
 
@@ -142,6 +206,14 @@ function buildTransportQuery(transport?: OutboundTransport): Array<[string, stri
   if (host) entries.push(['host', host])
   if (transport.service_name) entries.push(['serviceName', transport.service_name])
   if (transport.mode) entries.push(['mode', transport.mode])
+  if (transport.extra !== undefined) {
+    const extraVal = typeof transport.extra === 'string'
+      ? transport.extra
+      : Object.keys(transport.extra).length > 0
+        ? JSON.stringify(transport.extra)
+        : undefined
+    if (extraVal) entries.push(['extra', extraVal])
+  }
   return entries
 }
 
@@ -169,7 +241,7 @@ export function serializeShareLink(node: SingBoxOutbound): string {
     case 'vless': {
       const security = tls?.enabled ? (tls.reality?.enabled ? 'reality' : 'tls') : 'none'
       const query = buildQuery([
-        ['encryption', 'none'],
+        ['encryption', node.encryption || 'none'],
         ['flow', node.flow || undefined],
         ['security', security],
         ...buildTransportQuery(node.transport),

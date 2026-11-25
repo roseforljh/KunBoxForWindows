@@ -86,6 +86,7 @@ export interface OutboundTransport {
   sc_max_buffered_posts?: number
   no_grpc_header?: boolean
   no_sse_header?: boolean
+  extra?: Record<string, unknown> | string
 }
 
 export interface OutboundMultiplex {
@@ -106,6 +107,7 @@ export interface SingBoxOutbound {
   username?: string
   password?: string
   uuid?: string
+  encryption?: string
   flow?: string
   security?: string
   alter_id?: number

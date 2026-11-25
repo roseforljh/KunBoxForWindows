@@ -33,6 +33,29 @@ describe('parseShareLink', () => {
     const node = parseShareLink('vless://11111111-1111-1111-1111-111111111111@a.example.com:443?type=ws&path=%2Fray&host=cdn.example.com#ws')
     assert.deepEqual(node?.transport, { type: 'ws', path: '/ray', headers: { Host: 'cdn.example.com' } })
   })
+
+  it('keeps VLESS encryption, xhttp host/mode/path, and hoists legacy extra.encryption', () => {
+    const xhttpEncLink =
+      'vless://8b062f90-a96e-424c-9fb5-af08f0357947@35.212.174.125:34079?encryption=mlkem768x25519plus.native.0rtt.Z9xJHXwCD22Z_0xiwNhzOEZrRX6GRYDBP6d7CHPGoRU&flow=xtls-rprx-vision&security=reality&type=xhttp&sni=swdist.apple.com&fp=firefox&pbk=UlNIVQDev9mT_kDQxDQKah-scP4by-V6MNaxk-b0UXI&sid=d4501f3e217b6a7e&path=%2Fws-d92a98d2a03a631b&host=swdist.apple.com&mode=stream-one#node-dbeea602'
+    const node = parseShareLink(xhttpEncLink)
+    assert.ok(node)
+    assert.equal(node.encryption, 'mlkem768x25519plus.native.0rtt.Z9xJHXwCD22Z_0xiwNhzOEZrRX6GRYDBP6d7CHPGoRU')
+    assert.equal(node.flow, 'xtls-rprx-vision')
+    assert.deepEqual(node.transport, {
+      type: 'xhttp',
+      path: '/ws-d92a98d2a03a631b',
+      host: 'swdist.apple.com',
+      mode: 'stream-one',
+    })
+    const exported = serializeShareLink(node)
+    assert.ok(exported.includes('encryption=mlkem768x25519plus.native.0rtt.Z9xJHXwCD22Z_0xiwNhzOEZrRX6GRYDBP6d7CHPGoRU'))
+    assert.deepEqual(parseShareLink(exported), node)
+
+    const legacyExtra = encodeURIComponent(JSON.stringify({ encryption: 'mlkem768x25519plus.native.0rtt.LEGACY', xPaddingBytes: '100-200' }))
+    const legacyNode = parseShareLink(`vless://11111111-1111-1111-1111-111111111111@a.example.com:443?type=xhttp&path=%2Fx&extra=${legacyExtra}#legacy`)
+    assert.equal(legacyNode?.encryption, 'mlkem768x25519plus.native.0rtt.LEGACY')
+    assert.deepEqual(legacyNode?.transport?.extra, { xPaddingBytes: '100-200' })
+  })
 })
 
 describe('serializeShareLink', () => {

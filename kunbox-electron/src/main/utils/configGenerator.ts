@@ -329,7 +329,8 @@ export function isProxyType(type?: string): boolean {
     'socks',
     'wireguard',
     'ssh',
-    'shadowtls'
+    'shadowtls',
+    'xray'
   ].includes(type.toLowerCase())
 }
 
@@ -542,8 +543,293 @@ function buildOutboundsWithRules(
   return { outbounds, resolveRuleOutbound }
 }
 
-/** 订阅里带的 x_kunbox_* 是客户端内部标记，内核碰到未知字段会直接拒绝整份配置。 */
+const XRAY_OUTER_DIAL_KEYS = [
+  'tag',
+  'detour',
+  'bind_interface',
+  'inet4_bind_address',
+  'inet6_bind_address',
+  'bind_address_no_port',
+  'protect_path',
+  'routing_mark',
+  'reuse_addr',
+  'netns',
+  'tcp_fast_open',
+  'tcp_multi_path',
+  'disable_tcp_keep_alive',
+  'tcp_keep_alive',
+  'tcp_keep_alive_interval',
+  'udp_fragment',
+  'connect_timeout',
+  'domain_resolver',
+  'network_strategy',
+  'network_type',
+  'fallback_network_type',
+  'fallback_delay',
+  'domain_strategy'
+] as const
+
+function vlessEncryption(node: SingBoxOutbound): string {
+  const direct = typeof node.encryption === 'string' ? node.encryption.trim() : ''
+  if (direct) return direct
+  const extra = node.transport?.extra
+  if (extra && typeof extra === 'object' && !Array.isArray(extra)) {
+    const legacy = typeof extra.encryption === 'string' ? extra.encryption.trim() : ''
+    if (legacy) return legacy
+  }
+  return 'none'
+}
+
+/** 按 RayBox 契约识别需走原生 type=xray 出站的节点（XHTTP/SplitHTTP 或启用 VLESS Encryption）。 */
+function isNativeXrayNode(node: SingBoxOutbound): boolean {
+  const protocol = node.type?.toLowerCase()
+  if (protocol !== 'vless' && protocol !== 'vmess' && protocol !== 'trojan') return false
+  const transportType = node.transport?.type?.toLowerCase()
+  if (transportType === 'xhttp' || transportType === 'splithttp') return true
+  return protocol === 'vless' && vlessEncryption(node).toLowerCase() !== 'none'
+}
+
+function rejectXraySpecialFields(value: unknown, context: string): void {
+  if (Array.isArray(value)) {
+    for (const item of value) rejectXraySpecialFields(item, context)
+    return
+  }
+  if (!value || typeof value !== 'object') return
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    const lower = key.toLowerCase()
+    if (lower === 'rx' || lower === 'oob') {
+      throw new Error(`${context} 的 RX/OOB 需要明确的 Cloudflare 上下文`)
+    }
+    rejectXraySpecialFields(nested, context)
+  }
+}
+
+function buildXrayTlsSettings(node: SingBoxOutbound, tag: string): { security: string; settings?: Record<string, unknown> } {
+  const tls = node.tls
+  if (!tls || !tls.enabled) return { security: 'none' }
+
+  const realityEnabled = tls.reality?.enabled === true
+  const settings: Record<string, unknown> = {}
+  if (tls.server_name) settings.serverName = tls.server_name
+  if (tls.utls && tls.utls.enabled !== false && tls.utls.fingerprint) {
+    settings.fingerprint = tls.utls.fingerprint
+  }
+
+  if (realityEnabled) {
+    if (tls.insecure === true || (Array.isArray(tls.alpn) && tls.alpn.length > 0)) {
+      throw new Error(`节点 ${tag} 的 Reality 不支持 insecure 或 ALPN`)
+    }
+    if (tls.certificate && tls.certificate.length > 0) {
+      throw new Error(`节点 ${tag} 的 Reality 不支持自定义证书`)
+    }
+    const publicKey = tls.reality?.public_key?.trim()
+    if (!publicKey) throw new Error(`节点 ${tag} 的 Reality 缺少公钥`)
+    settings.publicKey = publicKey
+    if (tls.reality?.short_id) settings.shortId = tls.reality.short_id
+    if (!settings.fingerprint) settings.fingerprint = 'chrome'
+    return { security: 'reality', settings }
+  }
+
+  if (typeof tls.insecure === 'boolean') settings.allowInsecure = tls.insecure
+  if (Array.isArray(tls.alpn) && tls.alpn.length > 0) settings.alpn = tls.alpn
+  if (tls.certificate && tls.certificate.length > 0) {
+    const certs = Array.isArray(tls.certificate) ? tls.certificate : [tls.certificate]
+    if (certs.some((cert) => typeof cert !== 'string' || !cert.includes('BEGIN CERTIFICATE'))) {
+      throw new Error(`节点 ${tag} 的 TLS certificate 必须包含 PEM 证书`)
+    }
+    // 对齐 RayBox streamconn/stream.go：使用自签受信 CA 验证时关闭系统根证书回退
+    settings.disableSystemRoot = true
+    settings.certificates = [{ usage: 'verify', certificate: certs }]
+  }
+  return { security: 'tls', settings }
+}
+
+/** 对齐 RayBox streamconn/stream.go：Xray 传输层 headers 仅接受单值 string map。 */
+function toSingleValueHeaders(
+  headers: Record<string, string | string[]> | undefined,
+  tag: string,
+  excludeHost = false
+): Record<string, string> | undefined {
+  if (!headers) return undefined
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(headers)) {
+    if (excludeHost && key.toLowerCase() === 'host') continue
+    if (Array.isArray(value)) {
+      if (value.length !== 1) {
+        throw new Error(`节点 ${tag} 的传输头 ${key} 仅支持单个值`)
+      }
+      out[key] = value[0]
+    } else if (typeof value === 'string') {
+      out[key] = value
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
+function buildXrayStreamSettings(node: SingBoxOutbound, tag: string): Record<string, unknown> {
+  const transport = node.transport
+  const rawType = transport?.type?.toLowerCase() || 'tcp'
+  const stream: Record<string, unknown> = {}
+
+  if (rawType === 'tcp') {
+    stream.network = 'tcp'
+  } else if (rawType === 'ws') {
+    const wsSettings: Record<string, unknown> = {}
+    let wsPath = transport?.path || ''
+    if (transport?.max_early_data) {
+      if (transport.early_data_header_name && transport.early_data_header_name !== 'Sec-WebSocket-Protocol') {
+        throw new Error(`节点 ${tag} 的 WebSocket early data 仅支持 Sec-WebSocket-Protocol`)
+      }
+      const parsedUrl = new URL(wsPath || '/', 'http://placeholder.invalid')
+      parsedUrl.searchParams.set('ed', String(transport.max_early_data))
+      wsPath = `${parsedUrl.pathname}${parsedUrl.search}`
+    }
+    if (wsPath) wsSettings.path = wsPath
+    const headers = toSingleValueHeaders(transport?.headers, tag)
+    if (headers) wsSettings.headers = headers
+    stream.network = 'ws'
+    stream.wsSettings = wsSettings
+  } else if (rawType === 'httpupgrade') {
+    const httpupgradeSettings: Record<string, unknown> = {}
+    const hostFromField = Array.isArray(transport?.host) ? transport.host[0] : transport?.host
+    const headerHostRaw = transport?.headers?.Host ?? transport?.headers?.host
+    const hostFromHeader = Array.isArray(headerHostRaw) ? headerHostRaw[0] : headerHostRaw
+    const host = (typeof hostFromField === 'string' && hostFromField.trim())
+      || (typeof hostFromHeader === 'string' && hostFromHeader.trim())
+      || ''
+    if (host) httpupgradeSettings.host = host
+    if (transport?.path) httpupgradeSettings.path = transport.path
+    const headers = toSingleValueHeaders(transport?.headers, tag, true)
+    if (headers) httpupgradeSettings.headers = headers
+    stream.network = 'httpupgrade'
+    stream.httpupgradeSettings = httpupgradeSettings
+  } else if (rawType === 'grpc') {
+    const grpcSettings: Record<string, unknown> = {}
+    if (transport?.service_name) grpcSettings.serviceName = transport.service_name
+    stream.network = 'grpc'
+    stream.grpcSettings = grpcSettings
+  } else if (rawType === 'xhttp' || rawType === 'splithttp') {
+    const xhttpSettings: Record<string, unknown> = {}
+    if (transport?.path) xhttpSettings.path = transport.path
+
+    // 优先读取标准 transport.host，同时兼容历史导入写入 transport.headers.Host 的节点
+    const hostFromField = Array.isArray(transport?.host)
+      ? (transport.host.length > 1 ? (() => { throw new Error(`节点 ${tag} 的 XHTTP 仅支持一个 host`) })() : transport.host[0])
+      : transport?.host
+    const headerHostRaw = transport?.headers?.Host ?? transport?.headers?.host
+    const hostFromHeader = Array.isArray(headerHostRaw) ? headerHostRaw[0] : headerHostRaw
+    const host = (typeof hostFromField === 'string' && hostFromField.trim())
+      || (typeof hostFromHeader === 'string' && hostFromHeader.trim())
+      || ''
+    if (host) xhttpSettings.host = host
+
+    // 对齐 RayBox option.XHTTPOptions / SplitHTTPConfig：透传非 Host 自定义请求头
+    const headers = toSingleValueHeaders(transport?.headers, tag, true)
+    if (headers) xhttpSettings.headers = headers
+
+    if (transport?.mode) xhttpSettings.mode = transport.mode
+    if (transport?.sc_max_each_post_bytes !== undefined) xhttpSettings.scMaxEachPostBytes = transport.sc_max_each_post_bytes
+    if (transport?.sc_min_posts_interval_ms !== undefined) xhttpSettings.scMinPostsIntervalMs = transport.sc_min_posts_interval_ms
+    if (transport?.sc_max_buffered_posts !== undefined) xhttpSettings.scMaxBufferedPosts = transport.sc_max_buffered_posts
+    if (transport?.x_padding_bytes) xhttpSettings.xPaddingBytes = transport.x_padding_bytes
+    if (transport?.no_grpc_header !== undefined) xhttpSettings.noGRPCHeader = transport.no_grpc_header
+    if (transport?.no_sse_header !== undefined) xhttpSettings.noSSEHeader = transport.no_sse_header
+
+    if (transport?.extra !== undefined) {
+      let extraObj: Record<string, unknown>
+      if (typeof transport.extra === 'string') {
+        try {
+          const parsed = JSON.parse(transport.extra)
+          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            throw new Error(`节点 ${tag} 的 XHTTP extra 必须是 JSON 对象`)
+          }
+          extraObj = parsed as Record<string, unknown>
+        } catch (err) {
+          throw err instanceof Error ? err : new Error(`节点 ${tag} 的 XHTTP extra 不是有效 JSON 对象`)
+        }
+      } else if (transport.extra && typeof transport.extra === 'object' && !Array.isArray(transport.extra)) {
+        extraObj = { ...transport.extra }
+      } else {
+        throw new Error(`节点 ${tag} 的 XHTTP extra 必须是对象`)
+      }
+      delete extraObj.encryption
+      rejectXraySpecialFields(extraObj, `节点 ${tag} XHTTP`)
+      if (Object.keys(extraObj).length > 0) {
+        xhttpSettings.extra = extraObj
+      }
+    }
+
+    stream.network = 'xhttp'
+    stream.xhttpSettings = xhttpSettings
+  } else {
+    throw new Error(`节点 ${tag} 不支持的 Xray transport: ${rawType}`)
+  }
+
+  const { security, settings } = buildXrayTlsSettings(node, tag)
+  stream.security = security
+  if (security !== 'none' && settings) {
+    stream[`${security}Settings`] = settings
+  }
+  return stream
+}
+
+/** 将 Xray 专属节点转换为 RayBox 原生 type=xray 出站，保留外层 sing-box 拨号字段。 */
+export function buildNativeXrayOutbound(node: SingBoxOutbound): Record<string, unknown> {
+  const tag = node.tag || 'xray'
+  const protocol = node.type?.toLowerCase()
+  if (protocol !== 'vless' && protocol !== 'vmess' && protocol !== 'trojan') {
+    throw new Error(`节点 ${tag} 不支持原生 Xray`)
+  }
+  if (node.multiplex?.enabled) {
+    throw new Error(`节点 ${tag} 的 Xray 出站不支持 sing-box 多路复用`)
+  }
+  if (node.packet_encoding && node.packet_encoding !== 'xudp') {
+    throw new Error(`节点 ${tag} 的 Xray 出站不支持 packet_encoding=${node.packet_encoding}`)
+  }
+  if (!node.server || !node.server_port) {
+    throw new Error(`节点 ${tag} 缺少服务器地址或端口`)
+  }
+
+  let settings: Record<string, unknown>
+  if (protocol === 'trojan') {
+    if (!node.password) throw new Error(`节点 ${tag} 缺少 Trojan 密码`)
+    settings = {
+      servers: [{ address: node.server, port: node.server_port, password: node.password }]
+    }
+  } else {
+    if (!node.uuid) throw new Error(`节点 ${tag} 缺少 UUID`)
+    const user: Record<string, unknown> = { id: node.uuid }
+    if (protocol === 'vless') {
+      user.encryption = vlessEncryption(node)
+      if (node.flow) user.flow = node.flow
+    } else {
+      if ((node.alter_id ?? 0) !== 0) {
+        throw new Error(`节点 ${tag} 的 VMess alter_id 不受原生 Xray 支持`)
+      }
+      if (node.security) user.security = node.security
+    }
+    settings = {
+      vnext: [{ address: node.server, port: node.server_port, users: [user] }]
+    }
+  }
+
+  const outer: Record<string, unknown> = { type: 'xray' }
+  for (const key of XRAY_OUTER_DIAL_KEYS) {
+    if (node[key] !== undefined) outer[key] = node[key]
+  }
+  outer.outbound = {
+    protocol,
+    settings,
+    streamSettings: buildXrayStreamSettings(node, tag)
+  }
+  return outer
+}
+
+/** 订阅里带的 x_kunbox_* 是客户端内部标记，内核碰到未知字段会直接拒绝整份配置；Xray 专属节点转原生 type=xray。 */
 function kernelOutbound(node: SingBoxOutbound): object {
+  if (isNativeXrayNode(node)) {
+    return buildNativeXrayOutbound(node)
+  }
   return Object.fromEntries(Object.entries(node).filter(([key]) => !key.startsWith('x_')))
 }
 

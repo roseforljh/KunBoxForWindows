@@ -237,9 +237,12 @@ function ProtocolFields({ node, onChange, disabled }: {
           { value: 'chacha20-poly1305', label: 'ChaCha20-Poly1305' }, { value: 'none', label: 'None' },
         ]} />
       ) : (
-        <SelectField label="Flow" value={node.flow ?? ''} disabled={disabled} onChange={(value) => set('flow', value || undefined)} options={[
-          { value: '', label: '无' }, { value: 'xtls-rprx-vision', label: 'xtls-rprx-vision' },
-        ]} />
+        <>
+          <SelectField label="Flow" value={node.flow ?? ''} disabled={disabled} onChange={(value) => set('flow', value || undefined)} options={[
+            { value: '', label: '无' }, { value: 'xtls-rprx-vision', label: 'xtls-rprx-vision' },
+          ]} />
+          <Field label="Encryption（留空为 none）" value={node.encryption ?? ''} placeholder="none" disabled={disabled} onChange={(value) => set('encryption', value.trim() || undefined)} />
+        </>
       )}
       <SelectField label="Packet Encoding" value={node.packet_encoding ?? 'xudp'} disabled={disabled} onChange={(value) => set('packet_encoding', value || undefined)} options={[
         { value: '', label: '无' }, { value: 'xudp', label: 'xudp' }, { value: 'packet', label: 'packet' },
@@ -399,7 +402,7 @@ function TransportFields({ node, onChange, disabled }: { node: SingBoxOutbound; 
   const type = transport.type ?? 'tcp'
   const hostText = type === 'ws'
     ? joinList(transport.headers?.Host ?? transport.headers?.host, ', ')
-    : joinList(transport.host, ', ')
+    : joinList(transport.host ?? (type === 'xhttp' ? (transport.headers?.Host ?? transport.headers?.host) : undefined), ', ')
   const updateHost = (value: string) => {
     if (type === 'ws') {
       const headers = { ...(transport.headers ?? {}) }
@@ -408,7 +411,15 @@ function TransportFields({ node, onChange, disabled }: { node: SingBoxOutbound; 
       if (value.trim()) headers.Host = value.trim()
       update({ headers: Object.keys(headers).length ? headers : undefined, host: undefined })
     } else if (type === 'httpupgrade' || type === 'xhttp') {
-      update({ host: value.trim() || undefined })
+      const headers = transport.headers ? { ...transport.headers } : undefined
+      if (headers) {
+        delete headers.Host
+        delete headers.host
+      }
+      update({
+        host: value.trim() || undefined,
+        ...(transport.headers ? { headers: headers && Object.keys(headers).length ? headers : undefined } : {})
+      })
     } else {
       update({ host: stringList(value) })
     }
@@ -428,7 +439,7 @@ function TransportFields({ node, onChange, disabled }: { node: SingBoxOutbound; 
       {type === 'ws' && <Field label="Max Early Data" type="number" value={String(transport.max_early_data ?? '')} disabled={disabled} onChange={(value) => update({ max_early_data: optionalNumber(value) })} />}
       {type === 'ws' && <Field label="Early Data Header" value={transport.early_data_header_name ?? ''} disabled={disabled} onChange={(value) => update({ early_data_header_name: value || undefined })} />}
       {type === 'xhttp' && <SelectField label="XHTTP 模式" value={transport.mode ?? 'auto'} disabled={disabled} onChange={(value) => update({ mode: value })} options={[
-        { value: 'auto', label: 'Auto' }, { value: 'packet-up', label: 'Packet Up' }, { value: 'stream-up', label: 'Stream Up' },
+        { value: 'auto', label: 'Auto' }, { value: 'packet-up', label: 'Packet Up' }, { value: 'stream-up', label: 'Stream Up' }, { value: 'stream-one', label: 'Stream One' },
       ]} />}
       {type === 'xhttp' && <Field label="XPadding Bytes" value={transport.x_padding_bytes ?? ''} disabled={disabled} onChange={(value) => update({ x_padding_bytes: value || undefined })} />}
       {type === 'xhttp' && <Field label="单次 POST 最大字节" type="number" value={String(transport.sc_max_each_post_bytes ?? '')} disabled={disabled} onChange={(value) => update({ sc_max_each_post_bytes: optionalNumber(value) })} />}
